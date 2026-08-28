@@ -50,6 +50,7 @@ def _login_dsn(role: str) -> str:
 READER_TEST_DSN = _login_dsn("fleet_test_reader")
 PROPOSER_TEST_DSN = _login_dsn("fleet_test_proposer")
 CONSOLE_TEST_DSN = _login_dsn("fleet_test_console")
+EVALUATOR_TEST_DSN = _login_dsn("fleet_test_evaluator")
 
 
 def _admin(sql: str) -> None:
@@ -100,7 +101,7 @@ def dsns(templates, monkeypatch) -> dict[str, str]:
     monkeypatch.setenv("FLEET_CONSOLE_DSN", CONSOLE_TEST_DSN)
     return {"fleet": FLEET_TEST_DSN, "dd": DD_TEST_DSN,
             "reader": READER_TEST_DSN, "proposer": PROPOSER_TEST_DSN,
-            "console": CONSOLE_TEST_DSN}
+            "console": CONSOLE_TEST_DSN, "evaluator": EVALUATOR_TEST_DSN}
 
 
 @pytest.fixture
@@ -138,4 +139,11 @@ def proposer(dsns):
 def console(dsns):
     """The only role the database accepts a decision from."""
     with psycopg.connect(dsns["console"], row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def evaluator(dsns):
+    """The other role that may record a verdict, holding no ownership."""
+    with psycopg.connect(dsns["evaluator"], row_factory=dict_row) as conn:
         yield conn
