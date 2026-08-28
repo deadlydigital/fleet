@@ -47,8 +47,10 @@ By band — 14 Daily, 21 Weekly, 13 Rarely, 2 Never.
 The Daily band first, because a gap an agency hits on its first morning is the
 one that ends an evaluation:
 
-* Nothing in DD nets revenue of refunds, and the field that would is populated
-  on **1 order out of 2,844,177** in production.
+* Nothing in DD nets revenue of refunds. The field that would is populated on
+  **1 order out of 2,844,177** — which `empty-columns.md` traces to backfill
+  coverage rather than to a broken sync, so this is a missing *report*, not a
+  missing pipeline.
 * There is exactly **one CSV export** in the whole analytics API, and it emits
   one fixed customer segment with fixed columns.
 * Segmenting is **seven hard-coded RFM buckets** — Champions, Loyal, Potential
@@ -77,7 +79,7 @@ intervention ROI. Metorik has no equivalent to either.
 | Profit dashboard: revenue − COGS − ad spend − fees − fixed costs | **Missing** | No cost column exists anywhere. `analytics_2.products` is `id, wc_product_id, name, sku, price, category, status`. | Daily |
 | Digests — scheduled dashboard summary to email or Slack, daily/weekly/monthly | **Missing** | No digest, scheduled-report or Slack code in `api/analytics` or the analytics frontend. | Daily |
 | Multi-store dashboard combining several stores | **Missing** | Analytics is per-tenant throughout (`analytics_schema_name(tenant.id)`). The only cross-tenant view is `app/(dashboard)/admin/tenants`, which is DD staff admin, not an agency-facing roll-up. | Daily |
-| Net revenue (gross less refunds) on the main figures | **Missing in effect** | `analytics_2.orders.refund_total` exists and reaches the order list and detail (`order_query.py:162,240`), but **1 of 2,844,177 orders** has a non-zero value, and no aggregate nets it. Either the sync does not map refunds or the source does not send them — not established. | Daily |
+| Net revenue (gross less refunds) on the main figures | **Missing (the report); the column is sound** | `refund_total` reaches the order list and detail (`order_query.py:162,240`) and no aggregate nets it. It is non-zero on 1 of 2,844,177 orders — traced 2026-08-28 to backfill coverage, not to the sync: the map works end to end and the one `refunded`-status order in the table carries its refund correctly. See `empty-columns.md`. | Daily |
 | Order filtering: status, payment, shipping, location, customer tags, email engagement, products contained | **Partial** | `routes/orders.py` accepts `start`, `end`, exact `status`, `search` (email prefix or WooCommerce order id), `sort_by`, `sort_dir`. Nothing else. The order rows *carry* payment method, country, coupon and discount; they cannot be filtered on. | Daily |
 | Compare any period to any other, incl. year-on-year | **Partial** | `dashboard_overview()` compares the window to the equal-length window immediately before it (`analytics_engine.py:426`) — a genuine like-for-like, but the only comparison there is. No arbitrary range and no YoY. | Daily |
 | Store dashboard: sales, orders, AOV, customers | **Has** | `dashboard_overview()`, `app/(dashboard)/analytics/page.tsx`. | Daily |
@@ -116,8 +118,8 @@ intervention ROI. Metorik has no equivalent to either.
 
 | Metorik feature | DD status | Evidence | Agency use (est.) |
 |---|---|---|---|
-| Tax reporting | **Missing in effect** | `orders.tax_total` exists and is non-zero on **0 of 2,844,177** orders. | Rarely |
-| Shipping revenue and shipping-cost rules by country / weight / method | **Missing in effect** | `orders.shipping_total` exists and is non-zero on **0 of 2,844,177** orders. No cost-rule concept. | Rarely |
+| Tax reporting | **Not applicable to this tenant** | `orders.tax_total` is non-zero on 0 of 2,844,177 orders, and `total = SUM(order_items.total)` holds to the penny on 99.58% of them, leaving no room for a tax term. The store charges none — this is correct data, not a gap. Untested rather than broken; see `empty-columns.md`. | Rarely |
+| Shipping revenue and shipping-cost rules by country / weight / method | **Not applicable to this tenant (revenue); Missing (cost rules)** | `orders.shipping_total` is non-zero on 0 of 2,844,177 orders and the same arithmetic leaves no room for a shipping term — the store charges none. The cost-rule concept is genuinely absent. See `empty-columns.md`. | Rarely |
 | Payment gateway fees as a cost | **Missing** | No fee field. | Rarely |
 | Device reports (desktop / mobile / tablet, AOV by device) | **Missing** | No device field on `orders`. | Rarely |
 | Order value and item-count distributions | **Missing** | No such report. | Rarely |
@@ -159,12 +161,14 @@ though every column were equally solid.
    rows may be thinner in practice than the gap implies. I have not repeated
    Metorik's own count of "75+ reports" anywhere, because I could not check it.
 
-3. **Why `refund_total`, `tax_total` and `shipping_total` are empty.** Three
-   columns exist and carry no data. I did not determine whether WooCommerce is
-   not sending these, `sync_engine.py` is not mapping them, or this tenant
-   genuinely has no tax, shipping or refunds. That distinction decides whether
-   the refund gap is a day of sync work or a schema-and-backfill project, and it
-   is the first thing to establish before costing anything in the Daily band.
+3. ~~**Why `refund_total`, `tax_total` and `shipping_total` are empty.**~~
+   **Resolved 2026-08-28 — see `empty-columns.md`.** Tax and shipping: the
+   tenant genuinely charges neither, and the table rows above are corrected.
+   Refunds: the pipeline is sound and the empty history is a backfill coverage
+   artefact. The work is a day, not a schema project. One thing remains open
+   there — whether the connector hooks WooCommerce's refund events, which
+   decides whether *partial* refunds on completed orders are captured; the
+   plugin source is not in the repo.
 
 4. **Whether the email-side segment builder** (`app/(dashboard)/segments/builder`)
    can express analytics filters. If it can, the flexible-segmentation gap is
