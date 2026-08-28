@@ -1,0 +1,15 @@
+[Unit]
+Description=fleet_heartbeat, every 5 minutes
+Documentation=file:/home/ubuntu/fleet/README.md
+
+[Timer]
+Unit=fleet-detector@fleet_heartbeat.service
+# 30s after each 5-minute boundary: settle_lag is zero, so this executes the
+# slot that has just closed rather than racing its edge.
+OnCalendar=*-*-* *:00/5:30
+AccuracySec=5s
+RandomizedDelaySec=0
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=Fleet detector %i
+Documentation=file:/home/ubuntu/fleet/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_detector.py %i
+# Longer than execution_timeout in detector_registry (2 minutes), so systemd
+# killing the process is a last resort and the database's own reclaim path
+# stays the one that decides a run is stale.
+TimeoutStartSec=600
+SyslogIdentifier=fleet-detector-%i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

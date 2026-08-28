@@ -1,0 +1,16 @@
+[Unit]
+Description=dd_analytics_reconciliation, hourly
+Documentation=file:/home/ubuntu/fleet/README.md
+
+[Timer]
+Unit=fleet-detector@dd_analytics_reconciliation.service
+# :20 past, not :00. settle_lag is 15 minutes, so before :15 the hour that
+# just ended is not yet judgeable and open_scheduled_run would hand back the
+# hour before it -- leaving the most recent slot permanently unexecuted.
+OnCalendar=*-*-* *:20:00
+AccuracySec=15s
+RandomizedDelaySec=0
+Persistent=true
+
+[Install]
+WantedBy=timers.target
