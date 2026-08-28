@@ -3,13 +3,18 @@
 Two throwaway databases on a local cluster, rebuilt from templates for every
 test:
 
-  fleet_test   001_v1_core.sql, unmodified, plus the same registry and
-               routing rows the deployed fleet database carries
+  fleet_test   001_v1_core.sql and 002_proposals.sql, unmodified, plus the
+               same registry and routing rows the deployed fleet database
+               carries
   dd_test      a stand-in for deadly_digital with a hand-counted gap
 
 Tests connect as fleet_test_detector (member of fleet_detector, nothing else)
 and dd_test_reader (SELECT only), so every trigger and grant that constrains
-the real process constrains the tests too. Nothing here touches production.
+the real process constrains the tests too. Track 2 adds three more:
+fleet_test_reader, fleet_test_proposer and fleet_test_console, which are the
+read side, the write side and the deciding side of the proposal layer, kept
+apart here exactly as they are kept apart in production. Nothing here touches
+production.
 """
 from __future__ import annotations
 
@@ -38,6 +43,15 @@ FLEET_TEST_DSN = f"postgresql://fleet_test_detector:fleet_test_detector@{HOST}:{
 DD_TEST_DSN = f"postgresql://dd_test_reader:dd_test_reader@{HOST}:{PORT}/{DD_DB}"
 
 
+def _login_dsn(role: str) -> str:
+    return f"postgresql://{role}:{role}@{HOST}:{PORT}/{FLEET_DB}"
+
+
+READER_TEST_DSN = _login_dsn("fleet_test_reader")
+PROPOSER_TEST_DSN = _login_dsn("fleet_test_proposer")
+CONSOLE_TEST_DSN = _login_dsn("fleet_test_console")
+
+
 def _admin(sql: str) -> None:
     with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
         conn.execute(sql)
@@ -64,7 +78,9 @@ def templates() -> None:
     _admin(f'DROP DATABASE IF EXISTS "{FLEET_TEMPLATE}" WITH (FORCE)')
     _admin(f'CREATE DATABASE "{FLEET_TEMPLATE}"')
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "001_v1_core.sql")
+    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "002_proposals.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
+    _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
 
     _admin(f'DROP DATABASE IF EXISTS "{DD_DB}" WITH (FORCE)')
     _admin(f'DROP DATABASE IF EXISTS "{DD_TEMPLATE}" WITH (FORCE)')
@@ -79,7 +95,12 @@ def dsns(templates, monkeypatch) -> dict[str, str]:
     _rebuild(DD_DB, DD_TEMPLATE)
     monkeypatch.setenv("FLEET_DSN", FLEET_TEST_DSN)
     monkeypatch.setenv("DD_DSN", DD_TEST_DSN)
-    return {"fleet": FLEET_TEST_DSN, "dd": DD_TEST_DSN}
+    monkeypatch.setenv("FLEET_READER_DSN", READER_TEST_DSN)
+    monkeypatch.setenv("FLEET_PROPOSER_DSN", PROPOSER_TEST_DSN)
+    monkeypatch.setenv("FLEET_CONSOLE_DSN", CONSOLE_TEST_DSN)
+    return {"fleet": FLEET_TEST_DSN, "dd": DD_TEST_DSN,
+            "reader": READER_TEST_DSN, "proposer": PROPOSER_TEST_DSN,
+            "console": CONSOLE_TEST_DSN}
 
 
 @pytest.fixture
@@ -95,4 +116,26 @@ def admin(dsns):
     """Superuser connection, for arranging history the detector cannot write."""
     dsn = f"postgresql:///{FLEET_DB}?host={SOCKET_DIR}&port={PORT}"
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def reader(dsns):
+    """The proposal layer's read side: SELECT on track 1, nothing else."""
+    with psycopg.connect(dsns["reader"], row_factory=dict_row) as conn:
+        conn.read_only = True
+        yield conn
+
+
+@pytest.fixture
+def proposer(dsns):
+    """The proposal layer's write side: INSERT on proposals and evidence."""
+    with psycopg.connect(dsns["proposer"], row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def console(dsns):
+    """The only role the database accepts a decision from."""
+    with psycopg.connect(dsns["console"], row_factory=dict_row) as conn:
         yield conn

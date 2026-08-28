@@ -1,0 +1,17 @@
+[Unit]
+Description=Fleet observation cycle, daily
+Documentation=file:/home/ubuntu/fleet/README.md
+
+[Timer]
+Unit=fleet-proposer-cycle.service
+# 07:30, not 07:00. dd_analytics_reconciliation runs at :20 past each hour,
+# so by :30 the most recent hour has been read and the cycle's evidence is
+# minutes old rather than nearly an hour old. Running on the hour would make
+# every morning's readings the oldest they are allowed to be.
+OnCalendar=*-*-* 07:30:00
+AccuracySec=1m
+RandomizedDelaySec=0
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,89 @@
+quarter: 2026-Q4
+
+# Scope: Deadly Digital and Punter Insight only.
+# DD earns its own keep. PI converts existing traffic into revenue.
+# Weights sum to 1.0. Every proposal must name one, or it is a risk item.
+
+objectives:
+
+  - id: dd-first-revenue
+    statement: >
+      Deadly Digital analytics reaches paying clients - the agency partner
+      deal signed and 5-10 tenants live and billing, with DD covering its
+      own infrastructure cost.
+    weight: 0.35
+    # The bar is money in, not tenants onboarded. A free pilot does not count.
+    signals:
+      - agency partner contract signed
+      - paying tenants onboarded
+      - DD monthly revenue vs DD monthly infrastructure cost
+
+  - id: dd-feature-parity
+    statement: >
+      DD analytics closes the feature gap with Metorik for the reports an
+      agency actually uses day to day.
+    weight: 0.2
+    # Parity is the means, not the end - a feature only counts if it is one
+    # an agency would notice missing during evaluation. Nobody switches
+    # analytics tools for a feature they never open.
+    #
+    # NEEDS A BASELINE: a written gap list, Metorik feature vs DD status,
+    # ordered by how often an agency would use it. Without that, this
+    # objective ranks "build another report" forever. Producing that list is
+    # itself the first proposal this objective should generate.
+    signals:
+      - gap list written and maintained
+      - gaps closed among the top-used reports
+      - features cited as blockers during agency evaluation
+
+  - id: dd-trustworthy
+    statement: >
+      DD's numbers are correct and provably so - no silent data loss, no
+      metric telling two stories.
+    weight: 0.15
+    # Deliberately separate from the two above. An analytics product that
+    # loses 860 orders without noticing cannot be sold to an agency, and one
+    # wrong figure in front of a client costs more than any feature.
+    # Parity work must not outrank correctness work by default.
+    signals:
+      - sync reconciliation clean
+      - semantic layer conflicts resolved (11 known)
+      - detector false-positive rate
+
+  - id: pi-revenue
+    statement: >
+      Punter Insight converts its existing traffic into subscription revenue.
+    weight: 0.25
+    # PI already has SEO, programmatic match pages and a results page. The
+    # gap is monetisation, not audience. Proposals about prediction accuracy
+    # serve this only where accuracy is what blocks conversion.
+    signals:
+      - paying subscribers
+      - MRR
+      - organic traffic to signup conversion
+
+  - id: cost-discipline
+    statement: >
+      AWS under 200 GBP/month; neither venture carries cost it cannot justify.
+    weight: 0.05
+    signals:
+      - AWS monthly spend
+      - AI API spend per useful outcome
+
+constraints:
+  - solo operator; engineering time is the binding constraint, not money
+  - no new fixed monthly cost above 25 GBP without explicit approval
+  - no proposal may assume hiring
+  - parity work is judged against the gap list, not against Metorik's full
+    feature set - do not chase features an agency would not use
+
+# Deliberately OUT OF SCOPE this quarter. The system should not propose work
+# on these, and should not rank them. Raise them only as risks - something
+# actively breaking or costing money.
+out_of_scope:
+  - Hittin It Big (HIB) - runs itself, funds the rest, not being changed
+  - Mazi Energy
+  - YesSMS
+  - Fleet OS beyond the detection layer already in build
+  - new ventures or products
+  - rebuilding anything that currently works

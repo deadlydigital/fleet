@@ -1,0 +1,93 @@
+# Thresholds and mappings for the observation cycle.
+#
+# Data, not code, for the same reason detector_registry and routing_policy
+# are: deciding that a CRITICAL issue open two days is worth saying out loud
+# is a judgement that will be retuned, and retuning it must not be a
+# redeploy. Nothing in proposer/ carries one of these numbers as a literal.
+
+objectives_file: objectives-2026-Q4.yaml
+
+# A daily cycle that does not forget what it said yesterday says the same
+# five things every morning until the cap is the whole output. A finding is
+# suppressed for this long after it has been proposed once.
+repropose_after: 14 days
+
+freshness:
+  # The false-positive rate is only as fresh as the last verdict a person
+  # entered. This is a human cadence and has no detector to derive it from.
+  # Everything else is bounded by detector_registry geometry (cadence +
+  # grace), which is not settable here.
+  verdicts: 7 days
+
+findings:
+  # An issue open longer than this, per severity. Severity is track 1's
+  # judgement (routing_policy); how much patience each grade earns is this
+  # layer's.
+  issue_open_too_long:
+    CRITICAL: 2 days
+    HIGH: 5 days
+    MEDIUM: 14 days
+    LOW: 30 days
+    UNTRIAGED: 2 days
+
+  # A detector with no successful run. missed_slots counts whole cadences of
+  # silence since the last OK window, so the number means the same thing for
+  # a five-minute detector and an hourly one.
+  detector_no_successful_run:
+    missed_slots: 3
+
+  # A rising false-positive rate. Both windows need enough verdicts to be
+  # worth comparing; below that the answer is "unknown", which is not the
+  # same as "unchanged".
+  false_positive_rate_rising:
+    window: 14 days
+    min_verdicts_per_window: 5
+    absolute_increase: 0.10
+
+  # An objective nothing has been said about. Cannot fire before the layer
+  # has been running longer than this: "no activity in 14 days" is
+  # unknowable on day one, and firing it then would fill the first five
+  # cycles with an artefact of having just started.
+  objective_no_activity:
+    after: 14 days
+
+  # Observations no one has ruled on. Untriaged work is what starves the
+  # false-positive rate, which is the signal dd-trustworthy is measured by.
+  untriaged_observations:
+    max_age: 7 days
+    min_count: 1
+
+  # An open issue that cannot resolve because the runs that would clear it
+  # do not exist or do not cover its subject.
+  coverage_gap:
+    min_age: 1 days
+
+# Which objective a finding serves. Track 1 keeps severity out of detector
+# code for this reason: the mapping is a judgement, judgements get retuned,
+# and a retune should be a data change.
+#
+# A finding whose type is not mapped here becomes a RISK with no objective,
+# which is the correct outcome -- the file says every proposal names an
+# objective or it is a risk, and an unmapped finding names none.
+objective_map:
+  issue_open_too_long:
+    MISSING_ANALYTICS_ORDER: dd-trustworthy
+    ORPHANED_ANALYTICS_ORDER: dd-trustworthy
+    ORDER_FIELD_DRIFT: dd-trustworthy
+    UNMATCHABLE_ORDER: dd-trustworthy
+    DETECTOR_RUN_MISSING: dd-trustworthy
+    DETECTOR_RUN_STALE: dd-trustworthy
+    DETECTOR_ERROR_STREAK: dd-trustworthy
+    DETECTOR_WINDOW_ABANDONED: dd-trustworthy
+    DETECTOR_CARDINALITY_EXCEEDED: dd-trustworthy
+  detector_no_successful_run: dd-trustworthy
+  false_positive_rate_rising: dd-trustworthy
+  untriaged_observations: dd-trustworthy
+  coverage_gap: dd-trustworthy
+
+# Products the objectives file puts out of scope this quarter. A finding on
+# one of these is demoted to a RISK and names no objective: the file says
+# they may be raised only as something actively breaking or costing money.
+# Track 1 currently observes deadly_digital only, so this is empty and is
+# here to be filled in rather than remembered.
+out_of_scope_products: []

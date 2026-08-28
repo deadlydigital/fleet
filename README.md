@@ -117,3 +117,164 @@ gap, rebuilding both from templates for every test. Tests connect as
 `fleet_test_detector` (member of `fleet_detector`, nothing else) and
 `dd_test_reader` (SELECT only), so the triggers and grants that constrain the
 real process constrain the tests too. Nothing in the suite touches production.
+
+---
+
+# The proposal layer, V1
+
+Track 2. It reads track 1 and proposes. It never executes, never writes to
+deadly_digital, and touches track 1's tables only with SELECT.
+
+    proposer/
+      config.py           two DSNs and cycle.yaml
+      objectives.py       the quarter's objectives, read from the file
+      adapter.py          what a reading is, and when it stops being usable
+      detector_adapter.py the detectors adapter
+      history.py          this layer's own past output
+      findings.py         the computable findings
+      cycle.py            rank, cut at five, write, report
+      queries/            one SQL file per query, named <key>.v<n>.sql
+    run_cycle.py          python run_cycle.py [--dry-run]
+    review.py             python review.py [list|review|decide]
+    cycle.yaml            thresholds and the finding -> objective mapping
+    002_proposals.sql     proposals, proposal_evidence, decisions
+
+`objectives-2026-Q4.yaml` is the authority on what matters. Nothing copies a
+weight out of it into the database, and the cycle refuses to start if the
+weights stop summing to 1.0 -- at that point ranking by weight is not
+ranking.
+
+## Three roles, because it is three jobs
+
+    fleet_detector_reader  SELECT on track 1, and on this layer's own
+                           proposals. Not on decisions.
+    fleet_proposer         INSERT on proposals and proposal_evidence. It
+                           cannot read a proposal back, cannot read track 1,
+                           and cannot record a decision.
+    fleet_console          the only principal the database accepts a decision
+                           from, enforced by trigger exactly as
+                           observation_verdicts is.
+
+The cycle opens two connections on purpose. One role that could both read the
+detectors and write proposals would make the read path and the write path the
+same identity, and the separation is the only reason the database can say a
+proposal was written by something that cannot read what it is judging.
+
+A layer that can record its own approval is an agent marking its own work as
+passing. `fleet_proposer` is absent from the decision trigger's list and
+always will be.
+
+## What the database enforces, not the application
+
+* **A proposal with no evidence cannot exist.** A deferrable constraint
+  trigger checks at COMMIT, because the evidence rows reference the proposal
+  id and cannot be inserted before it. Deleting the last evidence row is
+  refused by the same function.
+* **Five items per cycle.** In a trigger, and deliberately not configurable.
+  A cap that can be raised is a cap that will be raised on the morning the
+  layer has six things it feels strongly about, and being forced to cut is
+  what makes the ranking mean anything.
+* **An OBSERVATION cannot carry an effort or impact estimate.** One that does
+  is a recommendation wearing a disguise. V1 produces observations, so the
+  check constraint is the difference between "we decided not to recommend"
+  and "it cannot."
+* **A proposal names an objective or it is a RISK.** The set of valid ids is
+  quarterly data and is not frozen into the schema; the producer checks
+  membership against the file, and `cycle.yaml` naming an objective the file
+  does not contain stops the cycle before it reads anything.
+* **A verdict freezes; what happened next does not.** `executed`,
+  `abandoned_at` and `outcome_note` stay writable. `verdict`, `reason_code`,
+  `decided_at` and `decision_seconds` do not.
+
+## Freshness
+
+Every adapter query declares a bound before it runs, and every reading
+carries the timestamp of the newest fact it rests on. A reading past its
+bound is returned marked STALE and no finding is computed from it, because a
+finding built on stale evidence arrives looking exactly like a fresh one.
+
+The bound is a property of the question. "How many issues are open" is only
+as fresh as the last detector run, so its bound is registry geometry. "What
+is the false-positive rate" is only as fresh as the last verdict a person
+entered, so its bound is a human cadence in `cycle.yaml`. "When did each
+detector last succeed" is correct whenever it is asked, and says so -- which
+matters most during an outage, because it is the reading that explains why
+all the others are unusable.
+
+Staleness is judged per detector, against that detector's own cadence plus
+grace, and reported for whichever is furthest past its own budget. A
+heartbeat on a five-minute cadence quiet for an hour is further gone than an
+hourly detector quiet for the same hour; picking the oldest timestamp instead
+would report the second and miss the first.
+
+## The findings
+
+All five are arithmetic against a threshold in `cycle.yaml`. No model is
+called anywhere in this package, and none is needed: a count of days is a
+count of days, and generating a sentence about it would turn something
+checkable into something that has to be trusted.
+
+    issue_open_too_long          per severity
+    detector_no_successful_run   never succeeded, or stopped succeeding
+    false_positive_rate_rising   recent window against the one before it
+    untriaged_observations       what the false-positive rate is starved of
+    coverage_gap                 an open issue nothing can close, and why
+    objective_no_activity        an objective this layer has said nothing about
+
+Two of them can reach the same issue -- one that is both old and stuck -- and
+the coverage gap wins, because it explains why the issue is still open rather
+than only noting that it is. The fold is printed.
+
+`objective_no_activity` cannot fire until the layer is older than the window
+it measures. "Nothing in 14 days" is unknowable on day one, and firing it
+then would fill the first fortnight with the news that it had just been
+switched on.
+
+## Ranking
+
+Objective weight, and nothing else. No severity score, no impact estimate, no
+composite -- the database refuses an observation carrying an estimate, so
+this is enforced rather than intended.
+
+Risks sort first. A RISK has no objective by construction and so cannot be
+weighed at all, which leaves only "always above" or "always below"; below
+means the cap can silently drop something actively breaking in favour of a
+well-weighted observation. That is the one ordering rule weight does not
+decide, and it is a categorical rule rather than a score.
+
+Ties break on the finding key: arbitrary, but the same arbitrary order every
+morning, so two runs over the same facts propose the same five things.
+
+## What is cut is printed
+
+Suppressed items, items cut by the cap, and every finding type that could not
+be computed and why, all appear in the report. A layer that quietly showed
+five things out of twenty would read as "here is everything", which is the
+failure a cap invites.
+
+## Review
+
+    .venv/bin/python review.py            list undecided proposals with evidence
+    .venv/bin/python review.py review     decide each in turn, timing each one
+    .venv/bin/python review.py decide --proposal 7 --verdict REJECT \
+                                      --reason ALREADY_KNOWN --seconds 20
+
+Every decision carries the seconds it took. The number is not decoration:
+this layer costs human attention and the only way to find out whether it
+earns that is to measure it. In `review` the clock runs from the moment a
+proposal finishes printing to the moment the verdict is entered. In `decide`
+there is nothing to measure, so `--seconds` defaults to zero, which is an
+honest zero rather than an invented duration.
+
+Reason codes are an enum. A reason that can be spelled freely cannot be
+counted, and counting rejections by reason is the only way this layer finds
+out what it is bad at.
+
+## Tests
+
+    .venv/bin/python -m pytest tests/ -q
+
+The same harness as track 1. `fleet_test` is built from `001_v1_core.sql` and
+`002_proposals.sql` verbatim, and the tests connect as `fleet_test_reader`,
+`fleet_test_proposer` and `fleet_test_console`, so the three-way separation
+the design rests on is the one under test.

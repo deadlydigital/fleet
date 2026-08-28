@@ -1,0 +1,25 @@
+[Unit]
+Description=Fleet observation cycle
+Documentation=file:/home/ubuntu/fleet/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_cycle.py
+# Exit 2 means a reading was stale and part of the answer is missing. That is
+# a result, not a failure: the cycle ran, said what it could, and said what it
+# could not. systemd should not paint it red.
+SuccessExitStatus=0 2
+TimeoutStartSec=300
+SyslogIdentifier=fleet-proposer-cycle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
