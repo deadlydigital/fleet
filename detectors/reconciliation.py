@@ -40,6 +40,15 @@ INVARIANTS = (
     ("UNMATCHABLE_ORDER",        "unmatchable_order",        "unmatchable_order_sample"),
 )
 
+# Queries pinned to something other than v1. A superseded version stays on
+# disk: an observation records the query key and version that produced it,
+# and evidence whose query text cannot be recovered is not evidence.
+QUERY_VERSIONS = {"missing_analytics_order_sample": 2}
+
+
+def _load(key: str) -> "sqlfile.Query":
+    return sqlfile.load(key, QUERY_VERSIONS.get(key, 1))
+
 
 class SubjectUnreadable(Exception):
     """The tenant's analytics schema is missing or not readable."""
@@ -114,7 +123,7 @@ class ReconciliationDetector(Detector):
     # ---- enumeration ------------------------------------------------------
 
     def enumerate_subjects(self, ctx: RunContext) -> Sequence[Subject]:
-        query = sqlfile.load("tenants_active")
+        query = _load("tenants_active")
         with self._timed("-", query.key):
             rows = self._dd.execute(query.sql).fetchall()
         return [Subject(SUBJECT_TYPE, str(r["tenant_id"]),
@@ -129,7 +138,7 @@ class ReconciliationDetector(Detector):
 
         source = f"deadly_digital:public.orders+{schema}.orders"
         for observation_type, count_key, sample_key in INVARIANTS:
-            count_query = sqlfile.load(count_key).bind_schema(schema)
+            count_query = _load(count_key).bind_schema(schema)
             # A savepoint per query: a failure must not destroy the snapshot
             # the remaining tenants are being judged against. It also keeps a
             # failed query from ever being reported as a count of zero -- the
@@ -140,7 +149,7 @@ class ReconciliationDetector(Detector):
             if n == 0:
                 continue
 
-            sample_query = sqlfile.load(sample_key).bind_schema(schema)
+            sample_query = _load(sample_key).bind_schema(schema)
             with self._timed(tenant_id, sample_query.key), self._dd.transaction():
                 ids = [r["offending_id"] for r in self._dd.execute(
                     sample_query.sql,
@@ -172,7 +181,7 @@ class ReconciliationDetector(Detector):
         out of subjects_evaluated -- never both -- so its open issues cannot
         be cleared by a run that did not actually look at it.
         """
-        probe = sqlfile.load("analytics_schema_probe")
+        probe = _load("analytics_schema_probe")
         with self._timed(tenant_id, probe.key), self._dd.transaction():
             row = self._dd.execute(probe.sql,
                                    {"qualified": f"{schema}.orders"}).fetchone()

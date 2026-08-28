@@ -193,6 +193,51 @@ def _observations_created(conn: psycopg.Connection, run_id: int) -> int:
     return int(row["n"])
 
 
+def _retry_errored_run(conn: psycopg.Connection, run_id: int,
+                       registry: Registry) -> str:
+    """Hand an ERROR window back for another attempt, up to max_attempts.
+
+    reclaim_stale_detector_run() deliberately reclaims only RUNNING rows --
+    a process that died without closing its run. An ERROR run is the other
+    case: an attempt that completed and failed. Nothing reclaimed those, so
+    attempt_count never advanced past 1, DETECTOR_WINDOW_ABANDONED could not
+    fire, and max_attempts was configuration that did nothing.
+
+    That is not just untidy. A single transient failure -- one RDS blip --
+    cost that window's coverage permanently, and coverage_horizon_valid()
+    counts only OK and PARTIAL runs, so the hole then blocked issues from
+    clearing across it. Retrying closes the hole.
+
+    Guarded in the WHERE clause rather than in Python: the check and the
+    transition are then one statement, and a second process cannot read
+    attempt_count < max_attempts and act on it after this one has already
+    consumed the last attempt.
+
+    observations_created is deliberately left alone. Observations persisted
+    by the failed attempt still exist, the unique index on
+    (detector_run_id, fingerprint) stops the retry duplicating them, and
+    _close_run recomputes the count from the rows themselves.
+    """
+    row = conn.execute(
+        """
+        UPDATE detector_runs
+           SET status = 'RUNNING',
+               attempt_count = attempt_count + 1,
+               last_attempt_at = now(),
+               completed_at = NULL,
+               duration_ms = NULL,
+               subjects_evaluated = NULL,
+               subjects_failed = NULL,
+               error = NULL
+         WHERE id = %(id)s
+           AND status = 'ERROR'
+           AND attempt_count < %(max_attempts)s
+        RETURNING attempt_count
+        """,
+        {"id": run_id, "max_attempts": registry.max_attempts}).fetchone()
+    return "at_max_attempts" if row is None else "retried"
+
+
 def _close_run(conn: psycopg.Connection, ctx: RunContext, status: str,
                duration_ms: int, error: str | None) -> int:
     created = _observations_created(conn, ctx.run_id)
@@ -252,6 +297,24 @@ def execute(detector: Detector, fleet: psycopg.Connection,
 
     try:
         row = _run_row(fleet, run_id)
+
+        if row["status"] == STATUS_ERROR:
+            # A failed attempt, not a finished window. Retry it while
+            # attempts remain; at the limit leave it ERROR so the heartbeat
+            # can raise DETECTOR_WINDOW_ABANDONED against it.
+            verdict = _retry_errored_run(fleet, run_id, registry)
+            if verdict == "retried":
+                row = _run_row(fleet, run_id)
+                log.warning("run %s retried after ERROR; attempt %s of %s",
+                            run_id, row["attempt_count"], registry.max_attempts)
+            else:
+                log.warning("run %s stays ERROR at %s of %s attempts; "
+                            "not retried", run_id, row["attempt_count"],
+                            registry.max_attempts)
+                return RunResult(run_id, "SKIPPED",
+                                 _observations_created(fleet, run_id), [], [], 0,
+                                 skipped_reason="abandoned")
+
         if row["status"] != "RUNNING":
             # The window has already been executed and closed. Re-running it
             # is a no-op by design; the idempotency indexes would reject the

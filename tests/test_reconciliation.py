@@ -216,3 +216,30 @@ def test_crash_and_retry_reports_the_persisted_count(fleet, admin, dsns,
     counts = fleet.execute(
         "SELECT DISTINCT occurrence_count FROM issues").fetchall()
     assert [r["occurrence_count"] for r in counts] == [1]
+
+
+def test_evidence_sample_ids_are_identical_across_query_versions(dsns):
+    """v2 added an OFFSET 0 planner fence. It must not change a single id.
+
+    The fence stops the NOT EXISTS being pulled up into an anti-join, which
+    is a planning change and nothing else -- but "nothing else" is the claim
+    under test, so both versions are executed and compared.
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from detectors.reconciliation import _load
+
+    v1 = sqlfile.load("missing_analytics_order_sample", 1).bind_schema("analytics_2")
+    v2 = sqlfile.load("missing_analytics_order_sample", 2).bind_schema("analytics_2")
+    assert "OFFSET 0" in v2.sql and "OFFSET 0" not in v1.sql
+    assert _load("missing_analytics_order_sample").version == 2, \
+        "the detector must actually be running v2"
+
+    with psycopg.connect(dsns["dd"], row_factory=dict_row) as conn:
+        params = {"t": 2, "limit": 5}
+        old = [r["offending_id"] for r in conn.execute(v1.sql, params).fetchall()]
+        new = [r["offending_id"] for r in conn.execute(v2.sql, params).fetchall()]
+
+    assert old, "the fixture must have offenders for this to prove anything"
+    assert old == new

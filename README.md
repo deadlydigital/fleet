@@ -32,6 +32,51 @@ stored: the schema has no column for it, and adding one would make a
 performance note look like evidence. `journalctl -u
 'fleet-detector@dd_analytics_reconciliation' | grep timing`.
 
+## Retry
+
+A window that closes ERROR is retried on the next invocation, up to
+`max_attempts` from the registry, incrementing `attempt_count`. At the limit
+it stays ERROR and `fleet_heartbeat` raises `DETECTOR_WINDOW_ABANDONED`
+against it.
+
+`reclaim_stale_detector_run()` deliberately reclaims only RUNNING rows -- a
+process that died without closing its run. The ERROR case is the other half
+and lives in `base.py`, because an ERROR run is an attempt that completed and
+failed rather than one that vanished. Without it a single transient failure
+cost that window permanently: `attempt_count` never advanced, so
+`DETECTOR_WINDOW_ABANDONED` was unreachable and `max_attempts` was
+configuration that did nothing, and `coverage_horizon_valid()` -- which
+counts only OK and PARTIAL runs -- then refused to clear issues across the
+hole.
+
+Retrying re-executes the whole window. It cannot duplicate anything: the
+unique index on `(detector_run_id, fingerprint)` makes the observation insert
+a no-op, and `emit()` skips the issue upsert whenever the insert was skipped,
+so `occurrence_count` is not double-counted either.
+
+## A known trade in the evidence sample
+
+`missing_analytics_order_sample` is pinned to v2, which adds an `OFFSET 0`
+optimisation fence. v1 took 2117ms to return five rows because the planner
+estimates that anti-join at `rows=1` when it really yields 29,603, concluded
+no LIMIT could short-circuit, and built a hash over all 2.84M analytics rows.
+The fence keeps `NOT EXISTS` a per-row filter over an ordered index-only
+scan, and the LIMIT then stops after five surviving rows: 0.2ms, 23 buffers
+against 137,609.
+
+The cost is directional. It walks `woo_order_id` ascending until it finds
+five offenders, so it is fast when offenders sort early and slow when they
+sort late -- measured at 5.1s on the reverse ordering, worse than v1. Today's
+gap is the 2026-08-18 rebuild, whose unmigrated orders are the lowest ids in
+the table. A future gap from a live sync failing would be the highest ids and
+would land on the slow side. If that happens, the fix is not to revert: it is
+to fetch the count and the sample in one pass, which costs one anti-join
+(~1.9s) regardless of where the offenders sit.
+
+`orphaned_analytics_order_sample` has the same shape and the same exposure.
+It is left at v1 because there are currently zero orphans, so there is no
+data against which a rewrite could be shown to return identical ids.
+
 ## What is not in this code
 
 * No thresholds. cadence, grace, settle_lag, evaluation_window,
