@@ -1459,6 +1459,13 @@ GRANT UPDATE (final_outcome, outcome_at) ON runs TO fleet_evaluator;
 GRANT SELECT, INSERT ON observation_verdicts TO fleet_console, fleet_evaluator;
 GRANT USAGE, SELECT ON SEQUENCE observation_verdicts_id_seq
       TO fleet_console, fleet_evaluator;
+-- The console must be able to read what it is ruling on. Without this the
+-- verdict path is INSERT-only on a fresh install: the role can record a
+-- judgement but cannot see the observation it is judging, and cannot find
+-- the untriaged ones at all. It worked in the deployed database only because
+-- the migration identity happens to own the tables, which is exactly the
+-- difference a fresh install exposes.
+GRANT SELECT ON observations, issues TO fleet_console;
 
 REVOKE ALL ON FUNCTION reserve_model_budget(bigint,numeric) FROM PUBLIC;
 REVOKE ALL ON FUNCTION settle_model_budget(uuid,numeric,jsonb) FROM PUBLIC;
