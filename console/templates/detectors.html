@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}detectors{% endblock %}
+{% block nav_det %}on{% endblock %}
+{% block body %}
+<h1>Detectors</h1>
+
+<h2>Health</h2>
+<p class="dim">Lateness is judged against each detector's own cadence, grace and
+  settle lag from <code>detector_registry</code>. There is no threshold in this page.</p>
+<table>
+<tr><th>detector</th><th></th><th>last run</th><th>window end</th><th>duration</th>
+    <th>cadence</th><th>grace</th><th>due by</th><th>attempts</th></tr>
+{% for d in health %}
+{% set state = 'bad' if d.missed_a_slot or d.status == 'ERROR' else 'warn' if d.is_late else 'ok' %}
+<tr>
+  <td class="mono">{{ d.detector_key }}{% if d.maintenance_until %}<div class="dim">maintenance until {{ d.maintenance_until.strftime('%d %b %H:%M') }}</div>{% endif %}</td>
+  <td><span class="pill {{ state }}">{{ 'missed a slot' if d.missed_a_slot else 'late' if d.is_late else 'on time' }}</span></td>
+  <td><span class="pill {{ 'ok' if d.status in ('OK','PARTIAL') else 'bad' }}">{{ d.status or 'never run' }}</span></td>
+  <td class="dim">{{ d.window_end.strftime('%d %b %H:%M') if d.window_end else '—' }}</td>
+  <td class="dim">{{ '%d ms'|format(d.duration_ms) if d.duration_ms is not none else '—' }}</td>
+  <td class="dim">{{ d.cadence }}</td>
+  <td class="dim">{{ d.grace }}</td>
+  <td class="dim">{{ d.due_at.strftime('%d %b %H:%M') if d.due_at else '—' }}</td>
+  <td class="dim">{{ d.attempt_count or '—' }}</td>
+</tr>
+{% if d.error %}<tr><td colspan="9"><div class="note mono">{{ d.error }}</div></td></tr>{% endif %}
+{% endfor %}
+</table>
+
+<h2>Untriaged observations</h2>
+{% if untriaged %}
+<div class="note">
+  <div class="big bad">{{ untriaged|length }}</div>
+  <div>observations with no verdict. This is the number that should be zero every
+    morning — the false-positive rate below is starved of exactly these.</div>
+</div>
+<table>
+<tr><th>id</th><th>detector</th><th>type</th><th>subject</th><th>magnitude</th><th>observed</th></tr>
+{% for o in untriaged[:50] %}
+<tr><td>{{ o.id }}</td><td class="mono dim">{{ o.detector_key }} v{{ o.detector_version }}</td>
+    <td>{{ o.observation_type }}</td>
+    <td class="mono dim">{{ o.subject_type }}:{{ o.subject_id }}</td>
+    <td>{{ o.magnitude }} {{ o.unit or '' }}</td>
+    <td class="dim">{{ o.observed_at.strftime('%d %b %H:%M') }}</td></tr>
+{% endfor %}
+</table>
+{% if untriaged|length > 50 %}<p class="dim">Showing 50 of {{ untriaged|length }}.</p>{% endif %}
+{% else %}
+<p><span class="pill ok">0</span> nothing awaiting a verdict.</p>
+{% endif %}
+
+<h2>Open issues</h2>
+{% if not issues %}<p class="empty">No open issues.</p>{% else %}
+<table>
+<tr><th>fingerprint</th><th>type</th><th>subject</th><th>sev</th><th>magnitude</th>
+    <th>seen</th><th>age</th><th>clear blocked?</th></tr>
+{% for i in issues %}
+<tr>
+  <td class="mono dim">{{ i.fingerprint[:16] }}</td>
+  <td>{{ i.issue_type }}</td>
+  <td class="mono dim">{{ i.subject_type }}:{{ i.subject_id }}</td>
+  <td><span class="pill {{ 'bad' if i.severity in ('CRITICAL','HIGH') else 'warn' if i.severity=='MEDIUM' else 'dim' }}">{{ i.severity }}</span></td>
+  <td>{{ i.current_magnitude }} {{ i.current_unit or '' }}</td>
+  <td class="dim">{{ i.occurrence_count }}×</td>
+  <td class="dim">{{ i.age|age }}</td>
+  <td>
+    {% if i.coverage_ok %}
+      <span class="pill ok">not blocked</span>
+      <div class="dim">{{ i.clear_runs_since }} of {{ i.required_clear_runs }} clear runs since last seen</div>
+    {% else %}
+      <span class="pill bad">blocked</span>
+      <div class="dim">coverage horizon is not valid since {{ i.last_seen.strftime('%d %b %H:%M') }} —
+        the detector has not established enough settled, successful coverage to
+        clear it. {{ i.clear_runs_since }} of {{ i.required_clear_runs }} clear runs so far.</div>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table>
+<p class="dim">The blocked column asks <code>coverage_horizon_valid()</code> — the same
+  function the resolver consults — rather than re-deriving the answer here.</p>
+{% endif %}
+
+<h2>False-positive rate</h2>
+{% if not rates %}<p class="empty">No verdicts recorded yet, so there is no rate.</p>{% else %}
+<table>
+<tr><th>detector</th><th>v</th><th>observation type</th><th>rate</th><th>valid</th><th>inconclusive</th></tr>
+{% for r in rates %}
+<tr>
+  <td class="mono">{{ r.detector_key }}</td><td class="dim">{{ r.detector_version }}</td>
+  <td>{{ r.observation_type }}</td>
+  <td><strong>{{ r.false_positive }} of {{ r.judged }}</strong>
+      {% if r.judged >= 20 %}<span class="dim">({{ '%.0f'|format(100 * r.false_positive / r.judged) }}%)</span>{% endif %}</td>
+  <td class="dim">{{ r.valid }}</td><td class="dim">{{ r.inconclusive }}</td>
+</tr>
+{% endfor %}
+</table>
+<p class="dim">The denominator is always shown, and a percentage only appears once there
+  are at least 20 judgements. A rate over three observations is not a rate, and
+  <code>2 of 3</code> refuses the decision that <code>67%</code> invites.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}tasks{% endblock %}
+{% block nav_tasks %}on{% endblock %}
+{% block body %}
+<h1>Tasks</h1>
+<div class="filters">
+  <a href="/tasks?status=READY_FOR_REVIEW" class="{{ 'on' if active=='READY_FOR_REVIEW' }}">Ready for review ({{ counts.get('READY_FOR_REVIEW',0) }})</a>
+  <a href="/tasks?status=QUEUED" class="{{ 'on' if active=='QUEUED' }}">Queued ({{ counts.get('QUEUED',0) }})</a>
+  <a href="/tasks?status=RUNNING" class="{{ 'on' if active=='RUNNING' }}">Running ({{ counts.get('RUNNING',0) }})</a>
+  <a href="/tasks?status=FAILED" class="{{ 'on' if active=='FAILED' }}">Failed ({{ counts.get('FAILED',0) }})</a>
+  <a href="/tasks?status=all" class="{{ 'on' if not active }}">All ({{ counts.values()|sum }})</a>
+</div>
+{% if not tasks %}<p class="empty">Nothing with that status.</p>{% else %}
+<table>
+<tr><th>id</th><th>title</th><th>status</th><th>queue</th><th>objective</th>
+    <th>branch</th><th>cost</th><th>elapsed</th><th>att</th><th>created</th></tr>
+{% for t in tasks %}
+<tr>
+  <td><a class="t" href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
+  <td><a class="t" href="/tasks/{{ t.id }}">{{ t.title }}</a></td>
+  <td><span class="pill {{ 'ok' if t.status in ('READY_FOR_REVIEW','MERGED') else 'bad' if t.status in ('FAILED','REJECTED') else 'dim' }}">{{ t.status }}</span></td>
+  <td class="dim">{{ t.queue }}</td>
+  <td class="dim">{{ t.objective_ref or '—' }}</td>
+  <td class="mono">{{ t.branch_name or '—' }}</td>
+  <td>{% if t.committed_gbp is not none %}£{{ '%.2f'|format(t.committed_gbp) }}<span class="dim"> / {{ '%.2f'|format(t.max_cost_gbp) }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+  <td class="dim">{{ t.elapsed_seconds|duration }}</td>
+  <td class="dim">{{ t.attempts }}/{{ t.max_attempts }}</td>
+  <td class="dim">{{ t.created_at.strftime('%d %b %H:%M') }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endblock %}

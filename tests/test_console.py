@@ -1,0 +1,251 @@
+"""The console, against the real database and the real read-only role.
+
+The console's entire safety argument is the credential it holds, so the first
+tests here are about that rather than about HTML. The rest check that the
+three pages surface the things the spec says are the reason they exist --
+the divergence, the blocked-clear reason, the denominator, and the fact that
+zero-output cycles cannot be shown.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import psycopg
+import pytest
+from fastapi.testclient import TestClient
+
+from tests import support_proposals as sp
+
+REPO = "deadly-digital-platform"
+FLOOR = ["api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
+         "api/analytics/migrations/**", "platform/__tests__/**",
+         "platform/vitest.config.ts", "platform/playwright.config.ts"]
+
+
+def contract(**over) -> dict:
+    c = {"work_type": "dd_feature", "repo": REPO, "base_branch": "main",
+         "contract_version": 1,
+         "writable_paths": ["api/app.py"], "protected_paths": list(FLOOR),
+         "verification": ["true"], "max_diff_lines": 200, "max_cost_gbp": 3.00}
+    c.update(over)
+    return c
+
+
+@pytest.fixture
+def client(dsns, monkeypatch):
+    from console import app as app_module
+    monkeypatch.setattr(app_module.config, "repo_root", lambda: Path("/nonexistent"))
+    with TestClient(app_module.app) as c:
+        yield c
+
+
+@pytest.fixture
+def a_task(console, admin, runner):
+    """A task carried to READY_FOR_REVIEW the way the runner carries one.
+
+    Each move is made by the identity the transition table names: the console
+    writes the queue, the runner claims it and marks it ready. Driving the
+    whole thing as one role would arrange a state the system cannot actually
+    reach, and the page would then be tested against a fiction.
+    """
+    tid = console.execute(
+        "INSERT INTO tasks (title, spec_md, repo, base_branch, acceptance_contract,"
+        " max_cost_gbp, objective_ref)"
+        " VALUES ('a task','# the spec body',%s,'main',%s,3.00,'dd-feature-parity')"
+        " RETURNING id", (REPO, json.dumps(contract()))).fetchone()["id"]
+    console.commit()
+
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+
+    # admin, not console: fleet_console holds SELECT on runs and not INSERT,
+    # which is 003's grant doing its job rather than something to work around.
+    rid = admin.execute(
+        "INSERT INTO runs (task_id, work_type, contract_version, spend_limit_gbp,"
+        " committed_gbp, status) VALUES (%s,'dd_feature',1,3.00,0.75,'AWAITING_HUMAN')"
+        " RETURNING id", (tid,)).fetchone()["id"]
+
+    runner.execute(
+        "UPDATE tasks SET status='READY_FOR_REVIEW', branch_name='fleet/task-1',"
+        " completed_at=now() WHERE id=%s", (tid,))
+    runner.commit()
+    return tid, rid
+
+
+def add_steps(admin, run_id, *, reported, derived, divergence):
+    admin.execute(
+        "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
+        " VALUES (%s,1,'PATCH_PROPOSED','fleet-runner/agent',%s)",
+        (run_id, json.dumps({"base_commit_sha": "a" * 40, "patch_commit_sha": "b" * 40,
+                             "files_changed": derived, "file_status": {p: "M" for p in derived},
+                             "diff_lines": 3, "ignored_writes": [],
+                             "agent_reported_files": reported,
+                             "divergence": divergence, "derived_by": "runner"})))
+    admin.execute(
+        "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
+        " VALUES (%s,2,'VERIFICATION_RUN','fleet-runner/verifier',%s)",
+        (run_id, json.dumps({"result": "PASS", "boundary_clean": True,
+                             "base_commit_sha": "a" * 40, "patch_commit_sha": "b" * 40,
+                             "suite_commit_sha": "s" * 64,
+                             "suite_commit_sha_at_base": "s" * 64,
+                             "contract_version": 1,
+                             "checks": [{"command": "pytest -q", "expanded": "pytest -q",
+                                         "exit_code": 0, "duration_ms": 12,
+                                         "timed_out": False, "skipped_reason": None,
+                                         "output_tail": ""}],
+                             "verification_skipped": None,
+                             "boundary_violations": {"protected": {}, "outside_writable": [],
+                                                     "over_diff_limit": False,
+                                                     "diff_lines": 3}})))
+
+
+# ---- the credential ------------------------------------------------------
+
+def test_the_console_runs_as_a_role_that_cannot_write(dsns):
+    from console import db
+    assert db.assert_read_only() == "fleet_test_console_reader"
+
+
+def test_it_refuses_to_start_as_a_credential_that_can_write(dsns, monkeypatch):
+    """The whole safety argument, checked rather than documented."""
+    from console import db
+    monkeypatch.setenv("FLEET_CONSOLE_READER_DSN", dsns["console"])
+    with pytest.raises(db.NotReadOnly, match="can write"):
+        db.assert_read_only()
+
+
+def test_the_reader_role_cannot_write_even_if_asked(dsns):
+    """Belt and braces: the session flag is not what stops it, the role is."""
+    with psycopg.connect(dsns["console_reader"], autocommit=True) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("DELETE FROM tasks")
+
+
+def test_the_proposal_layers_reader_still_cannot_see_decisions(dsns):
+    """004 must not have widened the wrong role. 002's B7, from the outside."""
+    with psycopg.connect(dsns["reader"], autocommit=True) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SELECT 1 FROM decisions")
+
+
+def test_the_app_exposes_no_write_method(client):
+    from console.app import app
+    methods = {m for r in app.routes if hasattr(r, "methods") for m in r.methods}
+    assert not methods & {"POST", "PUT", "PATCH", "DELETE"}
+
+
+# ---- page 1 --------------------------------------------------------------
+
+def test_tasks_defaults_to_ready_for_review(client, a_task, console):
+    console.execute(
+        "INSERT INTO tasks (title, spec_md, repo, acceptance_contract, max_cost_gbp)"
+        " VALUES ('still queued','x',%s,%s,1.00)", (REPO, json.dumps(contract())))
+    console.commit()
+    body = client.get("/tasks").text
+    assert "a task" in body
+    assert "still queued" not in body, "the default filter is not READY_FOR_REVIEW"
+    assert "still queued" in client.get("/tasks?status=all").text
+
+
+def test_task_detail_shows_the_spec_and_the_contract(client, a_task):
+    tid, _ = a_task
+    body = client.get(f"/tasks/{tid}").text
+    assert "# the spec body" in body
+    assert "api/tests/**" in body          # a protected glob
+    assert "api/app.py" in body            # a writable glob
+
+
+def test_divergence_is_surfaced(client, a_task, admin):
+    """It is recorded so under-reporting is visible after the fact, and it is
+    invisible unless something surfaces it."""
+    tid, rid = a_task
+    add_steps(admin, rid, reported=["api/app.py"],
+              derived=["api/app.py", "api/tests/test_x.py"],
+              divergence={"touched_but_unclaimed": ["api/tests/test_x.py"],
+                          "claimed_but_untouched": []})
+    body = client.get(f"/tasks/{tid}").text
+    assert "disagree" in body
+    assert "api/tests/test_x.py" in body
+
+
+def test_an_honest_agent_is_reported_as_such(client, a_task, admin):
+    tid, rid = a_task
+    add_steps(admin, rid, reported=["api/app.py"], derived=["api/app.py"],
+              divergence={"touched_but_unclaimed": [], "claimed_but_untouched": []})
+    assert "matches git exactly" in client.get(f"/tasks/{tid}").text
+
+
+def test_verification_checks_are_shown_with_exit_and_duration(client, a_task, admin):
+    tid, rid = a_task
+    add_steps(admin, rid, reported=[], derived=["api/app.py"],
+              divergence={"touched_but_unclaimed": ["api/app.py"],
+                          "claimed_but_untouched": []})
+    body = client.get(f"/tasks/{tid}").text
+    assert "pytest -q" in body and "12ms" in body
+
+
+def test_a_missing_branch_says_so_rather_than_showing_nothing(client, a_task, admin):
+    """repo_root is pointed at /nonexistent by the fixture."""
+    tid, rid = a_task
+    add_steps(admin, rid, reported=[], derived=["api/app.py"], divergence={})
+    assert "no git repository" in client.get(f"/tasks/{tid}").text
+
+
+def test_an_unknown_task_is_404(client):
+    assert client.get("/tasks/9999").status_code == 404
+
+
+# ---- page 2 --------------------------------------------------------------
+
+def test_detectors_renders_health_from_the_registry(client):
+    body = client.get("/detectors").text
+    assert "fleet_heartbeat" in body
+    assert "cadence" in body
+
+
+def test_the_false_positive_rate_always_shows_its_denominator(client, admin):
+    """`2 of 3` refuses the decision that `67%` invites."""
+    slot = sp.slot_ends(admin, sp.RECONCILIATION, count=1)[0]
+    ids = sp.arrange_observations(admin, sp.RECONCILIATION, slot, count=3)
+    for oid, verdict in zip(ids, ("FALSE_POSITIVE", "FALSE_POSITIVE", "VALID")):
+        sp.record_verdict(admin, oid, verdict)
+    body = client.get("/detectors").text
+    assert "2 of 3" in body
+    # The page's own explanation contains the characters "67%", so assert on the
+    # rendered form -- the template emits a percentage as "(67%)" or not at all.
+    assert "(67%)" not in body, "a percentage rendered on three data points"
+
+
+def test_untriaged_is_prominent_when_it_is_not_zero(client, admin):
+    slot = sp.slot_ends(admin, sp.RECONCILIATION, count=1)[0]
+    sp.arrange_observations(admin, sp.RECONCILIATION, slot, count=2)
+    body = client.get("/detectors").text
+    assert "no verdict" in body
+    assert "2" in body
+
+
+def test_untriaged_zero_is_stated_positively(client):
+    """Zero is the answer this page most wants to give, so it says it."""
+    assert "nothing awaiting a verdict" in client.get("/detectors").text
+
+
+# ---- page 3 --------------------------------------------------------------
+
+def test_proposals_states_that_empty_cycles_cannot_be_shown(client):
+    """The spec asks for cycles that produced nothing. They are not recorded,
+    and the page has to say so rather than render an empty table that reads
+    as 'nothing happened'."""
+    body = client.get("/proposals").text
+    assert "not shown, because they are not recorded" in body
+    assert "journalctl" in body
+
+
+def test_proposals_renders_a_proposal_with_its_evidence(client, admin):
+    """proposal_evidence is immutable by trigger, so the row the helper writes
+    is the row the page must render."""
+    sp.insert_proposal(admin, title="A finding", body="the body")
+    body = client.get("/proposals").text
+    assert "A finding" in body
+    assert "open_issues" in body          # the adapter's query key
+    assert "the body" in body

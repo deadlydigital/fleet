@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}proposals{% endblock %}
+{% block nav_prop %}on{% endblock %}
+{% block body %}
+<h1>Proposals</h1>
+
+{# The spec asks for cycles that produced nothing, and their reasons. They are
+   not in the database. Saying so is the only honest thing this page can do. #}
+<div class="note">
+  <strong>Cycles that produced nothing are not shown, because they are not recorded.</strong>
+  <p><code>002_proposals.sql</code> creates <code>proposals</code>,
+  <code>proposal_evidence</code> and <code>decisions</code>, and nothing else.
+  <code>cycle_id</code> exists only as a column on <code>proposals</code>, so a cycle
+  that proposed nothing leaves no row anywhere. The “not computed” reasons — the
+  most informative thing the proposer emits at this stage — are assembled in
+  <code>proposer/cycle.py</code> and printed to stdout, reaching journald and
+  nowhere else.</p>
+  <p class="dim">So this page cannot distinguish <em>“the cycle ran and had nothing
+  to say”</em> from <em>“the cycle did not run”</em>. That needs a cycles table, which
+  is a schema change and is logged as a follow-up rather than built here.
+  Until then: <code>journalctl -u fleet-proposer-cycle.service</code>.</p>
+</div>
+
+<h2>Cycles with output</h2>
+{% if not cycles %}
+  <p class="empty">No cycle has produced a proposal. The timer is active and has run,
+    so this is most likely “nothing met threshold” rather than “nothing ran” — but
+    per the note above, this page cannot tell you which.</p>
+{% else %}
+<table>
+<tr><th>cycle</th><th>started</th><th>proposals</th></tr>
+{% for c in cycles %}
+<tr><td class="mono dim">{{ c.cycle_id }}</td>
+    <td class="dim">{{ c.started_at.strftime('%d %b %H:%M') }}</td>
+    <td>{{ c.proposals }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+<h2>Proposals</h2>
+{% if not proposals %}<p class="empty">None.</p>{% else %}
+{% for p in proposals %}
+<div class="panel">
+  <strong>{{ p.title }}</strong>
+  <span class="pill">{{ p.kind }}</span>
+  <span class="pill dim">{{ p.area }}</span>
+  {% if p.objective_ref %}<span class="pill dim">{{ p.objective_ref }}</span>{% endif %}
+  <span class="pill dim">confidence {{ p.confidence }}</span>
+  <span class="pill dim">{{ p.reversibility }}</span>
+  <div class="dim mono">{{ p.finding_key }} · cycle {{ p.cycle_id }} ·
+    {{ p.created_at.strftime('%d %b %H:%M') }}</div>
+  <pre>{{ p.body }}</pre>
+
+  {% if p.verdict %}
+    <div><span class="pill {{ 'ok' if p.verdict == 'ACCEPT' else 'bad' if p.verdict == 'REJECT' else 'warn' }}">{{ p.verdict }}</span>
+      <span class="pill dim">{{ p.reason_code }}</span>
+      <span class="dim">decided {{ p.decided_at.strftime('%d %b %H:%M') }} in
+        {{ p.decision_seconds }}s{% if p.executed %} · executed{% endif %}</span></div>
+    {% if p.outcome_note %}<p class="dim">{{ p.outcome_note }}</p>{% endif %}
+  {% else %}
+    <div><span class="pill warn">undecided</span></div>
+  {% endif %}
+
+  <div class="dim" style="margin-top:.5rem"><strong>Evidence</strong></div>
+  <table>
+  <tr><th>adapter</th><th>query key</th><th>value</th><th>fetched</th><th>stale</th></tr>
+  {% for e in evidence.get(p.id, []) %}
+  <tr><td class="mono dim">{{ e.adapter }}</td><td class="mono dim">{{ e.query_key }}</td>
+      <td class="mono">{{ e.value }}</td>
+      <td class="dim">{{ e.fetched_at.strftime('%d %b %H:%M') }}</td>
+      <td>{% if e.stale %}<span class="pill bad">STALE</span>{% else %}<span class="pill ok">fresh</span>{% endif %}</td></tr>
+  {% else %}
+  <tr><td colspan="5" class="dim">No evidence rows — which the database should have refused.</td></tr>
+  {% endfor %}
+  </table>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

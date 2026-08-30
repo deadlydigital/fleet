@@ -54,6 +54,7 @@ RUNNER_TEST_DSN = _login_dsn("fleet_test_task_runner")
 AGENT_TEST_DSN = _login_dsn("fleet_test_agent")
 VERIFIER_TEST_DSN = _login_dsn("fleet_test_verifier")
 GATEWAY_TEST_DSN = _login_dsn("fleet_test_model_gateway")
+CONSOLE_READER_TEST_DSN = _login_dsn("fleet_test_console_reader")
 
 
 def _admin(sql: str) -> None:
@@ -84,6 +85,7 @@ def templates() -> None:
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "001_v1_core.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "002_proposals.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "003_tasks.sql")
+    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "004_console_reader.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "tasks_seed.sql")
@@ -108,11 +110,13 @@ def dsns(templates, monkeypatch) -> dict[str, str]:
     monkeypatch.setenv("FLEET_AGENT_DSN", AGENT_TEST_DSN)
     monkeypatch.setenv("FLEET_VERIFIER_DSN", VERIFIER_TEST_DSN)
     monkeypatch.setenv("FLEET_MODEL_GATEWAY_DSN", GATEWAY_TEST_DSN)
+    monkeypatch.setenv("FLEET_CONSOLE_READER_DSN", CONSOLE_READER_TEST_DSN)
     return {"fleet": FLEET_TEST_DSN, "dd": DD_TEST_DSN,
             "reader": READER_TEST_DSN, "proposer": PROPOSER_TEST_DSN,
             "console": CONSOLE_TEST_DSN, "runner": RUNNER_TEST_DSN,
             "agent": AGENT_TEST_DSN, "verifier": VERIFIER_TEST_DSN,
-            "gateway": GATEWAY_TEST_DSN}
+            "gateway": GATEWAY_TEST_DSN,
+            "console_reader": CONSOLE_READER_TEST_DSN}
 
 
 @pytest.fixture

@@ -19,9 +19,13 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fleet_test_model_gateway') THEN
     CREATE ROLE fleet_test_model_gateway LOGIN PASSWORD 'fleet_test_model_gateway';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fleet_test_console_reader') THEN
+    CREATE ROLE fleet_test_console_reader LOGIN PASSWORD 'fleet_test_console_reader';
+  END IF;
 END $$;
 
 GRANT fleet_task_runner TO fleet_test_task_runner;
 GRANT fleet_agent       TO fleet_test_agent;
 GRANT fleet_verifier    TO fleet_test_verifier;
 GRANT fleet_model_gateway TO fleet_test_model_gateway;
+GRANT fleet_console_reader TO fleet_test_console_reader;

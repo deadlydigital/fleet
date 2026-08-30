@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}task {{ task.id }}{% endblock %}
+{% block nav_tasks %}on{% endblock %}
+{% block body %}
+<h1>{{ task.title }}</h1>
+<p class="dim">task {{ task.id }} ·
+  <span class="pill {{ 'ok' if task.status in ('READY_FOR_REVIEW','MERGED') else 'bad' if task.status in ('FAILED','REJECTED') else 'dim' }}">{{ task.status }}</span>
+  · {{ task.repo }} @ {{ task.base_branch }}
+  · {{ task.objective_ref or 'no objective' }}
+  · attempt {{ task.attempts }}/{{ task.max_attempts }}</p>
+
+{# ---- the diff, which is what you are here for ---- #}
+<h2>Diff</h2>
+{% if not diff.ok %}
+  <div class="note">{{ diff.reason }}</div>
+{% else %}
+  {% if diff.merged %}
+    <div class="note"><strong>This branch is already merged into {{ task.base_branch }}.</strong>
+      The task still reads {{ task.status }} — the merge was made in git and no
+      verdict was recorded against the task.</div>
+  {% endif %}
+  <p class="dim">
+    {{ diff.files_changed }} file{{ '' if diff.files_changed == 1 else 's' }},
+    <span class="ok">+{{ diff.insertions }}</span> /
+    <span class="bad">−{{ diff.deletions }}</span>
+    · merge base {{ diff.merge_base }}
+  </p>
+  <pre class="mono">{{ diff.command }}</pre>
+  {% if diff.empty %}
+    <p class="empty">No changes against the merge base.</p>
+  {% else %}
+    <div class="panel"><pre class="mono">{{ diff.stat }}</pre></div>
+    <div class="diff">{{ diff.body_html|safe }}</div>
+  {% endif %}
+{% endif %}
+
+{# ---- derived vs claimed ---- #}
+<h2>Changed files — derived vs claimed</h2>
+{% if not patch %}
+  <p class="empty">No PATCH_PROPOSED step.</p>
+{% else %}
+<div class="grid">
+  <div class="panel"><strong>Derived from git</strong> <span class="dim">(by the runner)</span>
+    <ul class="mono">{% for f in patch.get('files_changed', []) %}<li>{{ f }} <span class="dim">{{ patch.get('file_status', {}).get(f, '') }}</span></li>{% else %}<li class="dim">none</li>{% endfor %}</ul>
+    <span class="dim">{{ patch.get('diff_lines', 0) }} changed lines</span>
+  </div>
+  <div class="panel"><strong>Claimed by the agent</strong>
+    {% if patch.get('agent_reported_files') is none %}
+      <p class="dim">The agent reported no file list.</p>
+    {% else %}
+      <ul class="mono">{% for f in patch.get('agent_reported_files', []) %}<li>{{ f }}</li>{% else %}<li class="dim">none</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+</div>
+{% set d = patch.get('divergence') or {} %}
+{% if d.get('touched_but_unclaimed') or d.get('claimed_but_untouched') %}
+  <div class="note"><strong>The agent's account and git disagree.</strong>
+    {% if d.get('touched_but_unclaimed') %}<div>Touched but not claimed: <code>{{ d.touched_but_unclaimed|join(', ') }}</code></div>{% endif %}
+    {% if d.get('claimed_but_untouched') %}<div>Claimed but untouched: <code>{{ d.claimed_but_untouched|join(', ') }}</code></div>{% endif %}
+    <div class="dim">The boundary was judged on the derived side. This is recorded so
+      under-reporting is visible after the fact, not only refused at the time.</div>
+  </div>
+{% elif patch.get('agent_reported_files') is not none %}
+  <p class="dim">The agent's account matches git exactly.</p>
+{% endif %}
+{% if patch.get('ignored_writes') %}
+  <p class="dim">Ignored writes (never reached the branch): <code>{{ patch.ignored_writes|join(', ') }}</code></p>
+{% endif %}
+{% endif %}
+
+{# ---- verification ---- #}
+<h2>Verification</h2>
+{% if not verification %}
+  <p class="empty">No VERIFICATION_RUN step.</p>
+{% else %}
+<p>
+  <span class="pill {{ 'ok' if verification.result == 'PASS' else 'bad' }}">{{ verification.result }}</span>
+  <span class="pill {{ 'ok' if verification.boundary_clean else 'bad' }}">boundary {{ 'clean' if verification.boundary_clean else 'DIRTY' }}</span>
+  <span class="pill {{ 'ok' if verification.suite_commit_sha == verification.suite_commit_sha_at_base else 'bad' }}">suite {{ 'unmoved' if verification.suite_commit_sha == verification.suite_commit_sha_at_base else 'MOVED' }}</span>
+  <span class="dim mono">contract v{{ verification.contract_version }}</span>
+</p>
+{% set v = verification.get('boundary_violations') or {} %}
+{% if v.get('protected') or v.get('outside_writable') or v.get('over_diff_limit') %}
+  <div class="note"><strong>Boundary violations</strong>
+    {% for path, glob in (v.get('protected') or {}).items() %}<div><code>{{ path }}</code> is protected by <code>{{ glob }}</code></div>{% endfor %}
+    {% for path in v.get('outside_writable') or [] %}<div><code>{{ path }}</code> is outside every writable path</div>{% endfor %}
+    {% if v.get('over_diff_limit') %}<div>{{ v.diff_lines }} changed lines exceeds the contract's limit</div>{% endif %}
+  </div>
+{% endif %}
+<table>
+<tr><th>command</th><th>exit</th><th>duration</th><th></th></tr>
+{% for c in verification.get('checks', []) %}
+<tr>
+  <td class="mono">{{ c.command }}{% if c.expanded and c.expanded != c.command %}<div class="dim">→ {{ c.expanded }}</div>{% endif %}</td>
+  <td>{% if c.skipped_reason %}<span class="pill dim">skip</span>{% else %}<span class="pill {{ 'ok' if c.exit_code == 0 else 'bad' }}">{{ c.exit_code }}</span>{% endif %}</td>
+  <td class="dim">{{ c.duration_ms }}ms</td>
+  <td class="dim">{{ c.skipped_reason or '' }}</td>
+</tr>
+{% else %}
+<tr><td colspan="4" class="dim">No checks ran{% if verification.verification_skipped %} — {{ verification.verification_skipped }}{% endif %}.</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{# ---- cost ---- #}
+<h2>Cost</h2>
+{% if not budget %}<p class="empty">No reservation recorded.</p>{% else %}
+<table>
+<tr><th>reserved</th><th>settled</th><th>true cost reported</th><th>status</th><th>model</th><th>duration</th></tr>
+{% for b in budget %}
+{% set over = b.marginal_cost_gbp is not none and b.estimate_gbp is not none and b.marginal_cost_gbp >= b.estimate_gbp %}
+<tr>
+  <td>£{{ '%.4f'|format(b.estimate_gbp) }}</td>
+  <td>£{{ '%.4f'|format(task.committed_gbp or 0) }}</td>
+  <td>{% if b.marginal_cost_gbp is not none %}£{{ '%.4f'|format(b.marginal_cost_gbp) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+  <td><span class="pill {{ 'ok' if b.status == 'SETTLED' else 'warn' }}">{{ b.status }}</span></td>
+  <td class="dim mono">{{ b.model or '—' }}</td>
+  <td class="dim">{{ b.total_duration_ms or '—' }}ms</td>
+</tr>
+{% if over %}<tr><td colspan="6"><div class="note">The settled figure equals the reservation.
+  <code>settle_model_budget</code> refuses an actual above the reservation and settles at the
+  cap, so a run that spent more is indistinguishable here from one that spent exactly the cap.
+  The runner records the true figure on the run's notes when it exceeded.</div></td></tr>{% endif %}
+{% endfor %}
+</table>
+<p class="dim">Run {{ task.run_id }} · {{ task.run_status }} ·
+  £{{ '%.4f'|format(task.committed_gbp or 0) }} of £{{ '%.4f'|format(task.spend_limit_gbp or 0) }} ·
+  {{ task.elapsed_seconds|duration }} wall clock · timeout {{ task.timeout_seconds }}s</p>
+{% endif %}
+
+{# ---- run steps ---- #}
+<h2>Run steps</h2>
+{% if not steps %}<p class="empty">No run.</p>{% else %}
+<table>
+<tr><th>#</th><th>step</th><th>written by</th><th>at</th></tr>
+{% for s in steps %}
+<tr><td>{{ s.sequence }}</td><td>{{ s.step_type }}</td>
+    <td class="mono dim">{{ s.actor }}</td>
+    <td class="dim">{{ s.created_at.strftime('%d %b %H:%M:%S') }}</td></tr>
+{% endfor %}
+</table>
+<p class="dim">The identity in <em>written by</em> is descriptive; the database enforced
+  the role. A patch and a verification cannot be written by the same one.</p>
+{% endif %}
+
+{# ---- contract ---- #}
+<h2>Contract</h2>
+<div class="grid">
+  <div class="panel"><strong>Writable</strong>
+    <ul class="mono">{% for g in contract.get('writable_paths', []) %}<li>{{ g }}</li>{% endfor %}</ul></div>
+  <div class="panel"><strong>Protected</strong>
+    <ul class="mono">{% for g in contract.get('protected_paths', []) %}<li>{{ g }}</li>{% endfor %}</ul></div>
+</div>
+<div class="panel"><strong>Verification</strong>
+  <ul class="mono">{% for c in contract.get('verification', []) %}<li>{{ c }}</li>{% endfor %}</ul>
+  <span class="dim">max {{ contract.get('max_diff_lines') }} changed lines ·
+    cap £{{ task.max_cost_gbp }} · timeout {{ task.timeout_seconds }}s</span></div>
+
+{# ---- spec ---- #}
+<h2>Spec as written</h2>
+<pre>{{ task.spec_md }}</pre>
+{% endblock %}
