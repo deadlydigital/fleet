@@ -5,6 +5,7 @@
     python run_task.py --task 7        run that task, if it is QUEUED
     python run_task.py --no-push       leave the branch local
     python run_task.py --queue nightly restrict to one queue
+    python run_task.py --reclaim       recover ticks that died
 
 Invoked by hand. There is no timer, and systemd/ carries no unit for this:
 the spec's build order puts the timer after three tasks have gone through by
@@ -22,7 +23,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from runner import cycle
+from runner import cycle, reclaim as reclaim_mod
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,7 +33,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--queue", help="claim only from this queue")
     p.add_argument("--no-push", action="store_true",
                    help="leave the finished branch local")
+    p.add_argument("--reclaim", action="store_true",
+                   help="recover tasks left RUNNING by a tick that died, and "
+                        "sweep the worktrees they pinned")
+    p.add_argument("--grace", type=int, default=reclaim_mod.DEFAULT_GRACE_SECONDS,
+                   help="seconds past a task's own wall clock before it counts "
+                        "as stale (minimum 300)")
     args = p.parse_args(argv)
+
+    if args.reclaim:
+        # Deliberately not folded into a normal tick. Reclaiming is a repair,
+        # and a repair that happens automatically before every run is one
+        # nobody reads the output of.
+        try:
+            results = reclaim_mod.reclaim(grace_seconds=args.grace,
+                                          only_task=args.task)
+            print()
+            reclaim_mod.sweep_worktrees()
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"reclaim failed: {exc}", file=sys.stderr)
+            return 2
+        for r in results:
+            print(f"task {r.task_id}: {r.outcome}"
+                  + (f", worktree removed" if r.worktree_removed else ""))
+        return 0
 
     try:
         result = cycle.tick(queue=args.queue, only_task=args.task,
