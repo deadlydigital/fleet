@@ -88,6 +88,7 @@ def templates() -> None:
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "004_console_reader.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "005_console_decisions.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "006_verdict_coverage.sql")
+    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "007_research_floor.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "tasks_seed.sql")

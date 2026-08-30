@@ -1,0 +1,103 @@
+# The research contract. A task that produces a document rather than a branch
+# of code.
+#
+# Everything about the runner is reused unchanged: the same tasks table, the
+# same claim-and-tick loop, worktree isolation, budget reservation, the hard
+# wall clock, cost recording, runs/run_steps history, and the same accept and
+# reject in the console. Only the acceptance shape differs.
+#
+# WHAT IS DIFFERENT, AND WHY EACH DIFFERENCE EXISTS
+#
+# repo: fleet. The document is committed to a branch in ~/fleet, not the
+# platform repo. That inverts the property every code task relied on -- for a
+# code task the acceptance check lived in a repository the agent could not
+# see. Here the agent works inside that repository, so contracts/** and
+# tests/** are on the fleet floor (007) and a contract making them writable
+# cannot be stored.
+#
+# ~/fleet has no git remote, so the branch is local. The document IS the
+# artifact; there is nowhere to push it and the runner does not treat that as
+# a failure.
+#
+# writable_paths is ONE file. Not a tree: a research task produces a document,
+# and anything else in the diff is something nobody asked for.
+#
+# THE AGENT HAS NO SHELL AND NO CREDENTIAL. It cannot reach a database. The
+# runner runs the queries named below, before the agent starts, as roles
+# holding SELECT and nothing else, and writes the results into the worktree as
+# a file. The contract is frozen by the database once the task is RUNNING, so
+# the agent cannot change what was asked. The cost is that it cannot follow a
+# hunch into a query nobody wrote; when the pack is wrong the task is
+# reworked.
+#
+# WEB ACCESS is new and is bounded by blast radius rather than by filtering.
+# A fetched page is untrusted text: it can make the document wrong, and that is
+# what review is for. It cannot do anything, because the agent has one
+# writable file, no shell, and no secret to leak -- .env is gitignored and so
+# absent from a fresh worktree. Contracts name the domains a task may reach.
+# The remaining exposure is reproducibility: a page cited today may not say the
+# same thing tomorrow, so the check requires retrieval dates on URLs.
+
+work_type: research
+repo: fleet
+# The fleet repository has no `main`: the work lives on
+# track-2-foundation. A task's base branch is immutable once it
+# exists, so getting this wrong means abandoning the task rather
+# than editing it -- which is the state machine treating the base
+# branch as part of a task's identity, correctly.
+base_branch: track-2-foundation
+contract_version: 1
+
+writable_paths:
+  - research/**
+
+protected_paths:
+  # the fleet floor, which the database requires by name
+  - contracts/**
+  - tests/**
+  - runner/**
+  - console/**
+  - detectors/**
+  - proposer/**
+  - systemd/**
+  - specs/**
+  - .env
+  - 001_v1_core.sql
+  - 001_v1_core_assertions.sql
+  - 001_v1_core_fixtures.sql
+  - 002_proposals.sql
+  - 002_proposals_assertions.sql
+  - 003_tasks.sql
+  - 003_tasks_assertions.sql
+  - 004_console_reader.sql
+  - 004_console_reader_assertions.sql
+  - 005_console_decisions.sql
+  - 005_console_decisions_assertions.sql
+  - 006_verdict_coverage.sql
+  - 006_verdict_coverage_assertions.sql
+  - 007_research_floor.sql
+  - 007_research_floor_assertions.sql
+
+# Read, never write. Snapshotted whole-tree before and after: --add-dir grants
+# read access and nothing makes it read-only, so a write here would land
+# outside the worktree's index and the derived diff would show nothing.
+readable_repos:
+  - deadly-digital-platform
+
+# No Bash. That absence is what keeps the agent inside its worktree, and it is
+# why the database reading happens in the runner instead.
+agent_tools:
+  - Read
+  - Grep
+  - Glob
+  - Write
+  - Edit
+  - WebSearch
+  - WebFetch
+
+verification:
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/research_document_shape.py
+
+max_diff_lines: 2000
+max_cost_gbp: 5.00
+timeout_seconds: 3600

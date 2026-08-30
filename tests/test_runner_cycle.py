@@ -123,7 +123,7 @@ def fake_agent(edits: dict[str, str] | None = None, *,
                cost_usd: float = 0.10, deletes: list[str] | None = None):
     """An agent that writes exactly what it is told to, and says what it likes."""
     def invoke(worktree: Path, prompt, timeout_seconds, model=None,
-               allowed_tools=()):
+               allowed_tools=(), readable=()):
         for path, body in (edits or {}).items():
             f = worktree / path
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -428,7 +428,8 @@ def test_the_agent_never_sees_the_linked_dependencies(dsns, settings, console,
 
     seen: dict[str, bool] = {}
 
-    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=()):
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=()):
         seen["linked_during_agent"] = (worktree / "platform/node_modules").exists()
         (worktree / "api/app.py").write_text(
             "def app():\n    '''new'''\n    return 1\n")

@@ -36,7 +36,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from runner import agent as agent_mod
-from runner import boundary, config, verify, worktree
+from runner import boundary, config, evidence, verify, worktree
 
 FORBIDDEN_RUN_STATUS = {"DEPLOYED"}
 
@@ -138,10 +138,28 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
     if not (repo / ".git").exists():
         raise RuntimeError(f"no git repository at {repo}")
 
-    # "The working tree is never touched" is asserted, not assumed.
-    before = worktree.Untouched.of(repo)
+    # "The working tree is never touched" is asserted, not assumed. The
+    # snapshot covers every file, not only tracked ones -- see
+    # worktree.Untouched.
+    #
+    # `readable_repos` are checkouts the agent may READ. --add-dir grants read
+    # access and nothing makes them read-only, so a write there would land
+    # outside the worktree's git index and the derived diff would show
+    # nothing. They are snapshotted for exactly that reason.
+    watched: dict[str, worktree.Untouched] = {}
+    watch_paths: dict[str, Path] = {task["repo"]: repo}
     fleet_repo = config.PROJECT_ROOT
-    fleet_before = worktree.Untouched.of(fleet_repo)
+    if fleet_repo.resolve() != repo.resolve():
+        watch_paths["fleet"] = fleet_repo
+    readable: list[Path] = []
+    for name in contract.get("readable_repos", []) or []:
+        other = Path(settings["repo_root"]) / name
+        if not other.exists():
+            raise RuntimeError(f"readable repo {name} is not at {other}")
+        readable.append(other)
+        watch_paths.setdefault(name, other)
+    for name, path in watch_paths.items():
+        watched[name] = worktree.Untouched.of(path)
 
     branch = worktree.branch_name(task["id"], task["attempts"])
     result.branch = branch
@@ -163,12 +181,28 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         if remaining <= 0:
             raise TimeoutError("wall clock exhausted before the agent started")
 
+        # The evidence pack: the RUNNER reads the databases, as roles holding
+        # SELECT and nothing else, and the agent reads a file. It never holds a
+        # credential and has no shell to use one with.
+        pack_path = contract.get("evidence_pack")
+        if contract.get("evidence_queries"):
+            results = evidence.run_queries(contract["evidence_queries"])
+            written = evidence.write_pack(
+                wt_path, pack_path or "EVIDENCE.md", results, task)
+            failed = [r.key for r in results if not r.ok]
+            log(f"  evidence pack {written.relative_to(wt_path)}: "
+                f"{len(results)} quer{'y' if len(results) == 1 else 'ies'}"
+                + (f", {len(failed)} FAILED: {', '.join(failed)}" if failed else ""))
+            result.notes.extend(
+                f"evidence query {k} failed and produced no reading" for k in failed)
+
         token, reserved = _reserve(task, run_id, log)
         prompt = agent_mod.build_prompt(task, contract)
         outcome = agent_mod.invoke(
             wt_path, prompt, int(remaining),
             allowed_tools=tuple(contract.get("agent_tools",
-                                             settings["agent_tools"])))
+                                             settings["agent_tools"])),
+            readable=tuple(readable))
         result.cost_gbp = _settle(token, reserved, outcome, run_id, settings,
                                   result, log)
         log(f"  agent exit {outcome.exit_code} in {outcome.duration_ms}ms"
@@ -265,10 +299,18 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             return
 
         # ---- the branch, and nothing beyond it ----
-        if push:
+        if push and worktree.has_remote(repo, settings["remote"]):
             worktree.push(repo, branch, task["base_branch"], settings["remote"])
             result.pushed = True
             log(f"  pushed {branch}")
+        elif push:
+            # ~/fleet has no remote. The document on the local branch IS the
+            # artifact; calling that a failed push would report a good run as
+            # a broken one.
+            result.notes.append(
+                f"{task['repo']} has no remote, so the branch is local. The "
+                f"document is the artifact.")
+            log(f"  branch {branch} left local ({task['repo']} has no remote)")
         else:
             result.notes.append("not pushed (--no-push); the branch is local")
             log(f"  branch {branch} left local")
@@ -279,8 +321,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         worktree.remove(repo, wt_path)
         if not keep_branch:
             worktree.delete_branch(repo, branch)
-        before.assert_unchanged(repo, f"{task['repo']} working tree")
-        fleet_before.assert_unchanged(fleet_repo, "the fleet repository")
+        for name, snap in watched.items():
+            snap.assert_unchanged(watch_paths[name], f"the {name} checkout")
 
 
 # ---- the database side ----------------------------------------------------

@@ -107,13 +107,22 @@ def parse_report(text: str) -> list[str] | None:
 
 def invoke(worktree: Path, prompt: str, timeout_seconds: int,
            model: str | None = None,
-           allowed_tools: tuple[str, ...] = DEFAULT_TOOLS) -> AgentResult:
-    """Run the agent in the worktree under a hard wall clock."""
+           allowed_tools: tuple[str, ...] = DEFAULT_TOOLS,
+           readable: tuple[Path, ...] = ()) -> AgentResult:
+    """Run the agent in the worktree under a hard wall clock.
+
+    `readable` adds directories the agent may look at -- a research task reads
+    the platform checkout. --add-dir grants READ, but it does not make the
+    directory read-only, so the runner snapshots every one of them before and
+    after: a write there would land outside the worktree's git index entirely
+    and the derived diff would show nothing.
+    """
     cmd = [
         os.environ.get("FLEET_CLAUDE_BIN", CLAUDE_BIN), "-p", prompt,
         "--output-format", "json",
         "--permission-mode", "acceptEdits",
         "--add-dir", str(worktree),
+        *[a for d in readable for a in ("--add-dir", str(d))],
         "--allowedTools", *allowed_tools,
     ]
     if model:

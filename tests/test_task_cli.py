@@ -65,7 +65,14 @@ def test_every_shipped_contract_matches_the_repo_it_names(cli, path):
     repo = Path.home() / contract["repo"]
     if not repo.exists():
         pytest.skip(f"{contract['repo']} not checked out")
-    missing = [g for g in contract["writable_paths"] + contract["protected_paths"]
+    # A research contract's writable path is the document it is about to
+    # write. Requiring it to exist first would require the output before the
+    # task that produces it. Protected paths must exist either way -- a floor
+    # naming a path that is not there protects nothing.
+    to_check = list(contract["protected_paths"])
+    if contract.get("work_type") != "research":
+        to_check += contract["writable_paths"]
+    missing = [g for g in to_check
                if not (repo / cli.config.glob_prefix(g)).exists()]
     assert missing == [], f"{path.name} names paths that do not exist: {missing}"
 

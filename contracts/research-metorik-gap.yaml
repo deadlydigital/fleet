@@ -1,0 +1,119 @@
+# Task contract: the Metorik feature gap list, redone by the runner.
+#
+# The same job a session produced by hand on 2026-08-28, so the two can be
+# compared. writable_paths is narrowed from research/** to the single file
+# this task declares: a proving run should fail if the agent wanders.
+#
+# The evidence pack is what dd_detector_login can actually see, which is
+# analytics_1.orders, analytics_2.orders, public.orders and public.tenants --
+# and NOTHING ELSE. No customers, no order_items, no products. That is a real
+# limit on what this document can establish and the agent is told to say so
+# rather than to guess, which is the behaviour the check looks for.
+
+work_type: research
+repo: fleet
+# The fleet repository has no `main`: the work lives on
+# track-2-foundation. A task's base branch is immutable once it
+# exists, so getting this wrong means abandoning the task rather
+# than editing it -- which is the state machine treating the base
+# branch as part of a task's identity, correctly.
+base_branch: track-2-foundation
+contract_version: 1
+
+writable_paths:
+  - research/metorik-gap-2026-08-30.md
+
+protected_paths:
+  # the fleet floor, which the database requires by name
+  - contracts/**
+  - tests/**
+  - runner/**
+  - console/**
+  - detectors/**
+  - proposer/**
+  - systemd/**
+  - specs/**
+  - .env
+  - 001_v1_core.sql
+  - 001_v1_core_assertions.sql
+  - 001_v1_core_fixtures.sql
+  - 002_proposals.sql
+  - 002_proposals_assertions.sql
+  - 003_tasks.sql
+  - 003_tasks_assertions.sql
+  - 004_console_reader.sql
+  - 004_console_reader_assertions.sql
+  - 005_console_decisions.sql
+  - 005_console_decisions_assertions.sql
+  - 006_verdict_coverage.sql
+  - 006_verdict_coverage_assertions.sql
+  - 007_research_floor.sql
+  - 007_research_floor_assertions.sql
+
+# Read, never write. Snapshotted whole-tree before and after: --add-dir grants
+# read access and nothing makes it read-only, so a write here would land
+# outside the worktree's index and the derived diff would show nothing.
+readable_repos:
+  - deadly-digital-platform
+
+# No Bash. That absence is what keeps the agent inside its worktree, and it is
+# why the database reading happens in the runner instead.
+agent_tools:
+  - Read
+  - Grep
+  - Glob
+  - Write
+  - Edit
+  - WebSearch
+  - WebFetch
+
+evidence_pack: research/EVIDENCE-metorik.md
+
+# Run by the RUNNER, before the agent starts, as read-only roles.
+evidence_queries:
+  - key: dd_order_column_population_tenant_2
+    reader: deadly_digital
+    sql: |
+      SELECT count(*)                                       AS orders,
+             count(payment_method)                          AS payment_method,
+             count(DISTINCT payment_method)                 AS payment_methods_distinct,
+             count(billing_country)                         AS billing_country,
+             count(DISTINCT billing_country)                AS countries_distinct,
+             count(coupon_code)                             AS coupon_code,
+             count(DISTINCT coupon_code)                    AS coupons_distinct,
+             count(*) FILTER (WHERE discount_total > 0)     AS discounted,
+             count(*) FILTER (WHERE refund_total > 0)       AS refunded,
+             count(*) FILTER (WHERE tax_total > 0)          AS taxed,
+             count(*) FILTER (WHERE shipping_total > 0)     AS shipped,
+             count(utm_source)                              AS utm_source,
+             min(created_at)                                AS earliest,
+             max(created_at)                                AS latest
+        FROM analytics_2.orders
+  - key: dd_order_column_population_tenant_1
+    reader: deadly_digital
+    sql: |
+      SELECT count(*) AS orders, count(coupon_code) AS coupon_code,
+             count(*) FILTER (WHERE refund_total > 0) AS refunded,
+             count(utm_source) AS utm_source
+        FROM analytics_1.orders
+  - key: dd_order_status_breakdown
+    reader: deadly_digital
+    sql: |
+      SELECT status, count(*) AS orders
+        FROM analytics_2.orders GROUP BY 1 ORDER BY 2 DESC
+  - key: dd_tenants
+    reader: deadly_digital
+    sql: SELECT id, name, created_at FROM public.tenants ORDER BY id
+  - key: fleet_open_issues
+    reader: fleet
+    sql: |
+      SELECT detector_key, issue_type, severity, status, occurrence_count,
+             current_magnitude, first_seen, last_seen
+        FROM issues ORDER BY last_seen DESC
+
+verification:
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/research_document_shape.py
+
+max_diff_lines: 2000
+max_cost_gbp: 5.00
+timeout_seconds: 3600
