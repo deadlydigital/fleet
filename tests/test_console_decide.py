@@ -258,6 +258,38 @@ def test_a_push_that_did_not_land_is_caught(dsns, repo, task, monkeypatch, conso
         " AND step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["n"] == 0
 
 
+def test_a_merge_that_could_not_run_is_not_reported_as_a_conflict(
+        dsns, repo, task, monkeypatch, console):
+    """The failure mode that actually happened in production.
+
+    ProtectSystem=strict left the repo read-only, git said "cannot lock ref
+    'ORIG_HEAD': Read-only file system", and it was reported as a conflict --
+    sending the reader to look at the diff instead of at the sandbox.
+    """
+    real = merge._git
+
+    def failing_git(r, *args, **kw):
+        # the real call is _git(repo, "-c", ..., "-c", ..., "merge", ...),
+        # so match on membership rather than on the first argument
+        if "merge" in args and "--abort" not in args:
+            return subprocess.CompletedProcess(
+                args, 128, "",
+                "fatal: cannot lock ref 'ORIG_HEAD': Read-only file system")
+        return real(r, *args, **kw)
+
+    monkeypatch.setattr(merge, "_git", failing_git)
+    r = merge.merge_and_push(repo, task["task"], task["branch"],
+                             task["base_sha"], task["tip"])
+    assert not r.ok
+    assert "not a conflict" in r.reason
+    assert "conflicted" not in r.reason
+    assert any("Read-only file system" in d for d in r.detail)
+    assert not r.merged and not r.pushed
+    assert console.execute(
+        "SELECT count(*) AS n FROM run_steps WHERE run_id=%s"
+        " AND step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["n"] == 0
+
+
 # ---- accept: the already-merged path -------------------------------------
 
 def test_an_already_merged_branch_records_without_merging(dsns, repo, task):

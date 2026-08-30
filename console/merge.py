@@ -152,15 +152,35 @@ def merge_and_push(repo: Path, task: dict, branch: str, recorded_base: str,
                       "-c", "user.email=console@fleet.local",
                       "merge", "--no-ff", "--no-edit", branch)
         if merged.returncode != 0:
-            _git(repo, "merge", "--abort")
+            # A failed merge is not necessarily a conflicted one, and saying
+            # "conflicted" when it was not sends the reader to look at the
+            # diff instead of at the actual error. This was not hypothetical:
+            # a read-only bind mount produced "cannot lock ref 'ORIG_HEAD'",
+            # which was reported as a conflict and cost real diagnosis time.
+            output = (merged.stdout or "") + (merged.stderr or "")
+            conflicted = ("CONFLICT" in output
+                          or "Automatic merge failed" in output
+                          or (repo / ".git" / "MERGE_HEAD").exists())
+            if conflicted:
+                _git(repo, "merge", "--abort")
+                headline = "the merge conflicted and was aborted"
+            else:
+                # Nothing to abort if it never began; try anyway and say so,
+                # because the alternative is leaving a half-merge unmentioned.
+                _git(repo, "merge", "--abort")
+                headline = ("the merge could not be attempted -- this is not a "
+                            "conflict, it is git failing outright")
             still_dirty = _git(repo, "status", "--porcelain").stdout.strip()
+            mid_merge = (repo / ".git" / "MERGE_HEAD").exists()
             return MergeOutcome(
                 False,
-                f"the merge conflicted and was aborted; nothing was recorded"
-                + ("" if not still_dirty else
-                   " -- WARNING: the working tree is still not clean, look at it"),
+                f"{headline}; nothing was recorded"
+                + ("" if not (still_dirty or mid_merge) else
+                   " -- WARNING: the checkout is not back to a clean state, "
+                   "look at it before doing anything else"),
                 base_sha_before=r.base_sha_before, branch_tip=r.branch_tip,
-                detail=[merged.stdout.strip()[-1500:], merged.stderr.strip()[-1500:]])
+                detail=[d for d in (merged.stdout.strip()[-1500:],
+                                    merged.stderr.strip()[-1500:]) if d])
         r.merged = True
         r.note("merged with --no-ff; no rebase and no force")
 

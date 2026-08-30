@@ -22,10 +22,25 @@ Restart=on-failure
 RestartSec=5s
 
 # It reads one database as a role that holds SELECT and nothing else, and it
-# reads git repositories on disk to render diffs. It writes nothing anywhere.
+# reads git repositories on disk to render diffs.
+#
+# It writes in exactly two places: the fleet database, as fleet_console, from
+# the accept and reject routes; and the platform checkout, when accept merges
+# a branch. Everything else on this filesystem is read-only to it.
+#
+# ReadWritePaths names the platform repository and nothing else -- not
+# /home/ubuntu, not the fleet repo it is running from. A merge writes inside
+# .git (refs, ORIG_HEAD, the index) and to the working tree, and that is the
+# whole of what it needs.
+#
+# Without this the merge fails with "cannot lock ref 'ORIG_HEAD': Read-only
+# file system", which is what happened the first time accept was pressed on a
+# task that needed a real merge. The failure was safe -- nothing was recorded
+# and the checkout was left clean -- but it was reported as a conflict, which
+# it was not. See console/merge.py.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=
+ReadWritePaths=/home/ubuntu/deadly-digital-platform
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectKernelTunables=true
