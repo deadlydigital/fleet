@@ -467,6 +467,73 @@ deployed database.
 Cost is converted from the CLI's USD at a stated constant in `runner.yaml`,
 not a live rate. Treat every cost in the database as accurate to about that.
 
+## Contracts are scoped to what can actually verify them
+
+`contracts/deadly-digital-platform.yaml` is the frontend, and that is the
+whole design rather than a limitation to fix later. **Verification scope and
+writable scope must match.** A contract declaring `api/**` writable while
+verifying with vitest would accept a backend change on the strength of tests
+that never executed it, and hand back a PASS with full provenance attached.
+That is worse than no gate, because the provenance makes it convincing.
+
+    deadly-digital-platform.yaml      platform/{app,components,lib} —
+                                      tsc --noEmit and vitest run, both green
+    deadly-digital-platform-api.yaml  api/{app.py,services,analytics} —
+                                      compile, and a lint ratchet. No test gate,
+                                      and it says so.
+
+Neither backend command was lowered to make it pass, because neither can be
+made to pass (measured 30 Aug 2026 at `921e22b`):
+
+* `pytest api/tests/ -q` is **red by baseline everywhere**, not merely here:
+  `api/CLAUDE.md` records ~81 pre-existing failures on a clean database from
+  CI or a dev machine. Standing up the test Postgres changes nothing. This
+  host must not run the suite at all -- it is the app host.
+* `ruff check api/` reports 402 findings of which **337 are unreachable**
+  from any contract: 261 in `api/tests/` and `api/alembic/`, which are
+  protected paths, and 65 in files no contract makes writable. A gate that
+  fails every task for a mess the task may not touch is not strict, it is
+  unreachable, and an unreachable gate teaches everyone to ignore it.
+
+Both are recorded, with what would fix them, as `TEST-004` in the platform
+repository's `docs/TODO.md`.
+
+## Lint is aimed at the change, as a ratchet
+
+`{changed_files}` in a verification command expands to the paths **the runner
+derived from git** -- never the agent's account -- with an optional suffix
+filter, `{changed_files:.py}`. A check whose filter matches nothing is
+recorded as *skipped* rather than passed, and **a run in which every check
+skipped does not pass at all**: nothing looked at the change, so nothing was
+established.
+
+Checks also receive `FLEET_BASE_SHA`, `FLEET_HEAD_SHA` and
+`FLEET_CHANGED_FILES` in the environment, from the same derivation.
+`contracts/checks/ruff_no_new_findings.py` uses them to lint each changed
+file at head and at base and fail only on findings the change introduced.
+
+A ratchet rather than a clean-file rule, on evidence:
+`api/analytics/routes/revenue.py` carries a pre-existing `I001`, so a
+one-line docstring fix there would fail a clean-file gate for history it did
+not create -- and satisfying such a gate means every task arrives carrying an
+unrelated import-sort, which is the diff-widening
+`specs/revenue-granularity-doc.md` explicitly forbids. **A gate that
+contradicts the spec it enforces gets satisfied by widening the diff.** No
+rule is disabled; the gate is pointed at the diff.
+
+## Dependencies are linked in after the diff, never before
+
+`node_modules` and `api/.venv` are gitignored, so a fresh worktree has
+neither and `tsc` cannot start. `worktree_links` in a contract points the
+worktree at the checkout's installed tree.
+
+**The timing is the safety property, not the symlink.** The runner creates
+these *after* the diff is derived and the boundary judged, so the agent never
+sees them. A write through one would land outside the worktree's git index
+entirely -- not merely in an ignored path -- and the derived diff would show
+nothing at all. Creating it any earlier opens a hole no later check can
+close. `test_the_agent_never_sees_the_linked_dependencies` is that property.
+
 ## Tests
 
     .venv/bin/python -m pytest tests/ -q

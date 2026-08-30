@@ -409,3 +409,84 @@ def test_pushing_a_name_that_is_not_a_task_branch_is_refused(platform_repo):
     from runner import worktree
     with pytest.raises(worktree.PushRefused):
         worktree.push(platform_repo, "main-ish", "main")
+
+
+# ---- dependency links are created after the agent, not before -------------
+
+def test_the_agent_never_sees_the_linked_dependencies(dsns, settings, console,
+                                                      monkeypatch, tmp_path):
+    """The timing IS the safety property.
+
+    A write through the link would land outside the worktree's git index --
+    not merely in an ignored path -- so the derived diff would show nothing.
+    The only thing preventing that is that the link does not exist yet.
+    """
+    deps = tmp_path / "fake_node_modules"
+    (deps / "pkg").mkdir(parents=True)
+    c = contract(worktree_links={"platform/node_modules": str(deps)})
+    queue_task(console, contract=c)
+
+    seen: dict[str, bool] = {}
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=()):
+        seen["linked_during_agent"] = (worktree / "platform/node_modules").exists()
+        (worktree / "api/app.py").write_text(
+            "def app():\n    '''new'''\n    return 1\n")
+        return agent_mod.AgentResult(exit_code=0, timed_out=False,
+                                     duration_ms=10, text="done", cost_usd=0.01)
+
+    result = run_tick(monkeypatch, invoke)
+    assert seen["linked_during_agent"] is False
+    assert result.outcome == "READY_FOR_REVIEW", result.reason
+
+
+def test_the_link_exists_for_verification_and_is_gone_afterwards(
+        dsns, settings, console, monkeypatch, tmp_path, platform_repo):
+    deps = tmp_path / "fake_node_modules"
+    (deps / "pkg").mkdir(parents=True)
+    c = contract(
+        worktree_links={"platform/node_modules": str(deps)},
+        verification=["test -e platform/node_modules/pkg"])
+    queue_task(console, contract=c)
+
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+    assert result.outcome == "READY_FOR_REVIEW", result.reason
+    assert result.verification.passed          # the check saw the link
+    assert (deps / "pkg").exists()             # and the real tree survived
+
+
+# ---- verification aimed at the change ------------------------------------
+
+def test_a_check_filtered_to_untouched_file_types_is_skipped(
+        dsns, settings, console, monkeypatch):
+    c = contract(verification=["true", "false # {changed_files:.tsx}"])
+    queue_task(console, contract=c)
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+    assert result.outcome == "READY_FOR_REVIEW", result.reason
+    assert [ch.ran for ch in result.verification.checks] == [True, False]
+
+
+def test_a_run_where_every_check_was_skipped_fails(dsns, settings, console,
+                                                   monkeypatch):
+    """Nothing looked at this change, so it is not verified."""
+    c = contract(verification=["true # {changed_files:.tsx}"])
+    queue_task(console, contract=c)
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+    assert result.outcome == "FAILED"
+    assert result.reason == "verification failed"
+
+
+def test_checks_are_given_the_derived_change_not_the_agents_account(
+        dsns, settings, console, monkeypatch):
+    """$FLEET_CHANGED_FILES comes from git, so a lying agent cannot narrow
+    what the lint gate looks at."""
+    c = contract(verification=[
+        'test "$FLEET_CHANGED_FILES" = "api/app.py" && test -n "$FLEET_BASE_SHA"'])
+    queue_task(console, contract=c)
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        reported=[]))                      # the agent claims it changed nothing
+    assert result.outcome == "READY_FOR_REVIEW", result.reason

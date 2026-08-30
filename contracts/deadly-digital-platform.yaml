@@ -1,71 +1,83 @@
-# The default acceptance contract for deadly-digital-platform.
+# The default contract for deadly-digital-platform.
 #
-# Paths here were checked against the working tree, not written from memory.
-# The spec's example named alembic/**, docker-compose.yml and dd/detectors/**;
-# none of the three exists at those paths. Migrations are api/alembic/** and
-# api/analytics/migrations/**, there is no compose file at the repo root, and
-# the detectors are in the fleet repo, which a task against this repo cannot
-# reach in the first place.
+# **Frontend only, and that is the point.** Verification scope and writable
+# scope have to match. This contract verifies with the platform's typecheck
+# and unit suite, so it may only make the platform writable -- a contract
+# declaring api/** writable while verifying with vitest would let the runner
+# accept a backend change on the strength of tests that never executed it,
+# and hand you a PASS with provenance attached. That is worse than no gate.
 #
-# protected_paths must name every glob in protected_path_floor for this repo
-# or the task cannot be inserted. Listing them here rather than relying on the
-# floor implicitly is deliberate: the contract is the artifact a review reads
-# to find out what the agent was allowed to do.
+# Backend work uses contracts/deadly-digital-platform-api.yaml, which says
+# plainly what it can and cannot establish.
+#
+# WHY NOT THE BACKEND SUITE (measured 2026-08-30 at 921e22b)
+# ----------------------------------------------------------
+# `pytest api/tests/ -q` cannot pass anywhere today, not merely here.
+# api/CLAUDE.md records the known-good baseline from CI or a dev machine on a
+# clean database: tests/unit 4 failed, tests/api 59 failed, tests/integration
+# 14 failed, tests/analytics 4 failed. Roughly 81 pre-existing failures, so
+# the command exits non-zero on CI too. Bringing up the test Postgres would
+# not change that, and this host must not run the suite at all -- it is the
+# app host, and api/CLAUDE.md logs three incidents including an allocation
+# failure with 63 MB free beside a live API.
+#
+# `ruff check api/` cannot be turned green by any agent under any contract:
+# 261 of its 402 errors are inside api/tests/ and api/alembic/, which are
+# protected paths, and another 65 are in files no contract declares writable.
+# 65 of 402 are reachable. Aiming lint at the changed files instead is what
+# the api contract does.
+#
+# Neither gate is lowered here. Both are recorded as unusable, with what
+# would fix them, in docs/TODO.md in the platform repository.
 
-work_type: dd_feature
+work_type: dd_frontend
 repo: deadly-digital-platform
 base_branch: main
+contract_version: 2
 
 writable_paths:
-  - api/app.py
-  - api/services/**
-  # enumerated rather than api/analytics/**, because that would have
-  # swallowed api/analytics/migrations/** and made the contract contradict
-  # itself. The insert-time check refuses such a contract; this is what it
-  # forced.
-  - api/analytics/routes/**
-  - api/analytics/services/**
-  - api/analytics/models.py
   - platform/app/**
   - platform/components/**
   - platform/lib/**
 
 protected_paths:
-  # the floor, and the reason each is on it
-  - api/tests/**                    # the suite that judges the work
-  - api/pytest.ini                  # an ignore rule here passes everything
-  - api/ruff.toml                   # same, for lint
-  - api/alembic/**                  # a schema change is a separate decision
-  - api/analytics/migrations/**     # the analytics schema, same reason
-  - platform/__tests__/**           # the platform suite
-  - platform/vitest.config.ts       # platform suite configuration
-  - platform/playwright.config.ts   # end-to-end configuration
-  # not floor, but not a feature's business either
+  # The floor, which the database requires by name. Each is on it because
+  # editing it defeats the thing that judges the work.
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  # The backend is not this contract's business. Nothing here can verify a
+  # change to it, so nothing here may make one.
+  - api/**
+  # Build, deploy and dependency manifests: a feature that needs one of these
+  # is a change that needs a person, not a wider glob.
   - .github/**
-  - api/Dockerfile
-  - api/deploy.sh
-  - api/docker-compose.yml
-  - platform/docker-compose.yml
   - platform/next.config.js
   - platform/package.json
   - platform/package-lock.json
+  - platform/docker-compose.yml
+  - platform/Dockerfile
+  - platform/tsconfig.json
 
-# WARNING: neither of these passes on a clean checkout of main today, so a
-# task using this contract as-is will fail verification for reasons that have
-# nothing to do with the agent. Measured 2026-08-30 at 921e22b:
-#
-#   ruff check api/        402 pre-existing errors
-#   pytest api/tests/ -q   needs a Postgres on 5433 that is not running, and
-#                          the suite does not clear its own 30% coverage gate
-#
-# They are left here because they are the right commands once the repository
-# can pass them, and replacing them with something weaker would hide that it
-# cannot. Until then, give a task its own contract with verification that
-# holds -- contracts/dd-docstring-proving.yaml is a worked example, and its
-# third command fails on main and passes only on the intended change.
+# node_modules is gitignored, so a fresh worktree has none and neither tsc
+# nor vitest can start. The runner links the checkout's own tree in AFTER the
+# diff is derived and the boundary judged, so the agent never sees it.
+worktree_links:
+  platform/node_modules: /home/ubuntu/deadly-digital-platform/platform/node_modules
+
+# Both measured green on a worktree of main at 921e22b on 2026-08-30:
+# tsc exits 0, vitest runs 19 files and 298 tests in 65s, and the checkout is
+# untouched afterwards. There is no lint step because the platform has no
+# eslint: `next lint` is unconfigured and prompts interactively, and eslint
+# is not even a dependency. Inventing one here would be a gate nobody wrote.
 verification:
-  - ruff check api/
-  - pytest api/tests/ -q
+  - cd platform && ./node_modules/.bin/tsc --noEmit
+  - cd platform && ./node_modules/.bin/vitest run --reporter=dot
 
 max_diff_lines: 800
 max_cost_gbp: 3.00

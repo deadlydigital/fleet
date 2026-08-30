@@ -93,3 +93,51 @@ def push(repo: Path, branch: str, base_branch: str, remote: str = "origin") -> s
     out = git(repo, "push", "--set-upstream", remote,
               f"refs/heads/{branch}:refs/heads/{branch}")
     return out.strip()
+
+
+def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
+    """Symlink installed dependencies into the worktree, for verification only.
+
+    `node_modules` and `.venv` are gitignored, so a fresh worktree has
+    neither, and the frontend's tsc and vitest cannot run without the first.
+    Copying gigabytes per task is not an option and `npm ci` per task is
+    slower than the tests it enables, so the runner points at the checkout's
+    own installed tree.
+
+    **Timing is the safety property, not the symlink.** The caller creates
+    these AFTER the diff has been derived and the boundary judged, so the
+    agent never sees them. That matters: a write through this link would land
+    outside the worktree's git index entirely -- not merely in an ignored
+    path -- and the derived diff would show nothing at all. Creating it before
+    the agent ran would open a hole no later check could close.
+
+    Refuses a target outside the worktree, and refuses to replace anything
+    that already exists.
+    """
+    created: list[Path] = []
+    root = worktree.resolve()
+    for target, source in (links or {}).items():
+        dest = (worktree / target).resolve()
+        if not str(dest).startswith(str(root) + "/"):
+            raise GitError(f"worktree link {target!r} resolves outside the worktree")
+        src = Path(source)
+        if not src.exists():
+            raise GitError(f"worktree link source {source} does not exist")
+        if dest.exists() or dest.is_symlink():
+            raise GitError(f"worktree link {target!r} already exists")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.symlink_to(src)
+        created.append(dest)
+    return created
+
+
+def unlink_dependencies(created: list[Path]) -> None:
+    """Remove what link_dependencies made, and only that.
+
+    Each entry is unlinked rather than deleted recursively: following one of
+    these into the checkout's real node_modules with rmtree would delete the
+    dependencies of the repository itself.
+    """
+    for path in created:
+        if path.is_symlink():
+            path.unlink()

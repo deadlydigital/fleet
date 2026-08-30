@@ -227,14 +227,31 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         log("  boundary clean")
 
         # ---- verification, on a tree whose suite is known unmoved ----
+        #
+        # Dependencies are linked in HERE, after the diff is derived and
+        # judged, and never before: the agent has finished and cannot write
+        # through them. See worktree.link_dependencies.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("wall clock exhausted before verification")
-        verification = verify.run(wt_path, contract["verification"], remaining)
+        links = worktree.link_dependencies(wt_path, contract.get("worktree_links", {}))
+        if links:
+            log(f"  linked {len(links)} dependency tree(s) for verification")
+        try:
+            verification = verify.run(
+                wt_path, contract["verification"], remaining,
+                changed=[p for p in change.paths
+                         if change.status.get(p) != "D"],
+                facts={"FLEET_BASE_SHA": base_sha,
+                       "FLEET_HEAD_SHA": change.head_sha,
+                       "FLEET_TASK_ID": str(task["id"])})
+        finally:
+            worktree.unlink_dependencies(links)
         result.verification = verification
         for check in verification.checks:
-            log(f"  {'ok  ' if check.passed else 'FAIL'} {check.command} "
-                f"({check.duration_ms}ms)")
+            mark = "skip" if not check.ran else "ok  " if check.passed else "FAIL"
+            log(f"  {mark} {check.command} ({check.duration_ms}ms)"
+                + (f"  -- {check.skipped_reason}" if not check.ran else ""))
             if not check.passed:
                 log("        " + check.output_tail.strip().splitlines()[-1][:150]
                     if check.output_tail.strip() else "")
@@ -381,8 +398,9 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
         "suite_commit_sha_at_base": boundary.suite_digest(
             wt_path, base_sha, contract["protected_paths"]),
         "contract_version": int(contract.get("contract_version", 1)),
-        "checks": [{"command": c.command, "exit_code": c.exit_code,
-                    "duration_ms": c.duration_ms, "timed_out": c.timed_out,
+        "checks": [{"command": c.command, "expanded": c.expanded,
+                    "exit_code": c.exit_code, "duration_ms": c.duration_ms,
+                    "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                     "output_tail": c.output_tail} for c in verification.checks],
         "verification_skipped": verification.skipped_reason,
         "boundary_violations": {

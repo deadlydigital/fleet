@@ -1,0 +1,77 @@
+# The backend contract. Narrower than it looks, and it says why.
+#
+# WHAT THIS CAN ESTABLISH
+#   the changed files still parse
+#   the changed files are clean under the project's own ruff.toml
+#
+# WHAT IT CANNOT
+#   that anything still works. There is no test gate, because the api suite
+#   has roughly 81 pre-existing failures on a clean database from CI or a dev
+#   machine, and this host must not run it at all. Until that baseline is
+#   green a passing run here means "this change did not break parsing or
+#   lint", and nothing more. Read a branch from this contract accordingly.
+#
+# WHY LINT IS AIMED AT THE CHANGED FILES
+#
+# `ruff check api/` reports 402 errors on a clean checkout of main. 261 of
+# them are inside api/tests/ and api/alembic/, which are protected paths, and
+# 65 more are in files no contract declares writable. An agent could fix 65
+# of 402, so a repo-wide gate fails every task for a mess the task could not
+# touch, and would keep failing after a perfect run.
+#
+# So lint is aimed at the change: ruff runs under the project's own
+# unmodified ruff.toml, and the gate is that the change introduces no finding
+# that was not already there. A ratchet rather than a clean-file rule,
+# because the files worth changing are often already dirty --
+# api/analytics/routes/revenue.py carries a pre-existing I001, so a one-line
+# docstring fix there would fail a must-be-clean gate for history it did not
+# create. Worse, satisfying such a gate means every task arrives carrying an
+# unrelated import-sort, which is exactly the widening
+# specs/revenue-granularity-doc.md tells the agent not to do. A gate that
+# contradicts the spec it enforces gets satisfied by widening the diff.
+#
+# No rule is disabled and no threshold is lowered. The backlog is a separate
+# tracked job; see docs/TODO.md in the platform repository.
+#
+# `{changed_files:.py}` expands to the paths the RUNNER derived from git,
+# never the agent's account of what it changed. If no .py file changed, the
+# check is recorded as skipped rather than passed, and a run in which every
+# check skipped does not pass at all.
+
+work_type: dd_api
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 1
+
+writable_paths:
+  - api/app.py
+  - api/services/**
+  - api/analytics/routes/**
+  - api/analytics/services/**
+  - api/analytics/models.py
+
+protected_paths:
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  - platform/**
+  - .github/**
+  - api/Dockerfile
+  - api/deploy.sh
+  - api/docker-compose.yml
+  - api/worker.py
+
+# api/.venv is gitignored and absent from a worktree, so the interpreter and
+# ruff are named by absolute path. They are read, never written.
+verification:
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/ruff_no_new_findings.py
+
+max_diff_lines: 400
+max_cost_gbp: 3.00
+timeout_seconds: 1800

@@ -54,16 +54,42 @@ def test_add_queues_a_task(cli, spec_file, console, capsys):
     assert row["timeout_seconds"] <= 3600
 
 
-def test_the_shipped_contract_matches_the_repo_it_names(cli):
+CONTRACTS = sorted((PROJECT_ROOT / "contracts").glob("*.yaml"))
+
+
+@pytest.mark.parametrize("path", CONTRACTS, ids=lambda p: p.stem)
+def test_every_shipped_contract_matches_the_repo_it_names(cli, path):
     """A spec written from memory contains wrong paths. This is the check that
-    the shipped contract does not."""
-    contract = yaml.safe_load(CONTRACT.read_text())
-    repo = Path.home() / "deadly-digital-platform"
+    the shipped contracts do not."""
+    contract = yaml.safe_load(path.read_text())
+    repo = Path.home() / contract["repo"]
     if not repo.exists():
-        pytest.skip("deadly-digital-platform not checked out")
+        pytest.skip(f"{contract['repo']} not checked out")
     missing = [g for g in contract["writable_paths"] + contract["protected_paths"]
                if not (repo / cli.config.glob_prefix(g)).exists()]
-    assert missing == [], f"contract names paths that do not exist: {missing}"
+    assert missing == [], f"{path.name} names paths that do not exist: {missing}"
+
+
+@pytest.mark.parametrize("path", CONTRACTS, ids=lambda p: p.stem)
+def test_every_shipped_contract_links_only_to_things_that_exist(cli, path):
+    contract = yaml.safe_load(path.read_text())
+    missing = [f"{t} -> {s}" for t, s in (contract.get("worktree_links") or {}).items()
+               if not Path(s).exists()]
+    assert missing == [], f"{path.name} links to missing sources: {missing}"
+
+
+def test_the_default_contract_verifies_what_it_makes_writable(cli):
+    """Verification scope and writable scope must match.
+
+    A contract declaring api/** writable while verifying with vitest would
+    accept a backend change on the strength of tests that never executed it.
+    """
+    contract = yaml.safe_load(CONTRACT.read_text())
+    commands = " ".join(contract["verification"])
+    assert "vitest" in commands and "tsc" in commands
+    assert all(g.startswith("platform/") for g in contract["writable_paths"]), \
+        "the default contract verifies the frontend, so only the frontend may be writable"
+    assert "api/**" in contract["protected_paths"]
 
 
 def test_add_refuses_a_contract_that_leaves_the_suite_writable(cli, spec_file,
