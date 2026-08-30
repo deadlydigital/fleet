@@ -91,7 +91,7 @@ def repo_roots() -> set[str]:
     evidence came from.
     """
     roots = set()
-    for repo in (PLATFORM, FLEET):
+    for repo in (Path.cwd(), PLATFORM, FLEET):
         if repo.exists():
             roots |= {d.name for d in repo.iterdir()
                       if d.is_dir() and not d.name.startswith(".")}
@@ -143,7 +143,12 @@ def evidence_tokens(text: str) -> set[str]:
 
 
 def resolves(rel: str) -> bool:
-    for root in (PLATFORM, FLEET):
+    # The worktree FIRST. A document citing a file in its own change -- the
+    # evidence pack, a sibling document -- must resolve against the tree being
+    # checked, not against the main checkout where that file does not exist
+    # yet. Omitting this failed a correct document for citing the readings it
+    # was given.
+    for root in (Path.cwd(), PLATFORM, FLEET):
         if (root / rel).exists():
             return True
         if next(iter(root.rglob(Path(rel).name)), None):
