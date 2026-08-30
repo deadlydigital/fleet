@@ -25,6 +25,12 @@
 {# ---- the two actions, and only these two ---- #}
 {% if task.status == 'READY_FOR_REVIEW' %}
 <h2>Decide</h2>
+<p class="dim">Accepting re-runs the contract's verification against the tree
+  this branch produces in <code>{{ task.base_branch }}</code> as it stands
+  now, in a throwaway worktree, before anything is merged. The branch
+  verifying on its own is a fact about the branch; a clean merge into broken
+  code is what the base moving underneath actually costs. Expect it to take as
+  long as the contract's checks do.</p>
 <div class="decide">
   <form method="post" action="/tasks/{{ task.id }}/accept">
     <input type="hidden" name="branch" value="{{ task.branch_name }}">
@@ -258,6 +264,20 @@
   <span class="dim">reviewed in {{ s.payload.decision_seconds }}s after waiting
     {{ (s.payload.waited_seconds or 0) | round(0) }}s in READY_FOR_REVIEW</span>
   {% if s.payload.note %}<div class="dim">{{ s.payload.note }}</div>{% endif %}
+  {% if s.payload.merge and s.payload.merge.reverified %}
+    {% set rv = s.payload.merge.reverified %}
+    <div class="dim">Re-verified against {{ task.base_branch }} at
+      {{ (rv.base_sha or '')[:12] }} before merging — the contract's checks run
+      on the MERGED tree, not on the branch, because the branch verifying on its
+      own says nothing about what it does to the base.
+      {% if rv.skipped_reason %}<em>{{ rv.skipped_reason }}</em>{% else %}
+      {{ rv.checks|length }} check{{ '' if rv.checks|length == 1 else 's' }} in
+      {{ rv.duration_s }}s{% endif %}</div>
+    {% for c in rv.checks %}
+    <div class="dim mono">  {{ 'ok' if c.exit_code == 0 else 'FAIL' }}
+      ({{ c.duration_ms }}ms) {{ c.command }}</div>
+    {% endfor %}
+  {% endif %}
   {% if s.payload.merge %}
     <div class="dim mono">
       {% if s.payload.merge.already_merged %}no merge performed — the branch was

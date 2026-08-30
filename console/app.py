@@ -20,7 +20,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from console import config, db, decide, gitdiff, merge, queries
+from console import config, db, decide, gitdiff, merge, queries, reverify
 
 RUNNING_AS: str = ""
 WRITING_AS: str = ""
@@ -200,6 +200,12 @@ def _take_outcome(task_id: int) -> dict[str, Any] | None:
     return _OUTCOMES.pop(task_id, None)
 
 
+def _runner_setting(key: str) -> str:
+    import yaml
+    return yaml.safe_load(
+        (config.PROJECT_ROOT / "runner.yaml").read_text())[key]
+
+
 def _load(task_id: int):
     task = queries.task_detail(task_id)
     if task is None:
@@ -229,19 +235,47 @@ def accept(request: Request, task_id: int,
         return render(request, "missing.html", status_code=404,
                       what=f"task {task_id}")
 
+    repo = config.repo_root() / task["repo"]
+    contract = task["acceptance_contract"] or {}
+    recorded_base = (patch or {}).get("base_commit_sha", "")
+    recorded_patch = (patch or {}).get("patch_commit_sha", "")
+
+    # BEFORE the merge, never after. The contract's own verification, run
+    # against the tree this branch would actually produce in the base as it
+    # stands now -- not against the branch, which would only re-establish what
+    # the original run already established.
+    #
+    # It happens in a throwaway worktree, so a failure leaves the checkout
+    # untouched and records nothing, exactly as a conflicting merge does.
+    check = merge.preflight(repo, task, branch, recorded_base, recorded_patch,
+                            (patch or {}).get("branch_point_sha", ""))
+    again = None
+    if check.ok and not check.already_merged:
+        again = reverify.run(
+            repo, Path(_runner_setting("worktree_root")), task, contract, branch,
+            recorded_base=recorded_base,
+            changed_files=[p for p in (patch or {}).get("files_changed", [])
+                           if (patch or {}).get("file_status", {}).get(p) != "D"])
+
     result = merge.merge_and_push(
-        config.repo_root() / task["repo"], task, branch,
-        recorded_base=(patch or {}).get("base_commit_sha", ""),
-        recorded_patch=(patch or {}).get("patch_commit_sha", ""))
+        repo, task, branch,
+        recorded_base=recorded_base, recorded_patch=recorded_patch,
+        branch_point=(patch or {}).get("branch_point_sha", ""),
+        reverification=again)
 
     if not result.ok:
         _OUTCOMES[task_id] = {
             "ok": False, "headline": "Not merged, and nothing recorded",
             "loud": result.merged or result.pushed,
-            "detail": [result.reason] + [d for d in result.detail if d]}
+            "detail": ([result.reason] + [d for d in result.detail if d]
+                       + ([f"re-verification: {c['command']} exited "
+                           f"{c['exit_code']}"
+                           for c in (again.checks if again else [])
+                           if c["exit_code"] != 0]))}
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     merge_record = {
+        "reverified": again.as_record() if again is not None else None,
         "already_merged": result.already_merged,
         "merge_commit": result.base_sha_after,
         "base_before": result.base_sha_before,

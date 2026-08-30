@@ -119,6 +119,22 @@ def create(repo: Path, root: Path, branch: str, base_branch: str) -> tuple[Path,
     return path, base_sha
 
 
+def create_detached(repo: Path, root: Path, name: str, at: str) -> tuple[Path, str]:
+    """A throwaway worktree at a commit, on no branch.
+
+    Detached because the base branch is already checked out in the main
+    working copy and git will not check the same branch out twice. This is
+    where a merge is tried before it is made: the trial happens somewhere that
+    can be deleted, so a merge that should not have happened leaves nothing.
+    """
+    sha = git(repo, "rev-parse", at).strip()
+    path = root / name
+    if path.exists():
+        shutil.rmtree(path)
+    git(repo, "worktree", "add", "--quiet", "--detach", str(path), sha)
+    return path, sha
+
+
 def remove(repo: Path, path: Path, keep_branch: bool = True) -> None:
     git(repo, "worktree", "remove", "--force", str(path), check=False)
     if path.exists():

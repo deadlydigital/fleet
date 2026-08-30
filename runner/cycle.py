@@ -183,6 +183,19 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
 
     wt_path, base_sha = worktree.create(
         repo, wt_root, branch, task["base_branch"])
+    # The point the branch was cut from, kept separately from the sha the
+    # agent's diff is measured against. They start equal and stop being equal
+    # the moment anything is committed before the agent runs -- the evidence
+    # pack does exactly that -- and they answer different questions:
+    #
+    #   branch_point_sha  where the branch left the base. The only thing a
+    #                     merge base can ever equal.
+    #   base_commit_sha   what the agent's work is diffed against.
+    #
+    # Conflating them made task 5 unacceptable: its recorded base was the
+    # evidence commit, which sits ON the branch, so no merge base could match
+    # it and the guard refused a branch nothing was wrong with.
+    branch_point_sha = base_sha
     log(f"  worktree {wt_path}  off {task['base_branch']} @ {base_sha[:12]}")
 
     keep_branch = False
@@ -243,7 +256,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             result.outcome = "FAILED"
             result.reason = (f"agent exceeded the {task['timeout_seconds']}s "
                              f"wall clock and was killed")
-            _record_patch(task, run_id, base_sha, None, outcome, log)
+            _record_patch(task, run_id, base_sha, None, outcome, log,
+                          branch_point_sha=branch_point_sha)
             return
 
         # ---- what it actually did ----
@@ -252,7 +266,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         change = boundary.derive(wt_path, base_sha)
         change.reported = outcome.reported_paths
         result.change = change
-        _record_patch(task, run_id, base_sha, change, outcome, log)
+        _record_patch(task, run_id, base_sha, change, outcome, log,
+                      branch_point_sha=branch_point_sha)
 
         if change.empty:
             result.outcome = "FAILED"
@@ -419,7 +434,8 @@ def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
     return settled
 
 
-def _record_patch(task, run_id, base_sha, change, outcome, log) -> None:
+def _record_patch(task, run_id, base_sha, change, outcome, log,
+                  *, branch_point_sha: str = "") -> None:
     """PATCH_PROPOSED, written as fleet_agent.
 
     The derived facts and the agent's own account both go in, labelled, so
@@ -428,6 +444,7 @@ def _record_patch(task, run_id, base_sha, change, outcome, log) -> None:
     """
     payload: dict[str, Any] = {
         "base_commit_sha": base_sha,
+        "branch_point_sha": branch_point_sha or base_sha,
         "agent_exit_code": outcome.exit_code,
         "agent_timed_out": outcome.timed_out,
         "agent_duration_ms": outcome.duration_ms,

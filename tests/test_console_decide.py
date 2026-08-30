@@ -203,11 +203,13 @@ def test_a_checkout_on_another_branch_refuses(dsns, repo, task):
     assert not r.ok and "Refusing to switch" in r.reason
 
 
-def test_a_rewritten_branch_refuses_on_the_merge_base(dsns, repo, task):
-    """The merge base must be what the run recorded."""
+def test_a_branch_whose_tip_moved_is_refused(dsns, repo, task):
+    """The primary guard is now the tip, not the merge base: it is the check
+    that says "this is the code that was verified", and it catches a commit
+    appended after verification, which the merge-base check did not."""
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             "0" * 40, task["tip"])
-    assert not r.ok and "the run recorded" in r.reason
+                             task["base_sha"], recorded_patch="0" * 40)
+    assert not r.ok and "not what was checked" in r.reason
     assert not r.merged
 
 
@@ -302,13 +304,19 @@ def test_an_already_merged_branch_records_without_merging(dsns, repo, task):
 
 
 def test_an_already_merged_branch_whose_tip_moved_refuses(dsns, repo, task):
-    """The substitution is a stronger claim, not a weaker one: what is in the
-    base must be the commit the run verified."""
+    """What is in the base must be the commit the run verified.
+
+    The message is the general one now: the tip check became the PRIMARY guard
+    for every branch rather than a substitution reserved for already-merged
+    ones, so this case is covered by the same rule as the rest instead of by a
+    second copy of it.
+    """
     sh(repo, "git", "merge", "-q", "--no-ff", "--no-edit", task["branch"])
     r = merge.merge_and_push(repo, task["task"], task["branch"],
                              task["base_sha"], recorded_patch="0" * 40)
     assert not r.ok
-    assert "is not the commit this run verified" in r.reason
+    assert "not what was checked" in r.reason
+    assert not r.merged and not r.pushed
 
 
 # ---- reject ---------------------------------------------------------------

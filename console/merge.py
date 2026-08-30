@@ -26,6 +26,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 BRANCH_RE = re.compile(r"^fleet/task-\d+(\.\d+)?$")
 TIMEOUT = 120
@@ -61,7 +62,7 @@ def _sha(repo: Path, ref: str) -> str:
 
 
 def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
-              recorded_patch: str) -> MergeOutcome:
+              recorded_patch: str, branch_point: str = "") -> MergeOutcome:
     """Everything that must hold before a merge is attempted.
 
     Returns an outcome whose `ok` says whether to proceed; `already_merged`
@@ -106,45 +107,92 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     r.branch_tip = tip
     r.base_sha_before = _sha(repo, base)
 
+    # THE PRIMARY GUARD: the branch is the commit that was verified.
+    #
+    # This used to be the merge base matching what the run recorded, with the
+    # tip check reserved for already-merged branches. That was the weaker test
+    # of the two. A commit APPENDED to a branch after verification leaves the
+    # merge base untouched and moves the tip, so the merge-base check passed
+    # code nobody had verified. Measured: merge base identical before and
+    # after, tip changed.
+    #
+    # It is also the check that says what anyone actually wants to know. "The
+    # branch was cut where the run said" is a fact about history; "this is the
+    # code that was verified" is a fact about what is about to be merged.
+    if not recorded_patch:
+        return MergeOutcome(False, "the run recorded no patch commit, so there "
+                                   "is nothing to check this branch against")
+    if tip != recorded_patch:
+        return MergeOutcome(
+            False,
+            f"{branch} is at {tip[:12]} but the run verified {recorded_patch[:12]}. "
+            f"Something has been committed to the branch since it was verified, "
+            f"so what would merge is not what was checked.")
+
     ancestor = _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
     if ancestor:
         # The merge would be a no-op, so the merge-base check cannot apply:
         # once a branch is merged its merge base with the base IS its own tip.
-        # The stronger claim is available instead -- that what is already in
-        # the base is the exact commit the run verified.
-        if tip != recorded_patch:
-            return MergeOutcome(
-                False,
-                f"{branch} is already in {base}, but its tip ({tip[:12]}) is not "
-                f"the commit this run verified ({(recorded_patch or '?')[:12]}). "
-                f"Something rewrote the branch after verification.")
+        #
+        # This used to repeat the tip check here, because the tip was the
+        # substitution reserved for exactly this case. It is now the primary
+        # guard above and runs for every branch, so repeating it would be dead
+        # code -- and a second copy of a rule is a second place for it to drift.
         r.already_merged = True
         r.ok = True
         r.note(f"{branch} is already an ancestor of {base}; no merge is required")
         r.note(f"its tip {tip[:12]} is the commit the run recorded as verified")
         return r
 
+    r.note(f"tip {tip[:12]} is the commit the run verified")
+
+    # Secondary, and against branch_point_sha -- NOT base_commit_sha. The two
+    # are different things and conflating them is what made task 5
+    # unacceptable: its recorded base was the evidence-pack commit, which sits
+    # on the branch, so no merge base could ever equal it.
+    #
+    # A base that merely ADVANCES does not move the merge base -- measured, in
+    # a toy repository: two commits on the base, merge base unchanged. So this
+    # fires for a rebase or a rewritten base, not for the overnight case.
+    #
+    # Runs recorded before branch_point_sha existed carry no branch point, and
+    # this is skipped rather than guessed at. The tip check above already
+    # establishes what is being merged, and the re-verification establishes
+    # that it works there.
     merge_base = _git(repo, "merge-base", base, branch).stdout.strip()
-    if not recorded_base:
-        return MergeOutcome(False, "the run recorded no base commit, so there is "
-                                   "nothing to check the merge base against")
-    if merge_base != recorded_base:
-        return MergeOutcome(
-            False,
-            f"the merge base is {merge_base[:12]} but the run recorded "
-            f"{recorded_base[:12]}. The branch has been rebased or rewritten "
-            f"since it was verified.")
+    if branch_point:
+        if merge_base != branch_point:
+            return MergeOutcome(
+                False,
+                f"the merge base is {merge_base[:12]} but this branch was cut "
+                f"from {branch_point[:12]}. Either the branch was rebased or "
+                f"{base} was rewritten; in both cases what would merge is not "
+                f"what the run reasoned about.")
+        r.note(f"merge base {merge_base[:12]} is where the branch was cut")
+    else:
+        r.note("this run recorded no branch point, so the merge base was not "
+               "checked; the tip and the re-verification carry the argument")
     r.ok = True
-    r.note(f"merge base {merge_base[:12]} matches what the run recorded")
     return r
 
 
 def merge_and_push(repo: Path, task: dict, branch: str, recorded_base: str,
-                   recorded_patch: str, remote: str = "origin") -> MergeOutcome:
-    """Preflight, merge, push, then verify the push against the remote."""
-    r = preflight(repo, task, branch, recorded_base, recorded_patch)
+                   recorded_patch: str, remote: str = "origin",
+                   branch_point: str = "",
+                   reverification: Any = None) -> MergeOutcome:
+    """Preflight, merge, push, then verify the push against the remote.
+
+    `reverification` is the already-completed trial: the caller runs it
+    BEFORE this, because a merge that only verifies afterwards has already
+    happened by the time it is refused.
+    """
+    r = preflight(repo, task, branch, recorded_base, recorded_patch, branch_point)
     if not r.ok:
         return r
+    if reverification is not None and not reverification.ok:
+        return MergeOutcome(False, reverification.reason,
+                            base_sha_before=r.base_sha_before,
+                            branch_tip=r.branch_tip)
     base = task["base_branch"]
 
     if not r.already_merged:

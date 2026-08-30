@@ -58,18 +58,6 @@ CASES = [
      '    if False:',
      "tests/test_console_decide.py::test_a_checkout_on_another_branch_refuses"),
 
-    ("merge base is what the run recorded",
-     "console/merge.py",
-     '    if merge_base != recorded_base:',
-     '    if False:',
-     "tests/test_console_decide.py::test_a_rewritten_branch_refuses_on_the_merge_base"),
-
-    ("already-merged tip is the verified commit",
-     "console/merge.py",
-     '        if tip != recorded_patch:',
-     '        if False:',
-     "tests/test_console_decide.py::test_an_already_merged_branch_whose_tip_moved_refuses"),
-
     ("a conflicted merge is aborted and records nothing",
      "console/merge.py",
      '        if merged.returncode != 0:',
@@ -98,6 +86,39 @@ CASES = [
     # `conn.read_only` changes nothing because the grant still refuses. The
     # reversion that matters is pointing the reader at the writer, which is
     # the misconfiguration this test exists to catch.
+    ("the branch tip is the commit that was verified",
+     "console/merge.py",
+     '    if tip != recorded_patch:',
+     '    if False:',
+     "tests/test_reverify.py::test_a_commit_appended_after_verification_is_refused"),
+
+    ("the branch was not rebased under the recorded branch point",
+     "console/merge.py",
+     '        if merge_base != branch_point:',
+     '        if False:',
+     "tests/test_reverify.py::test_a_rebased_branch_is_still_refused"),
+
+    # The one the whole re-verification rests on: verifying the BRANCH instead
+    # of the merged tree re-establishes what the original run established and
+    # proves nothing new.
+    ("re-verification runs against the merged tree, not the branch",
+     "console/reverify.py",
+     'trial, base_sha = worktree.create_detached(repo, worktree_root, name, base)',
+     'trial, base_sha = worktree.create_detached(repo, worktree_root, name, branch)',
+     "tests/test_reverify.py::test_it_verifies_the_merged_tree_not_the_branch"),
+
+    ("a failing re-verification stops the merge",
+     "console/reverify.py",
+     '        if not result.passed:',
+     '        if False:',
+     "tests/test_reverify.py::test_a_clean_merge_into_broken_code_is_caught"),
+
+    ("a conflicting trial merge is refused",
+     "console/reverify.py",
+     '        if merged.returncode != 0:',
+     '        if False:',
+     "tests/test_reverify.py::test_a_conflicting_merge_is_reported_as_one"),
+
     ("the reader is not secretly the writer",
      "console/config.py",
      'return base_config.require("FLEET_CONSOLE_READER_DSN")',
