@@ -289,8 +289,12 @@ def false_positive_rate_rising(out: AdapterOutput, cycle_config: dict[str, Any],
             run.skipped.append(
                 (FALSE_POSITIVE_RATE_RISING,
                  f"{row['detector_key']}/{row['observation_type']}: "
-                 f"{recent_n} recent and {prior_n} prior verdicts, "
-                 f"below the {minimum} each window needs"))
+                 f"{recent_n} recent and {prior_n} prior judgements, "
+                 f"below the {minimum} each window needs. "
+                 f"({int(row.get('recent_observations') or 0)} and "
+                 f"{int(row.get('prior_observations') or 0)} observations "
+                 f"respectively -- a recurring issue restates one judgement "
+                 f"per cadence, and restatements are not evidence.)"))
             continue
 
         recent = Decimal(int(row["recent_false_positives"])) / Decimal(recent_n)
@@ -308,14 +312,18 @@ def false_positive_rate_rising(out: AdapterOutput, cycle_config: dict[str, Any],
                    f"{recent:.0%}"),
             body=(f"Over the last {_days(window.total_seconds())}: "
                   f"{int(row['recent_false_positives'])} false positives in "
-                  f"{recent_n} verdicts ({recent:.0%}). The window before: "
+                  f"{recent_n} judgements ({recent:.0%}). The window before: "
                   f"{int(row['prior_false_positives'])} in {prior_n} "
                   f"({prior:.0%}).\n"
+                  f"This is the JUDGEMENT rate -- of the things a person ruled "
+                  f"on, the fraction that were wrong. A recurring issue "
+                  f"restates one judgement per cadence and those restatements "
+                  f"are not counted: the recent window holds "
+                  f"{int(row['recent_observations'])} observations behind "
+                  f"those {recent_n} judgements.\n"
                   f"Bucketed by when the observation was made, not when the "
                   f"verdict was entered, so the recent window is the less "
-                  f"triaged of the two: {int(row['recent_verdicts'])} of "
-                  f"{int(row['recent_observations'])} recent observations have "
-                  f"a verdict."),
+                  f"triaged of the two."),
             objective_ref=objective,
             evidence=(Evidence.of(reading, flatten(
                 row, threshold_absolute_increase=float(increase),

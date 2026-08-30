@@ -161,6 +161,8 @@ def detectors(request: Request):
         issues=queries.open_issues(),
         untriaged=queries.untriaged(),
         rates=queries.false_positive_rate(),
+        coverage=queries.coverage_summary(),
+        covered=queries.covered(),
     )
 
 

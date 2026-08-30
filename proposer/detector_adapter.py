@@ -102,7 +102,8 @@ class DetectorsAdapter:
                             (UNTRIAGED_OBSERVATIONS, None),
                             (COVERAGE_GAPS, None)):
             out.readings[key] = Reading(
-                adapter=self.name, query_key=key, query_version=1,
+                adapter=self.name, query_key=key,
+                query_version=self._version(key),
                 rows=self._rows(conn, key, params), fetched_at=fetched_at,
                 bound_source="detector_registry", **detector_freshness)
 
@@ -119,9 +120,26 @@ class DetectorsAdapter:
 
     # ---- helpers ----------------------------------------------------------
 
+    #: The version of each query this adapter runs. A key absent here is v1.
+    #:
+    #: The version travels with the evidence, so it has to be the version that
+    #: actually ran. Bumping the file without bumping this would record
+    #: evidence pointing at SQL that did not produce it, which is the one
+    #: thing the versioned-query convention exists to prevent.
+    QUERY_VERSIONS = {
+        # v2: two rates, and a judgement denominator that counts judgements
+        # rather than restatements of one. See 006_verdict_coverage.sql.
+        FALSE_POSITIVE_RATE: 2,
+        # v2: covered by an earlier judgement counts as triaged.
+        UNTRIAGED_OBSERVATIONS: 2,
+    }
+
+    def _version(self, key: str) -> int:
+        return self.QUERY_VERSIONS.get(key, 1)
+
     def _rows(self, conn: psycopg.Connection, key: str,
               params: dict[str, Any] | None = None) -> tuple[dict[str, Any], ...]:
-        query = load_query(key)
+        query = load_query(key, self._version(key))
         rows = conn.execute(query.sql, params).fetchall()
         return tuple(dict(r) for r in rows)
 
@@ -192,7 +210,8 @@ class DetectorsAdapter:
         """Verdict-derived readings age on a human cadence, not a detector one."""
         bound = config.parse_interval(self._config["freshness"]["verdicts"])
         last = recency[0]["last_verdict_at"] if recency else None
-        return Reading(adapter=self.name, query_key=key, query_version=1,
+        return Reading(adapter=self.name, query_key=key,
+                       query_version=self._version(key),
                        rows=rows, fetched_at=fetched_at,
                        freshness_bound=bound, bound_source="cycle.yaml",
                        data_as_of=last,

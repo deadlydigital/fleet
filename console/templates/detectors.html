@@ -27,12 +27,63 @@
 {% endfor %}
 </table>
 
+<h2>Coverage — one judgement, restated</h2>
+<p class="dim">A recurring issue produces one identical observation per cadence.
+  Those are not separate judgements, so a verdict on the first covers the rest
+  until the magnitude moves materially. <strong>This table is why something is
+  not in your queue</strong> — otherwise that becomes the new "why is this issue
+  still open": a question only a query nobody runs can answer.</p>
+{% if not coverage %}
+  <p class="empty">No fingerprint has recurred yet.</p>
+{% else %}
+<table>
+<tr><th>fingerprint</th><th>type</th><th>occurrences</th><th>judgements</th>
+    <th>covered</th><th>redundant verdicts</th><th>untriaged</th>
+    <th>magnitude</th><th>verdict</th><th>span</th></tr>
+{% for c in coverage %}
+<tr>
+  <td class="mono dim">{{ c.fingerprint[:12] }}</td>
+  <td>{{ c.observation_type }}</td>
+  <td><strong>{{ c.occurrences }}</strong></td>
+  <td><span class="pill {{ 'ok' if c.judgements else 'warn' }}">{{ c.judgements }}</span></td>
+  <td class="dim">{{ c.covered }}</td>
+  <td class="dim">{{ c.redundant_verdicts }}</td>
+  <td>{% if c.untriaged %}<span class="pill bad">{{ c.untriaged }}</span>{% else %}<span class="dim">0</span>{% endif %}</td>
+  <td class="dim">{% if c.min_magnitude == c.max_magnitude %}{{ c.min_magnitude }}{% else %}{{ c.min_magnitude }}–{{ c.max_magnitude }}{% endif %}</td>
+  <td>{% if c.verdict %}<span class="pill {{ 'bad' if c.verdict == 'FALSE_POSITIVE' else 'ok' }}">{{ c.verdict }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+  <td class="dim">{{ c.first_seen.strftime('%d %b %H:%M') }} → {{ c.last_seen.strftime('%d %b %H:%M') }}</td>
+</tr>
+{% endfor %}
+</table>
+{% if covered %}
+<details style="margin-top:.6rem">
+  <summary class="dim" style="cursor:pointer">why each covered observation is covered ({{ covered|length }})</summary>
+  <table>
+  <tr><th>observation</th><th>seen</th><th>magnitude</th><th>covered by</th><th>reason</th></tr>
+  {% for o in covered[:60] %}
+  <tr>
+    <td class="dim">{{ o.observation_id }}{% if o.redundant_verdict %} <span class="pill dim">has its own verdict too</span>{% endif %}</td>
+    <td class="dim">{{ o.observed_at.strftime('%d %b %H:%M') }}</td>
+    <td class="dim">{{ o.magnitude }}</td>
+    <td class="dim">obs {{ o.anchor_observation_id }}, {{ o.covering_verdict }}
+        at {{ o.anchor_observed_at.strftime('%d %b %H:%M') }}</td>
+    <td class="dim">{{ o.coverage_reason }}</td>
+  </tr>
+  {% endfor %}
+  </table>
+  {% if covered|length > 60 %}<p class="dim">Showing 60 of {{ covered|length }}.</p>{% endif %}
+</details>
+{% endif %}
+{% endif %}
+
 <h2>Untriaged observations</h2>
 {% if untriaged %}
 <div class="note">
   <div class="big bad">{{ untriaged|length }}</div>
-  <div>observations with no verdict. This is the number that should be zero every
-    morning — the false-positive rate below is starved of exactly these.</div>
+  <div>observations with <strong>no effective verdict</strong> — neither judged
+    nor covered by an earlier judgement of the same fingerprint. This is the
+    number that should be zero every morning, and it no longer refills hourly
+    with something already ruled on.</div>
 </div>
 <table>
 <tr><th>id</th><th>detector</th><th>type</th><th>subject</th><th>magnitude</th><th>observed</th></tr>
@@ -42,6 +93,7 @@
     <td class="mono dim">{{ o.subject_type }}:{{ o.subject_id }}</td>
     <td>{{ o.magnitude }} {{ o.unit or '' }}</td>
     <td class="dim">{{ o.observed_at.strftime('%d %b %H:%M') }}</td></tr>
+<tr><td></td><td colspan="5" class="dim">{{ o.coverage_reason }}</td></tr>
 {% endfor %}
 </table>
 {% if untriaged|length > 50 %}<p class="dim">Showing 50 of {{ untriaged|length }}.</p>{% endif %}
@@ -81,10 +133,12 @@
   function the resolver consults — rather than re-deriving the answer here.</p>
 {% endif %}
 
-<h2>False-positive rate</h2>
-{% if not rates %}<p class="empty">No verdicts recorded yet, so there is no rate.</p>{% else %}
+<h2>False-positive rate — two rates, two questions</h2>
+{% if not rates %}<p class="empty">Nothing has been judged yet, so there is no rate.</p>{% else %}
 <table>
-<tr><th>detector</th><th>v</th><th>observation type</th><th>rate</th><th>valid</th><th>inconclusive</th></tr>
+<tr><th>detector</th><th>v</th><th>observation type</th>
+    <th>judgement rate</th><th>valid</th><th>inconclusive</th>
+    <th>noise rate</th><th>occurrences</th></tr>
 {% for r in rates %}
 <tr>
   <td class="mono">{{ r.detector_key }}</td><td class="dim">{{ r.detector_version }}</td>
@@ -92,11 +146,28 @@
   <td><strong>{{ r.false_positive }} of {{ r.judged }}</strong>
       {% if r.judged >= 20 %}<span class="dim">({{ '%.0f'|format(100 * r.false_positive / r.judged) }}%)</span>{% endif %}</td>
   <td class="dim">{{ r.valid }}</td><td class="dim">{{ r.inconclusive }}</td>
+  <td><strong>{{ r.occurrences_false }} of {{ r.occurrences_ruled }}</strong>
+      {% if r.occurrences_ruled >= 20 %}<span class="dim">({{ '%.0f'|format(100 * r.occurrences_false / r.occurrences_ruled) }}%)</span>{% endif %}</td>
+  <td class="dim">{{ r.occurrences }} ({{ r.occurrences_covered }} covered)</td>
 </tr>
 {% endfor %}
 </table>
-<p class="dim">The denominator is always shown, and a percentage only appears once there
-  are at least 20 judgements. A rate over three observations is not a rate, and
-  <code>2 of 3</code> refuses the decision that <code>67%</code> invites.</p>
+<p class="dim"><strong>Judgement rate</strong> — of the things a person ruled on,
+  the fraction that were wrong. Measures whether the detector is <em>correct</em>.
+  <strong>Noise rate</strong> — of the observations produced, the fraction that
+  were false. Measures what the detector <em>costs you</em>. They are different
+  questions and the old single rate was named the first while computing the
+  second.</p>
+<p class="dim">Both denominators are always shown, and a percentage only appears
+  past 20. <code>2 of 3</code> refuses the decision that <code>67%</code>
+  invites — and the judgement denominator is small by design now, so
+  <code>false_positive_rate_rising</code> will report “not computed” until a
+  fortnight has produced five real judgements. That is the honest answer; it
+  never had 45 data points.</p>
+<p class="dim">The noise rate carries <strong>no threshold and no finding</strong>
+  yet, deliberately. It is the more actionable number for
+  <code>dd-trustworthy</code> — “this detector costs 45 interruptions per fact” —
+  but nobody knows what a bad value looks like, and picking one now would be
+  inventing it.</p>
 {% endif %}
 {% endblock %}

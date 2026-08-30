@@ -236,8 +236,22 @@ def test_untriaged_is_prominent_when_it_is_not_zero(client, admin):
     slot = sp.slot_ends(admin, sp.RECONCILIATION, count=1)[0]
     sp.arrange_observations(admin, sp.RECONCILIATION, slot, count=2)
     body = client.get("/detectors").text
-    assert "no verdict" in body
+    assert "no effective verdict" in body
     assert "2" in body
+
+
+def test_the_coverage_table_explains_why_something_is_not_queued(client, admin):
+    """"Why is this not in my queue" must be answerable on the page."""
+    slots = sp.slot_ends(admin, sp.RECONCILIATION, count=3)
+    first = sp.arrange_observations(admin, sp.RECONCILIATION, slots[0],
+                                    count=1, magnitude=500)[0]
+    sp.record_verdict(admin, first, "VALID")
+    for slot in slots[1:]:
+        sp.arrange_observations(admin, sp.RECONCILIATION, slot, count=1,
+                                magnitude=500)
+    body = client.get("/detectors").text
+    assert "one judgement, restated" in body
+    assert "covered by the judgement of" in body or "restates the judgement of" in body
 
 
 def test_untriaged_zero_is_stated_positively(client):

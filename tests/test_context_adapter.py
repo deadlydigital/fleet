@@ -185,11 +185,24 @@ def test_false_positive_rate_is_split_by_detector_and_observation_type(admin, re
     rows = {(r["detector_key"], r["observation_type"]): r
             for r in out[FALSE_POSITIVE_RATE].rows}
     row = rows[(RECONCILIATION, "MISSING_ANALYTICS_ORDER")]
-    assert row["verdicts"] == 5
-    assert row["false_positives"] == 3
+    # Still 5 judgements, and deliberately so: the second slot's verdicts
+    # DISAGREE with the first's on the same two fingerprints, and a person
+    # changing their mind is a judgement rather than a restatement. Coverage
+    # collapses repetition, not disagreement.
+    assert row["judgements"] == 5
+    assert row["judgement_false_positives"] == 3
+    assert row["occurrences"] == 5
+    assert row["occurrences_covered"] == 0
 
 
-def test_untriaged_counts_only_what_has_no_verdict(admin, reader):
+def test_untriaged_counts_only_what_no_judgement_covers(admin, reader):
+    """Covered by an earlier judgement counts as triaged.
+
+    Two fingerprints were judged at the first slot. At the second slot the
+    same two recur, unchanged, plus one that has never been seen. Under
+    v1 this reported three untriaged observations and the queue refilled
+    every cadence with things already ruled on. One of the three is new.
+    """
     healthy(admin, reconciliation_slots=0)
     slots = slot_ends(admin, RECONCILIATION, 2)
     arrange_observations(admin, RECONCILIATION, slots[0], count=2, verdict="VALID")
@@ -197,7 +210,8 @@ def test_untriaged_counts_only_what_has_no_verdict(admin, reader):
     out = read(reader)
 
     row = out[UNTRIAGED_OBSERVATIONS].rows[0]
-    assert row["untriaged"] == 3
+    assert row["untriaged"] == 1
+    assert row["fingerprints_untriaged"] == 1
 
 
 def test_coverage_gaps_says_why_an_issue_cannot_resolve(admin, reader):

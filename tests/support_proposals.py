@@ -129,12 +129,19 @@ def arrange_observations(admin, detector_key: str, slot_end: datetime, *,
                          observation_type: str = "MISSING_ANALYTICS_ORDER",
                          subject_type: str = "tenant", subject_id: str = "2",
                          count: int = 1, verdict: str | None = None,
-                         subjects: Sequence[str] | None = None) -> list[int]:
+                         subjects: Sequence[str] | None = None,
+                         magnitude: int | None = None,
+                         detector_version: int | None = None) -> list[int]:
     """Observations on a run, optionally with a verdict already recorded.
 
     The run is opened RUNNING, observed against, then closed: an observation
     can only be inserted into a RUNNING run, which is track 1's rule and not
     one to work around here.
+
+    `magnitude` and `detector_version` are set at INSERT rather than by a
+    later UPDATE, because reject_mutation() refuses to let an observation be
+    edited. An observation is evidence; a test that could rewrite one would be
+    testing something the system does not permit.
     """
     reg = registry(admin, detector_key)
     run_id = arrange_run(admin, detector_key, slot_end, status="RUNNING",
@@ -154,10 +161,13 @@ def arrange_observations(admin, detector_key: str, slot_end: datetime, *,
             RETURNING id
             """,
             {"run": run_id, "k": detector_key,
-             "dv": reg["current_detector_version"], "v": reg["issue_key_version"],
+             "dv": (detector_version if detector_version is not None
+                    else reg["current_detector_version"]),
+             "v": reg["issue_key_version"],
              "p": reg["product"], "type": observation_type, "at": slot_end,
              "st": subject_type, "sid": f"{subject_id}",
-             "fp": f"{fp}-{n}" if count > 1 else fp, "mag": 100 + n}).fetchone()
+             "fp": f"{fp}-{n}" if count > 1 else fp,
+             "mag": magnitude if magnitude is not None else 100 + n}).fetchone()
         ids.append(row["id"])
 
     admin.execute("UPDATE detector_runs SET status = 'OK', completed_at = %s "

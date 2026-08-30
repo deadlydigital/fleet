@@ -132,26 +132,69 @@ SELECT i.id, i.fingerprint, i.issue_type, i.subject_type, i.subject_id,
  ORDER BY i.severity DESC, i.last_seen DESC
 """
 
+# Untriaged now means "no effective verdict" -- neither judged directly nor
+# covered by an earlier judgement of the same fingerprint. An hourly recurring
+# issue used to refill this list every hour with the thing already ruled on.
 UNTRIAGED = """
 SELECT o.id, o.detector_key, o.detector_version, o.observation_type,
        o.subject_type, o.subject_id, o.magnitude, o.unit, o.observed_at,
-       o.fingerprint
+       o.fingerprint, c.coverage_reason
   FROM observations o
-  LEFT JOIN observation_verdicts v ON v.observation_id = o.id
- WHERE v.id IS NULL
+  JOIN observation_coverage c ON c.observation_id = o.id
+ WHERE c.effective_verdict IS NULL
  ORDER BY o.observed_at DESC
 """
 
-# The denominator is shown, always. A rate over three observations is not a
-# rate, and `2 of 3` refuses the decision that `67%` invites.
+# What the queue used to hold, so the page can say what coverage is saving.
+COVERED = """
+SELECT c.observation_id, c.detector_key, c.observation_type, c.fingerprint,
+       c.observed_at, c.magnitude, c.band,
+       c.covering_verdict, c.anchor_observation_id, c.anchor_observed_at,
+       c.anchor_magnitude, c.relative_change, c.allowed_change,
+       c.redundant_verdict, c.coverage_reason
+  FROM observation_coverage c
+ WHERE c.covered
+ ORDER BY c.observed_at DESC
+"""
+
+# One row per fingerprint: the judgement, and how many occurrences it covers.
+COVERAGE_SUMMARY = """
+SELECT c.detector_key, c.observation_type, c.fingerprint,
+       count(*)                                        AS occurrences,
+       count(*) FILTER (WHERE c.is_judgement)          AS judgements,
+       count(*) FILTER (WHERE c.covered)               AS covered,
+       count(*) FILTER (WHERE c.redundant_verdict)     AS redundant_verdicts,
+       count(*) FILTER (WHERE c.effective_verdict IS NULL) AS untriaged,
+       min(c.observed_at)                              AS first_seen,
+       max(c.observed_at)                              AS last_seen,
+       min(c.magnitude)                                AS min_magnitude,
+       max(c.magnitude)                                AS max_magnitude,
+       max(c.effective_verdict)                        AS verdict
+  FROM observation_coverage c
+ GROUP BY 1, 2, 3
+HAVING count(*) > 1
+ ORDER BY count(*) DESC
+"""
+
+# Two rates, because they are two questions -- see 006_verdict_coverage.sql.
+# The denominator is shown for both, always: `1 of 1` refuses the decision
+# that `100%` invites, and the judgement denominator is small by design now.
 FALSE_POSITIVE_RATE = """
-SELECT v.detector_key, v.detector_version, v.observation_type,
-       count(*)                                                AS judged,
-       count(*) FILTER (WHERE v.verdict = 'FALSE_POSITIVE')     AS false_positive,
-       count(*) FILTER (WHERE v.verdict = 'VALID')              AS valid,
-       count(*) FILTER (WHERE v.verdict = 'INCONCLUSIVE')       AS inconclusive
-  FROM observation_verdicts v
- GROUP BY v.detector_key, v.detector_version, v.observation_type
+SELECT c.detector_key, c.detector_version, c.observation_type,
+       count(*) FILTER (WHERE c.is_judgement)                       AS judged,
+       count(*) FILTER (WHERE c.is_judgement
+                          AND c.own_verdict = 'FALSE_POSITIVE')     AS false_positive,
+       count(*) FILTER (WHERE c.is_judgement
+                          AND c.own_verdict = 'VALID')              AS valid,
+       count(*) FILTER (WHERE c.is_judgement
+                          AND c.own_verdict = 'INCONCLUSIVE')       AS inconclusive,
+       count(*)                                                     AS occurrences,
+       count(*) FILTER (WHERE c.effective_verdict IS NOT NULL)       AS occurrences_ruled,
+       count(*) FILTER (WHERE c.effective_verdict = 'FALSE_POSITIVE') AS occurrences_false,
+       count(*) FILTER (WHERE c.covered)                            AS occurrences_covered
+  FROM observation_coverage c
+ WHERE c.own_verdict IS NOT NULL OR c.covered
+ GROUP BY 1, 2, 3
  ORDER BY 1, 2, 3
 """
 
@@ -210,6 +253,14 @@ def open_issues() -> list[dict[str, Any]]:
 
 def untriaged() -> list[dict[str, Any]]:
     return db.rows(UNTRIAGED)
+
+
+def covered() -> list[dict[str, Any]]:
+    return db.rows(COVERED)
+
+
+def coverage_summary() -> list[dict[str, Any]]:
+    return db.rows(COVERAGE_SUMMARY)
 
 
 def false_positive_rate() -> list[dict[str, Any]]:
