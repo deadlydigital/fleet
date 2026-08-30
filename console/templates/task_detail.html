@@ -215,6 +215,32 @@
 <p class="dim">Run {{ task.run_id }} · {{ task.run_status }} ·
   £{{ '%.4f'|format(task.committed_gbp or 0) }} of £{{ '%.4f'|format(task.spend_limit_gbp or 0) }} ·
   {{ task.elapsed_seconds|duration }} wall clock · timeout {{ task.timeout_seconds }}s</p>
+{% if task.runs_total and task.runs_total > 1 %}
+<div class="note">
+  <strong>This is the latest of {{ task.runs_total }} runs, and everything above
+  describes only this one.</strong>
+  The task cost <strong>£{{ '%.2f'|format(task.spent_all_runs) }}</strong> in
+  total; this run cost £{{ '%.2f'|format(task.committed_gbp or 0) }}. A page
+  showing the last run's cost as the task's cost would understate a task that
+  took four attempts by most of what it spent.
+</div>
+<table>
+<tr><th>run</th><th>status</th><th>started</th><th>elapsed</th><th>cost</th><th>steps</th></tr>
+{% for r in runs %}
+<tr{% if r.id == task.run_id %} style="font-weight:600"{% endif %}>
+  <td>{{ r.id }}{% if r.id == task.run_id %} <span class="pill ok">latest</span>{% endif %}</td>
+  <td><span class="pill {{ 'ok' if r.status == 'AWAITING_HUMAN' else 'bad' if r.status == 'FAILED' else 'dim' }}">{{ r.status }}</span></td>
+  <td class="dim">{{ r.started_at.strftime('%d %b %H:%M:%S') }}</td>
+  <td class="dim">{{ r.elapsed_seconds|duration }}</td>
+  <td class="dim">£{{ '%.4f'|format(r.committed_gbp) }} of £{{ '%.4f'|format(r.spend_limit_gbp) }}</td>
+  <td class="dim">{{ r.steps }}</td>
+</tr>
+{% endfor %}
+</table>
+<p class="dim">Earlier runs are kept rather than tidied away: what a task cost
+  includes what it cost to fail. The reclaim table above says why more than one
+  was needed.</p>
+{% endif %}
 {% endif %}
 
 {# ---- run steps ---- #}

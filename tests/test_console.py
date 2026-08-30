@@ -278,3 +278,100 @@ def test_proposals_renders_a_proposal_with_its_evidence(client, admin):
     assert "A finding" in body
     assert "open_issues" in body          # the adapter's query key
     assert "the body" in body
+
+
+# ---- one row per task, not one per run -----------------------------------
+
+def _task_with_runs(console, admin, runner, n_runs: int) -> int:
+    """A task carried to READY_FOR_REVIEW after n_runs attempts."""
+    tid = console.execute(
+        "INSERT INTO tasks (title, spec_md, repo, base_branch, acceptance_contract,"
+        " max_cost_gbp, max_attempts) VALUES ('many runs','# s',%s,'main',%s,9.00,%s)"
+        " RETURNING id", (REPO, json.dumps(contract()), n_runs)).fetchone()["id"]
+    console.commit()
+    for i in range(n_runs):
+        runner.execute("SELECT claim_task(NULL)")
+        runner.commit()
+        rid = admin.execute(
+            "INSERT INTO runs (task_id, work_type, contract_version,"
+            " spend_limit_gbp, committed_gbp, status)"
+            " VALUES (%s,'dd_feature',1,9.00,%s,'ACTIVE') RETURNING id",
+            (tid, 1 + i)).fetchone()["id"]
+        if i < n_runs - 1:
+            admin.execute("UPDATE runs SET status='FAILED', completed_at=now()"
+                          " WHERE id=%s", (rid,))
+            runner.execute("UPDATE tasks SET status='QUEUED', claimed_at=NULL"
+                           " WHERE id=%s", (tid,))
+            runner.commit()
+    runner.execute(
+        "UPDATE tasks SET status='READY_FOR_REVIEW', branch_name='fleet/task-x',"
+        " completed_at=now() WHERE id=%s", (tid,))
+    runner.commit()
+    return tid
+
+
+def test_a_task_with_several_runs_is_one_row(dsns, console, admin, runner):
+    """Joining runs without aggregating rendered task 5 four times while the
+    tab counts, which come from `tasks` alone, said two."""
+    from console import queries
+    tid = _task_with_runs(console, admin, runner, 4)
+    rows = [r for r in queries.task_list(None) if r["id"] == tid]
+    assert len(rows) == 1
+    assert rows[0]["runs_total"] == 4
+
+
+def test_the_row_count_and_the_tab_counts_agree(dsns, console, admin, runner):
+    """The invariant that was broken: the list said nine, the tabs said six."""
+    from console import queries
+    _task_with_runs(console, admin, runner, 3)
+    _task_with_runs(console, admin, runner, 1)
+    assert len(queries.task_list(None)) == sum(queries.status_counts().values())
+
+
+def test_the_row_shows_the_latest_run_not_an_arbitrary_one(dsns, console, admin,
+                                                           runner):
+    from console import queries
+    tid = _task_with_runs(console, admin, runner, 3)
+    row = [r for r in queries.task_list(None) if r["id"] == tid][0]
+    latest = admin.execute("SELECT max(id) AS m FROM runs WHERE task_id=%s",
+                           (tid,)).fetchone()["m"]
+    assert row["run_id"] == latest
+
+
+def test_the_detail_page_shows_the_latest_run(dsns, console, admin, runner):
+    """The worse half of the same bug: task 5 showed the cost and steps of its
+    first, killed run beside the branch its fourth run produced."""
+    from console import queries
+    tid = _task_with_runs(console, admin, runner, 4)
+    latest = admin.execute("SELECT max(id) AS m FROM runs WHERE task_id=%s",
+                           (tid,)).fetchone()["m"]
+    assert queries.task_detail(tid)["run_id"] == latest
+
+
+def test_the_page_reports_what_every_run_cost(dsns, console, admin, runner):
+    """The last run's cost is not the task's cost. Four attempts at £1..£4 cost
+    £10, and showing £4 would understate it by most of what it spent."""
+    from console import queries
+    tid = _task_with_runs(console, admin, runner, 4)
+    d = queries.task_detail(tid)
+    assert float(d["committed_gbp"]) == 4.0
+    assert float(d["spent_all_runs"]) == 10.0
+    assert len(queries.task_runs(tid)) == 4
+
+
+def test_a_task_with_no_run_still_appears(dsns, console):
+    from console import queries
+    console.execute(
+        "INSERT INTO tasks (title, spec_md, repo, acceptance_contract, max_cost_gbp)"
+        " VALUES ('never claimed','# s',%s,%s,1.00)", (REPO, json.dumps(contract())))
+    console.commit()
+    rows = [r for r in queries.task_list(None) if r["title"] == "never claimed"]
+    assert len(rows) == 1
+    assert rows[0]["run_id"] is None and rows[0]["runs_total"] == 0
+
+
+def test_the_list_renders_one_row_per_task(client, console, admin, runner):
+    tid = _task_with_runs(console, admin, runner, 3)
+    body = client.get("/tasks?status=all").text
+    assert body.count(f'href="/tasks/{tid}"') == 2, "one link per cell, one row"
+    assert "over 3 runs" in body

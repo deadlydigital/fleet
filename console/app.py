@@ -143,6 +143,7 @@ def task_detail(request: Request, task_id: int):
         reason_help=decide.REASON_HELP,
         outcome=_take_outcome(task_id),
         reclaims=queries.task_reclaims(task_id),
+        runs=queries.task_runs(task_id),
         contract=task["acceptance_contract"] or {},
         steps=steps,
         patch=(patch or {}).get("payload", {}),

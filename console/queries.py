@@ -24,14 +24,34 @@ from console import db
 
 # ---------------------------------------------------------------- page 1
 
+# ONE ROW PER TASK. A plain join to `runs` returns one row per RUN, and a task
+# reclaimed three times then rerun rendered four times in the list -- the tab
+# counts, which come from `tasks` alone, disagreed with the rows underneath
+# them.
+#
+# The lateral takes the LATEST run, not an arbitrary one. The unordered join it
+# replaces also fed the detail page, where it was worse than a duplicate row:
+# task 5 showed the cost and the steps of its first, killed run beside the
+# branch its fourth run produced.
+#
+# `runs_total` and `spent_all_runs` are here because with the latest run alone
+# the page would understate a task that took four attempts -- £4.58 for a task
+# that actually cost £19.95.
 TASK_LIST = """
 SELECT t.id, t.title, t.status, t.queue, t.objective_ref, t.branch_name,
        t.max_cost_gbp, t.attempts, t.max_attempts, t.created_at,
        t.claimed_at, t.completed_at, t.priority, t.repo, t.base_branch,
        r.id AS run_id, r.committed_gbp, r.status AS run_status,
-       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds
+       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds,
+       agg.runs_total, agg.spent_all_runs
   FROM tasks t
-  LEFT JOIN runs r ON r.task_id = t.id
+  LEFT JOIN LATERAL (
+      SELECT * FROM runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1
+  ) r ON true
+  LEFT JOIN LATERAL (
+      SELECT count(*) AS runs_total, coalesce(sum(committed_gbp), 0) AS spent_all_runs
+        FROM runs WHERE task_id = t.id
+  ) agg ON true
  WHERE (%(status)s::text IS NULL OR t.status = %(status)s::text)
  ORDER BY t.created_at DESC, t.id DESC
 """
@@ -44,10 +64,29 @@ TASK_DETAIL = """
 SELECT t.*, r.id AS run_id, r.status AS run_status, r.work_type,
        r.contract_version, r.spend_limit_gbp, r.committed_gbp,
        r.started_at AS run_started_at, r.completed_at AS run_completed_at,
-       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds
+       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds,
+       agg.runs_total, agg.spent_all_runs
   FROM tasks t
-  LEFT JOIN runs r ON r.task_id = t.id
+  LEFT JOIN LATERAL (
+      SELECT * FROM runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1
+  ) r ON true
+  LEFT JOIN LATERAL (
+      SELECT count(*) AS runs_total, coalesce(sum(committed_gbp), 0) AS spent_all_runs
+        FROM runs WHERE task_id = t.id
+  ) agg ON true
  WHERE t.id = %(task_id)s
+"""
+
+# Every run of a task, newest first. The detail page shows the latest run in
+# full and this beside it, so an earlier attempt is visible rather than
+# implied by the attempt count.
+TASK_RUNS = """
+SELECT r.id, r.status, r.started_at, r.completed_at, r.spend_limit_gbp,
+       r.committed_gbp, r.work_type, r.contract_version,
+       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds,
+       (SELECT count(*) FROM run_steps s WHERE s.run_id = r.id) AS steps
+  FROM runs r WHERE r.task_id = %(task_id)s
+ ORDER BY r.id DESC
 """
 
 RUN_STEPS = """
@@ -251,6 +290,10 @@ def status_counts() -> dict[str, int]:
 
 def task_detail(task_id: int) -> dict[str, Any] | None:
     return db.one(TASK_DETAIL, {"task_id": task_id})
+
+
+def task_runs(task_id: int) -> list[dict[str, Any]]:
+    return db.rows(TASK_RUNS, {"task_id": task_id})
 
 
 def run_steps(run_id: int) -> list[dict[str, Any]]:

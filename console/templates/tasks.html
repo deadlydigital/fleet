@@ -22,7 +22,9 @@
   <td class="dim">{{ t.queue }}</td>
   <td class="dim">{{ t.objective_ref or '—' }}</td>
   <td class="mono">{{ t.branch_name or '—' }}</td>
-  <td>{% if t.committed_gbp is not none %}£{{ '%.2f'|format(t.committed_gbp) }}<span class="dim"> / {{ '%.2f'|format(t.max_cost_gbp) }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+  <td>{% if t.committed_gbp is not none %}£{{ '%.2f'|format(t.committed_gbp) }}<span class="dim"> / {{ '%.2f'|format(t.max_cost_gbp) }}</span>
+      {%- if t.runs_total and t.runs_total > 1 %}<div class="dim" title="across all {{ t.runs_total }} runs">£{{ '%.2f'|format(t.spent_all_runs) }} over {{ t.runs_total }} runs</div>{% endif %}
+      {%- else %}<span class="dim">—</span>{% endif %}</td>
   <td class="dim">{{ t.elapsed_seconds|duration }}</td>
   <td class="dim">{{ t.attempts }}/{{ t.max_attempts }}{% if reclaims.get(t.id) %}
       <span class="pill warn" title="recovered after a tick died">↻{{ reclaims[t.id].n }}</span>{% endif %}</td>
