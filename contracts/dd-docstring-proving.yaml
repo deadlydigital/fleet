@@ -1,0 +1,51 @@
+# The proving task's contract.
+#
+# Narrower than contracts/deadly-digital-platform.yaml on purpose: this task
+# touches one file, so the writable set is the one directory that file is in.
+# A proving run should fail if the agent wanders, and a wide writable set
+# would let it wander without being noticed.
+#
+# The verification commands here are NOT the default contract's. `ruff check
+# api/` reports 402 pre-existing errors on a clean checkout of main and
+# `pytest api/tests/` needs a Postgres on 5433 that is not running, plus a
+# 30% coverage gate the suite does not currently clear. Neither can pass, so
+# neither can prove anything. These three can, and the third one FAILS on
+# main and passes only on the intended change -- which is what makes this a
+# proving task rather than a smoke test.
+#
+# The interpreter is an absolute path outside the worktree: api/.venv is
+# gitignored, so it does not exist in a fresh worktree. The acceptance check
+# is outside the worktree too, in the fleet repository, where the agent
+# cannot write to it at all.
+
+work_type: dd_docs
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 1
+
+writable_paths:
+  - api/analytics/routes/**
+
+protected_paths:
+  # the floor, which the database requires by name
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  # and the engine this route calls, which is not this task's business
+  - api/analytics/services/**
+  - api/app.py
+  - .github/**
+
+verification:
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q api/analytics/routes/revenue.py
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/ruff check --select E9 api/analytics/routes/revenue.py
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/revenue_granularity_doc.py
+
+max_diff_lines: 30
+max_cost_gbp: 1.00
+timeout_seconds: 900

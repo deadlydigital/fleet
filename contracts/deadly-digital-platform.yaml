@@ -50,6 +50,19 @@ protected_paths:
   - platform/package.json
   - platform/package-lock.json
 
+# WARNING: neither of these passes on a clean checkout of main today, so a
+# task using this contract as-is will fail verification for reasons that have
+# nothing to do with the agent. Measured 2026-08-30 at 921e22b:
+#
+#   ruff check api/        402 pre-existing errors
+#   pytest api/tests/ -q   needs a Postgres on 5433 that is not running, and
+#                          the suite does not clear its own 30% coverage gate
+#
+# They are left here because they are the right commands once the repository
+# can pass them, and replacing them with something weaker would hide that it
+# cannot. Until then, give a task its own contract with verification that
+# holds -- contracts/dd-docstring-proving.yaml is a worked example, and its
+# third command fails on main and passes only on the intended change.
 verification:
   - ruff check api/
   - pytest api/tests/ -q
