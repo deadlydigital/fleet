@@ -1,0 +1,65 @@
+# Task contract: make the acquiring-products report reachable. The default
+# frontend contract plus this task's own acceptance check.
+#
+# writable_paths is narrowed to the two directories the new files live in and
+# the one existing file that must change. The default contract opens the whole
+# of platform/app, which is right in general and too wide here: the spec names
+# a proxy route, a page and one sidebar entry, and a diff outside those three
+# is a diff nobody scoped.
+#
+# platform/__tests__/** stays protected, so this task CANNOT add a render
+# test for the page it builds. That is a real hole and the spec says so
+# rather than pretending the existing 298 cover the new page.
+work_type: dd_frontend
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 2
+
+writable_paths:
+  - platform/app/api/analytics/products/**
+  - platform/app/(dashboard)/analytics/products/**
+  - platform/components/layout/Sidebar.tsx
+
+protected_paths:
+  # The floor, which the database requires by name. Each is on it because
+  # editing it defeats the thing that judges the work.
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  # The backend is not this contract's business. Nothing here can verify a
+  # change to it, so nothing here may make one.
+  - api/**
+  # Build, deploy and dependency manifests: a feature that needs one of these
+  # is a change that needs a person, not a wider glob.
+  - .github/**
+  - platform/next.config.js
+  - platform/package.json
+  - platform/package-lock.json
+  - platform/docker-compose.yml
+  - platform/Dockerfile
+  - platform/tsconfig.json
+
+# node_modules is gitignored, so a fresh worktree has none and neither tsc
+# nor vitest can start. The runner links the checkout's own tree in AFTER the
+# diff is derived and the boundary judged, so the agent never sees it.
+worktree_links:
+  platform/node_modules: /home/ubuntu/deadly-digital-platform/platform/node_modules
+
+# Both measured green on a worktree of main at 921e22b on 2026-08-30:
+# tsc exits 0, vitest runs 19 files and 298 tests in 65s, and the checkout is
+# untouched afterwards. There is no lint step because the platform has no
+# eslint: `next lint` is unconfigured and prompts interactively, and eslint
+# is not even a dependency. Inventing one here would be a gate nobody wrote.
+verification:
+  - cd platform && ./node_modules/.bin/tsc --noEmit
+  - cd platform && ./node_modules/.bin/vitest run --reporter=dot
+  - python3 /home/ubuntu/fleet/contracts/checks/acquiring_page_shape.py
+
+max_diff_lines: 800
+max_cost_gbp: 3.00
+timeout_seconds: 1800

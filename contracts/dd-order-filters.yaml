@@ -1,0 +1,47 @@
+# Task contract: order-list filters. The api contract plus this task's own
+# acceptance check.
+#
+# writable_paths is narrowed to the two files the task touches. The api
+# contract makes the whole of api/services and api/analytics writable, which
+# is right for a general backend task and too wide for this one: a proving
+# run should fail if the agent wanders, and the spec names exactly two files.
+#
+# api/analytics/migrations/** stays protected, which is deliberate and is
+# called out in the spec: the measured numbers say no index is needed, and a
+# task that reached for one would be making a schema decision nobody asked
+# for.
+work_type: dd_api
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 1
+
+writable_paths:
+  - api/analytics/routes/orders.py
+  - api/analytics/services/order_query.py
+
+protected_paths:
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  - platform/**
+  - .github/**
+  - api/Dockerfile
+  - api/deploy.sh
+  - api/docker-compose.yml
+  - api/worker.py
+
+# api/.venv is gitignored and absent from a worktree, so the interpreter and
+# ruff are named by absolute path. They are read, never written.
+verification:
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/ruff_no_new_findings.py
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/order_filters_shape.py
+
+max_diff_lines: 150
+max_cost_gbp: 3.00
+timeout_seconds: 1800
