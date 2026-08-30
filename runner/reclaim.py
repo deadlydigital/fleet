@@ -114,6 +114,11 @@ def reclaim(*, grace_seconds: int = DEFAULT_GRACE_SECONDS,
                 "SELECT reclaim_stale_task(%s, %s::interval) AS outcome",
                 (row["task_id"], grace)).fetchone()["outcome"]
             r.outcome = outcome
+            # The database recorded the reclaim; this attaches what the
+            # filesystem side did, which no trigger could have known.
+            if outcome in ("requeued", "failed") and r.worktree_removed:
+                conn.execute("SELECT note_reclaim_cleanup(%s, %s, %s)",
+                             (row["task_id"], r.worktree_removed, r.branch_kept))
             log(f"  -> {outcome}")
             results.append(r)
 
@@ -151,3 +156,22 @@ def sweep_worktrees(log: Callable[[str], None] = print) -> list[str]:
     if not removed:
         log("  no orphaned worktrees")
     return removed
+
+
+def before_claiming(log: Callable[[str], None] = print) -> list[Reclaimed]:
+    """Reclaim at the start of a tick, before anything is claimed.
+
+    A tick that dies leaves a task nobody can retry, and until this ran
+    automatically the recovery depended on somebody noticing. It runs first so
+    a reclaimed task is claimable in the same tick rather than the next one.
+
+    It never raises. A reclaim that fails must not stop a tick that could
+    otherwise do useful work -- the stuck task was already stuck, and turning
+    that into "nothing runs at all" would make a small failure a total one.
+    """
+    try:
+        results = reclaim(log=log)
+    except Exception as exc:                                      # noqa: BLE001
+        log(f"  reclaim failed, continuing to claim anyway: {exc}")
+        return []
+    return [r for r in results if r.outcome in ("requeued", "failed")]

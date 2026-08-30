@@ -61,6 +61,43 @@
   read was <code>{{ running_as }}</code>.</p>
 {% endif %}
 
+{# ---- recovered ticks, so an automatic retry is not a silent one ---- #}
+{% if reclaims %}
+<h2>Reclaimed</h2>
+<div class="note">
+  <strong>This task was recovered {{ reclaims|length }}
+  time{{ '' if reclaims|length == 1 else 's' }} after a tick died.</strong>
+  Reclaiming runs at the start of every tick, so this may have happened
+  overnight with nobody watching. It is recorded here because the act destroys
+  its own evidence — requeueing clears <code>claimed_at</code>, so afterwards
+  there is nothing left to work it out from.
+</div>
+<table>
+<tr><th>when</th><th>outcome</th><th>the tick that died</th><th>past its clock by</th>
+    <th>attempt</th><th>cleaned up</th><th>by</th></tr>
+{% for r in reclaims %}
+<tr>
+  <td class="dim">{{ r.reclaimed_at.strftime('%d %b %H:%M:%S') }}</td>
+  <td><span class="pill {{ 'warn' if r.outcome == 'requeued' else 'bad' }}">{{ r.outcome }}</span></td>
+  <td class="dim">{% if r.dead_claimed_at %}claimed {{ r.dead_claimed_at.strftime('%d %b %H:%M') }},
+      given {{ r.timeout_seconds }}s{% else %}never recorded a claim time{% endif %}</td>
+  <td class="dim">{{ r.stale_for }} <span class="dim">(grace {{ r.grace }})</span></td>
+  <td class="dim">{{ r.attempts }}/{{ r.max_attempts }}</td>
+  <td class="dim">
+    {%- if r.open_runs_closed %}closed {{ r.open_runs_closed }} open run{{ '' if r.open_runs_closed == 1 else 's' }}{% endif -%}
+    {%- if r.worktree_removed %}<div>removed <code>{{ r.worktree_removed }}</code></div>{% endif -%}
+    {%- if r.branch_kept %}<div>kept <code>{{ r.branch_kept }}</code> — whatever it wrote is still there</div>{% endif -%}
+  </td>
+  <td class="mono dim">{{ r.reclaimed_by }}</td>
+</tr>
+{% endfor %}
+</table>
+<p class="dim">A reclaim does not spend an attempt: <code>claim_task()</code>
+  already counted the try when the dead tick claimed it. So
+  <strong>{{ task.attempts }}/{{ task.max_attempts }}</strong> above counts
+  claims, and this table explains why more than one was needed.</p>
+{% endif %}
+
 {# ---- the diff, which is what you are here for ---- #}
 <h2>Diff</h2>
 {% if not diff.ok %}

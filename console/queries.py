@@ -69,6 +69,24 @@ SELECT br.id, br.estimate_gbp, br.status, br.created_at, br.settled_at,
  ORDER BY br.created_at
 """
 
+# Reclaims: a tick that died and was recovered. Shown on the task so an
+# automatic overnight retry is readable in the morning rather than inferred
+# from `attempts` reading 2 instead of 1.
+TASK_RECLAIMS = """
+SELECT id, task_id, run_id, reclaimed_at, reclaimed_by, outcome,
+       dead_claimed_at, stale_for, grace, timeout_seconds,
+       attempts, max_attempts, open_runs_closed,
+       worktree_removed, branch_kept
+  FROM task_reclaims WHERE task_id = %(task_id)s
+ ORDER BY reclaimed_at DESC, id DESC
+"""
+
+# For the list: which tasks have been reclaimed at all, and how often.
+RECLAIM_COUNTS = """
+SELECT task_id, count(*) AS n, max(reclaimed_at) AS last_reclaimed_at
+  FROM task_reclaims GROUP BY task_id
+"""
+
 # ---------------------------------------------------------------- page 2
 
 # Health, judged against the registry rather than against a number here.
@@ -241,6 +259,14 @@ def run_steps(run_id: int) -> list[dict[str, Any]]:
 
 def run_budget(run_id: int) -> list[dict[str, Any]]:
     return db.rows(RUN_BUDGET, {"run_id": run_id}) if run_id else []
+
+
+def task_reclaims(task_id: int) -> list[dict[str, Any]]:
+    return db.rows(TASK_RECLAIMS, {"task_id": task_id})
+
+
+def reclaim_counts() -> dict[int, dict[str, Any]]:
+    return {r["task_id"]: r for r in db.rows(RECLAIM_COUNTS)}
 
 
 def detector_health() -> list[dict[str, Any]]:

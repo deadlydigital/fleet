@@ -121,7 +121,8 @@ def tasks(request: Request, status: str | None = "READY_FOR_REVIEW"):
         status = None
     return render(request, "tasks.html",
                   tasks=queries.task_list(status),
-                  counts=queries.status_counts(), active=status)
+                  counts=queries.status_counts(), active=status,
+                  reclaims=queries.reclaim_counts())
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -141,6 +142,7 @@ def task_detail(request: Request, task_id: int):
         reject_reasons=decide.REJECT_REASONS,
         reason_help=decide.REASON_HELP,
         outcome=_take_outcome(task_id),
+        reclaims=queries.task_reclaims(task_id),
         contract=task["acceptance_contract"] or {},
         steps=steps,
         patch=(patch or {}).get("payload", {}),

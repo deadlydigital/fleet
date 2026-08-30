@@ -36,7 +36,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from runner import agent as agent_mod
-from runner import boundary, config, evidence, verify, worktree
+from runner import boundary, config, evidence, reclaim as reclaim_mod
+from runner import verify, worktree
 
 FORBIDDEN_RUN_STATUS = {"DEPLOYED"}
 
@@ -56,6 +57,7 @@ class TickResult:
     cost_gbp: float = 0.0
     duration_s: float = 0.0
     notes: list[str] = field(default_factory=list)
+    reclaimed: list[tuple[int, str]] = field(default_factory=list)
 
 
 def _connect(dsn: str) -> psycopg.Connection:
@@ -63,7 +65,8 @@ def _connect(dsn: str) -> psycopg.Connection:
 
 
 def tick(*, queue: str | None = None, only_task: int | None = None,
-         push: bool = True, log: Callable[[str], None] = print) -> TickResult:
+         push: bool = True, reclaim_first: bool = True,
+         log: Callable[[str], None] = print) -> TickResult:
     """Claim at most one task and carry it to a branch or to a failure.
 
     One task per tick, serial. There is no parallel path here and no loop: a
@@ -73,6 +76,18 @@ def tick(*, queue: str | None = None, only_task: int | None = None,
     settings = config.load_runner_config()
     started = time.monotonic()
     result = TickResult()
+
+    # Before claiming anything: recover ticks that died. A task left RUNNING
+    # holds its run ACTIVE, and runs_one_active_per_task then blocks its own
+    # retry, so a stuck task stays stuck until somebody notices. Running it
+    # first means a reclaimed task is claimable in this tick.
+    #
+    # Every reclaim writes a task_reclaims row, which is what makes an
+    # automatic repair readable afterwards rather than inferable from the
+    # attempt count.
+    if reclaim_first:
+        recovered = reclaim_mod.before_claiming(log=log)
+        result.reclaimed = [(r.task_id, r.outcome) for r in recovered]
 
     runner = _connect(config.task_runner_dsn())
     try:

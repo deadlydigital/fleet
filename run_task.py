@@ -36,15 +36,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--reclaim", action="store_true",
                    help="recover tasks left RUNNING by a tick that died, and "
                         "sweep the worktrees they pinned")
+    p.add_argument("--no-reclaim", action="store_true",
+                   help="skip the reclaim that normally begins a tick")
     p.add_argument("--grace", type=int, default=reclaim_mod.DEFAULT_GRACE_SECONDS,
                    help="seconds past a task's own wall clock before it counts "
                         "as stale (minimum 300)")
     args = p.parse_args(argv)
 
     if args.reclaim:
-        # Deliberately not folded into a normal tick. Reclaiming is a repair,
-        # and a repair that happens automatically before every run is one
-        # nobody reads the output of.
+        # This flag now means "reclaim and stop", because reclaiming also
+        # happens at the start of every tick.
+        #
+        # It used to say a repair that happens automatically is one nobody
+        # reads the output of. That objection was right and is answered, not
+        # ignored: every reclaim writes a task_reclaims row and the console
+        # shows it on the task, so an overnight retry is visible in the
+        # morning rather than inferred from the attempt count. Automatic and
+        # invisible was the bad combination; only one half of it was removed.
         try:
             results = reclaim_mod.reclaim(grace_seconds=args.grace,
                                           only_task=args.task)
@@ -63,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = cycle.tick(queue=args.queue, only_task=args.task,
-                            push=not args.no_push)
+                            push=not args.no_push,
+                            reclaim_first=not args.no_reclaim)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2

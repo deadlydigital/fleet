@@ -340,3 +340,166 @@ def test_an_unsafe_grace_is_refused_before_anything_is_touched(dsns, settings):
     when a candidate exists. So the refusal has to happen here."""
     with pytest.raises(ValueError, match="refusing a grace"):
         reclaim.reclaim(grace_seconds=10, log=lambda *_: None)
+
+
+# ---- the reclaim is recorded, because it destroys its own evidence --------
+
+def test_a_reclaim_writes_a_row(dsns, console, runner, admin):
+    tid = queue(console, max_attempts=2, timeout_seconds=300)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    claimed = admin.execute("SELECT claimed_at FROM tasks WHERE id=%s",
+                            (tid,)).fetchone()["claimed_at"]
+    make_stale(admin, tid)
+    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
+    runner.commit()
+
+    r = admin.execute("SELECT * FROM task_reclaims WHERE task_id=%s",
+                      (tid,)).fetchone()
+    assert r["outcome"] == "requeued"
+    assert r["attempts"] == 1 and r["max_attempts"] == 2
+    assert r["timeout_seconds"] == 300
+    assert r["stale_for"].total_seconds() > 0
+    assert r["reclaimed_by"] == "fleet_test_task_runner"
+    # The evidence the requeue is about to destroy, kept.
+    assert r["dead_claimed_at"] is not None
+    assert admin.execute("SELECT claimed_at FROM tasks WHERE id=%s",
+                         (tid,)).fetchone()["claimed_at"] is None
+
+
+def test_the_record_survives_what_the_requeue_erases(dsns, console, runner, admin):
+    """claimed_at is nulled by the requeue. Without the row there is nothing
+    left to work out how stale the tick was."""
+    tid = queue(console, max_attempts=2)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    make_stale(admin, tid, seconds_ago=5000)
+    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
+    runner.commit()
+    r = admin.execute("SELECT stale_for, dead_claimed_at FROM task_reclaims"
+                      " WHERE task_id=%s", (tid,)).fetchone()
+    assert r["stale_for"].total_seconds() > 3000
+    assert r["dead_claimed_at"] is not None
+
+
+def test_a_refused_reclaim_writes_nothing(dsns, console, runner, admin):
+    tid = queue(console)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))   # still_live
+    runner.commit()
+    assert admin.execute("SELECT count(*) AS n FROM task_reclaims WHERE task_id=%s",
+                         (tid,)).fetchone()["n"] == 0
+
+
+def test_failing_at_the_limit_is_recorded_too(dsns, console, runner, admin):
+    tid = queue(console, max_attempts=1)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    make_stale(admin, tid)
+    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
+    runner.commit()
+    r = admin.execute("SELECT outcome FROM task_reclaims WHERE task_id=%s",
+                      (tid,)).fetchone()
+    assert r["outcome"] == "failed"
+
+
+def test_the_runner_cannot_rewrite_a_reclaim(dsns, runner, console, admin):
+    """A reclaim is a fact about what happened, not a row to tidy."""
+    tid = queue(console, max_attempts=2)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    make_stale(admin, tid)
+    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
+    runner.commit()
+    # It may attach what it cleaned up, and nothing else: outcome, timings and
+    # attempt counts are facts about what happened, not rows to revise.
+    for sql in ("UPDATE task_reclaims SET outcome='requeued'",
+                "UPDATE task_reclaims SET stale_for = interval '0'",
+                "UPDATE task_reclaims SET attempts = 0",
+                "DELETE FROM task_reclaims"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            runner.execute(sql)
+        runner.rollback()
+    runner.execute("UPDATE task_reclaims SET worktree_removed='/tmp/x'")
+    runner.commit()
+
+
+def test_the_cleanup_note_is_attached(dsns, settings, console, runner, admin,
+                                      repo, tmp_path):
+    tid = queue(console, max_attempts=2)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    branch = worktree.branch_name(tid, 1)
+    wt_root = Path(settings["worktree_root"])
+    wt_root.mkdir(parents=True, exist_ok=True)
+    worktree.create(repo, wt_root, branch, "main")
+    make_stale(admin, tid)
+
+    reclaim.reclaim(log=lambda *_: None)
+    r = admin.execute("SELECT worktree_removed, branch_kept FROM task_reclaims"
+                      " WHERE task_id=%s", (tid,)).fetchone()
+    assert r["worktree_removed"] and branch in r["branch_kept"]
+
+
+# ---- reclaiming happens before claiming ----------------------------------
+
+def test_a_tick_reclaims_before_it_claims(dsns, settings, console, runner,
+                                          admin, repo, monkeypatch):
+    """A task stuck by a dead tick is recovered and then claimed in the SAME
+    tick, rather than waiting for the next one."""
+    from runner import cycle
+    from runner import agent as agent_mod
+    monkeypatch.setattr(cycle.config, "load_runner_config", lambda path=None: settings)
+    monkeypatch.setattr(cycle.config, "PROJECT_ROOT", repo)
+
+    tid = queue(console, max_attempts=2, timeout_seconds=300)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()          # before admin touches runs: the FK needs this row
+    admin.execute(
+        "INSERT INTO runs (task_id, work_type, contract_version, spend_limit_gbp)"
+        " VALUES (%s,'dd_feature',1,3.00)", (tid,))
+    make_stale(admin, tid)
+
+    def invoke(worktree_path, prompt, timeout_seconds, model=None,
+               allowed_tools=(), readable=()):
+        (worktree_path / "api" / "app.py").write_text("x = 2\n")
+        return agent_mod.AgentResult(exit_code=0, timed_out=False,
+                                     duration_ms=5, text="done", cost_usd=0.01)
+
+    monkeypatch.setattr(cycle.agent_mod, "invoke", invoke)
+    result = cycle.tick(push=False, log=lambda *_: None)
+
+    assert (tid, "requeued") in result.reclaimed, "the tick did not reclaim first"
+    assert result.task_id == tid, "the reclaimed task was not then claimed"
+    assert result.outcome == "READY_FOR_REVIEW", result.reason
+    assert admin.execute("SELECT count(*) AS n FROM task_reclaims WHERE task_id=%s",
+                         (tid,)).fetchone()["n"] == 1
+
+
+def test_a_failing_reclaim_does_not_stop_the_tick(dsns, settings, console,
+                                                  monkeypatch):
+    """The stuck task was already stuck. Turning that into 'nothing runs at
+    all' would make a small failure a total one."""
+    from runner import cycle
+    monkeypatch.setattr(cycle.config, "load_runner_config", lambda path=None: settings)
+    monkeypatch.setattr(cycle.reclaim_mod, "reclaim",
+                        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    lines: list[str] = []
+    result = cycle.tick(push=False, log=lines.append)
+    assert result.outcome == "IDLE"
+    assert any("continuing to claim anyway" in l for l in lines)
+
+
+def test_reclaiming_can_be_turned_off(dsns, settings, console, runner, admin,
+                                      monkeypatch):
+    from runner import cycle
+    monkeypatch.setattr(cycle.config, "load_runner_config", lambda path=None: settings)
+    tid = queue(console, max_attempts=2)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    make_stale(admin, tid)
+    result = cycle.tick(push=False, reclaim_first=False, log=lambda *_: None)
+    assert result.reclaimed == []
+    assert admin.execute("SELECT status FROM tasks WHERE id=%s",
+                         (tid,)).fetchone()["status"] == "RUNNING"
