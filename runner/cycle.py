@@ -196,6 +196,22 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             result.notes.extend(
                 f"evidence query {k} failed and produced no reading" for k in failed)
 
+            # COMMITTED BEFORE THE AGENT RUNS, and the base moves to that
+            # commit. The pack is the runner's file, not the agent's: leaving
+            # it uncommitted put it in the derived diff, where the boundary
+            # correctly refused it for being outside writable_paths -- the
+            # runner's own artifact failing the runner's own check.
+            #
+            # Committing it also keeps it: the readings a document rests on
+            # travel with the document, on the same branch, so a reviewer can
+            # see what the numbers came from.
+            boundary.commit_agent_work(
+                wt_path, f"evidence pack for task {task['id']}: "
+                         f"{len(results)} readings taken before the agent ran")
+            base_sha = boundary.git(wt_path, "rev-parse", "HEAD").strip()
+            log(f"  evidence committed; the agent's diff is measured from "
+                f"{base_sha[:12]}")
+
         token, reserved = _reserve(task, run_id, log)
         prompt = agent_mod.build_prompt(task, contract)
         outcome = agent_mod.invoke(
