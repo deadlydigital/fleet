@@ -278,3 +278,110 @@ The same harness as track 1. `fleet_test` is built from `001_v1_core.sql` and
 `002_proposals.sql` verbatim, and the tests connect as `fleet_test_reader`,
 `fleet_test_proposer` and `fleet_test_console`, so the three-way separation
 the design rests on is the one under test.
+
+---
+
+# The task runner, V1
+
+Track 3. It takes a spec you wrote and produces a branch. It never merges and
+it never deploys, and neither of those is a promise the code makes: there is
+no transition in `task_transitions` that reaches a deploying state, and the
+runner identity is not a member of any role that could write one.
+
+    003_tasks.sql       tasks, the protected-path floor, the state machine
+    contracts/          the acceptance contract per repo
+    runner/config.py    four DSNs, and the contract loader
+    fleet               fleet task add | list | status
+
+## Stage 1 is the schema and the queue
+
+    ./fleet task add --title "Refund reporting" --spec specs/refunds.md \
+                     --objective dd-feature-parity --max-cost 3.00
+    ./fleet task list
+    ./fleet task status 7
+
+The CLI connects as `fleet_console` and nothing else. `fleet_task_runner` has
+no INSERT on `tasks`, so "no self-generated tasks in V1" is a grant rather
+than a convention.
+
+## Four identities, because it is four jobs
+
+    fleet_console       writes the queue, and records every reviewed state.
+    fleet_task_runner   claims a task and moves it between machine states. It
+                        cannot insert a task and cannot review one.
+    fleet_agent         writes PATCH_PROPOSED.
+    fleet_verifier      writes VERIFICATION_RUN.
+
+The last two are 001's, unchanged, and they are separate for the reason
+`step_authority` exists: the thing that proposes a diff is not the thing that
+certifies it. The runner process holds both, but never on one connection.
+
+## What the database enforces, not the runner
+
+* **A contract that leaves the test suite writable cannot be stored.**
+  `protected_path_floor` is a table, checked by trigger at insert. Tests and
+  migrations are on it. An agent that can edit the suite judging it can pass
+  anything, and that rule cost several rounds in track 1; here it is a write
+  that fails rather than a review that catches it.
+* **A contract cannot contradict itself.** `api/**` writable with
+  `api/tests/**` protected is refused, because the runner would otherwise
+  have to pick a winner at diff time. The check found a real contradiction in
+  the shipped contract on the first run: `api/analytics/**` swallowed
+  `api/analytics/migrations/**`, and the writable set is enumerated now.
+* **The boundary cannot move while work is inside it.** The acceptance
+  contract is frozen once the task leaves QUEUED.
+* **`spec_md` is append-only.** Rework feedback is the only learning signal
+  this design has, and an update that could shorten it would lose the record
+  of why the last attempt was wrong.
+* **A task cannot be called ready for review without a branch and a run.**
+  That is the one lie the status column could otherwise tell.
+* **A run cannot outspend its task.** Without it the runner could open its own
+  run with any `spend_limit_gbp` it liked and `max_cost_gbp` would be
+  decoration.
+* **Every task carries a bounded wall-clock cap.** `timeout_seconds` is NOT
+  NULL and capped in a check constraint rather than in configuration, because
+  a stuck agent burning budget in a loop is the failure this guards.
+
+## Reusing `runs`, and the one change to 001
+
+One task maps to one run, and the agent's steps are `PATCH_PROPOSED` and
+`VERIFICATION_RUN` exactly as 001 designed them. A parallel log for this
+track would be a second place for the same facts to disagree.
+
+001 required every run to name an issue, because every run then came from a
+detection. Feature work has no issue to name. `runs.issue_id` is now nullable
+and `runs.task_id` exists, with a check that exactly one is set. The
+alternative was a synthetic issue per task, which the coverage predicates and
+track 2's findings would have read as a real open problem. This is the only
+statement in 003 that alters a 001 object; the rest are additive.
+
+Applied to a `runs` table with no rows, so no existing row had to be
+revisited.
+
+## A latent bug in 001, fixed here
+
+001 created `step_authority` and granted it to nobody, so
+`enforce_step_authority()` raised `permission denied for table
+step_authority` instead of the message it was written to raise. It failed
+closed, so nothing was ever unguarded, but the first agent to write a step
+would have been stopped by the wrong error. 003 grants the read.
+
+## Paths were checked, not remembered
+
+The spec's example contract named `alembic/**`, `docker-compose.yml` and
+`dd/detectors/**`. None of the three exists at those paths: migrations are
+`api/alembic/**` and `api/analytics/migrations/**`, there is no compose file
+at the repo root, and the detectors are in this repo, which a task against
+the platform cannot reach. `contracts/deadly-digital-platform.yaml` names
+what is actually there, and a test asserts every glob in it resolves.
+
+## Tests
+
+    .venv/bin/python -m pytest tests/ -q
+
+The same harness. `fleet_test` is built from `001_v1_core.sql`,
+`002_proposals.sql` and `003_tasks.sql` verbatim, and the tests connect as
+`fleet_test_task_runner`, `fleet_test_agent`, `fleet_test_verifier` and
+`fleet_test_console`, so the separation the design rests on is the one under
+test. `003_tasks_assertions.sql` proves the deployed grants and triggers are
+the ones that behaviour was proved on.

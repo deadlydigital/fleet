@@ -50,6 +50,9 @@ def _login_dsn(role: str) -> str:
 READER_TEST_DSN = _login_dsn("fleet_test_reader")
 PROPOSER_TEST_DSN = _login_dsn("fleet_test_proposer")
 CONSOLE_TEST_DSN = _login_dsn("fleet_test_console")
+RUNNER_TEST_DSN = _login_dsn("fleet_test_task_runner")
+AGENT_TEST_DSN = _login_dsn("fleet_test_agent")
+VERIFIER_TEST_DSN = _login_dsn("fleet_test_verifier")
 
 
 def _admin(sql: str) -> None:
@@ -79,8 +82,10 @@ def templates() -> None:
     _admin(f'CREATE DATABASE "{FLEET_TEMPLATE}"')
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "001_v1_core.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "002_proposals.sql")
+    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "003_tasks.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
+    _psql(FLEET_TEMPLATE, FIXTURES / "tasks_seed.sql")
 
     _admin(f'DROP DATABASE IF EXISTS "{DD_DB}" WITH (FORCE)')
     _admin(f'DROP DATABASE IF EXISTS "{DD_TEMPLATE}" WITH (FORCE)')
@@ -98,9 +103,13 @@ def dsns(templates, monkeypatch) -> dict[str, str]:
     monkeypatch.setenv("FLEET_READER_DSN", READER_TEST_DSN)
     monkeypatch.setenv("FLEET_PROPOSER_DSN", PROPOSER_TEST_DSN)
     monkeypatch.setenv("FLEET_CONSOLE_DSN", CONSOLE_TEST_DSN)
+    monkeypatch.setenv("FLEET_TASK_RUNNER_DSN", RUNNER_TEST_DSN)
+    monkeypatch.setenv("FLEET_AGENT_DSN", AGENT_TEST_DSN)
+    monkeypatch.setenv("FLEET_VERIFIER_DSN", VERIFIER_TEST_DSN)
     return {"fleet": FLEET_TEST_DSN, "dd": DD_TEST_DSN,
             "reader": READER_TEST_DSN, "proposer": PROPOSER_TEST_DSN,
-            "console": CONSOLE_TEST_DSN}
+            "console": CONSOLE_TEST_DSN, "runner": RUNNER_TEST_DSN,
+            "agent": AGENT_TEST_DSN, "verifier": VERIFIER_TEST_DSN}
 
 
 @pytest.fixture
@@ -138,4 +147,25 @@ def proposer(dsns):
 def console(dsns):
     """The only role the database accepts a decision from."""
     with psycopg.connect(dsns["console"], row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def runner(dsns):
+    """The orchestrator: claims tasks and moves them between machine states."""
+    with psycopg.connect(dsns["runner"], row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def agent_conn(dsns):
+    """Writes PATCH_PROPOSED. Cannot write VERIFICATION_RUN."""
+    with psycopg.connect(dsns["agent"], row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def verifier_conn(dsns):
+    """Writes VERIFICATION_RUN. Cannot write PATCH_PROPOSED."""
+    with psycopg.connect(dsns["verifier"], row_factory=dict_row) as conn:
         yield conn

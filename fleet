@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""The task queue, from the outside.
+
+    fleet task add --title "Refund reporting" --spec specs/refunds.md \
+                   --objective dd-feature-parity --max-cost 3.00
+    fleet task list [--status QUEUED] [--queue default]
+    fleet task status 7
+
+Connects as fleet_console, which is the only identity that may write the
+queue. The runner cannot: there is no INSERT grant on tasks for
+fleet_task_runner, and no transition in task_transitions that takes it to a
+reviewed state. V1 has no self-generated tasks, and that is a grant rather
+than a convention.
+
+`add` reads the acceptance contract from contracts/<repo>.yaml unless
+--contract names another file. The contract is checked here for the sake of a
+message that names the file, and again by the database, which is what
+actually decides: a contract that fails to protect the test suite or the
+migrations cannot be stored, so no runner can be pointed at one.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
+
+from runner import config
+
+STATUS_ORDER = ("QUEUED", "RUNNING", "READY_FOR_REVIEW", "REWORK",
+                "FAILED", "REJECTED", "MERGED", "ABANDONED")
+
+
+def connect():
+    return psycopg.connect(config.console_dsn(), row_factory=dict_row)
+
+
+# ---- add ------------------------------------------------------------------
+
+def cmd_add(args: argparse.Namespace) -> int:
+    spec_path = Path(args.spec)
+    if not spec_path.exists():
+        print(f"no spec at {spec_path}", file=sys.stderr)
+        return 2
+    spec_md = spec_path.read_text()
+    if not spec_md.strip():
+        print(f"{spec_path} is empty; a vague spec produces a branch you throw "
+              f"away", file=sys.stderr)
+        return 2
+
+    contract = config.load_contract(
+        args.repo, Path(args.contract) if args.contract else None)
+
+    if args.base_branch and args.base_branch != contract["base_branch"]:
+        contract = dict(contract, base_branch=args.base_branch)
+
+    max_cost = args.max_cost or contract.get("max_cost_gbp")
+    if max_cost is None:
+        print("no --max-cost and none in the contract", file=sys.stderr)
+        return 2
+    timeout = args.timeout or contract.get("timeout_seconds", 1800)
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO tasks (queue, title, spec_md, repo, base_branch,
+                               acceptance_contract, priority, objective_ref,
+                               max_cost_gbp, timeout_seconds, max_attempts)
+            VALUES (%(queue)s, %(title)s, %(spec_md)s, %(repo)s, %(base)s,
+                    %(contract)s, %(priority)s, %(objective)s,
+                    %(max_cost)s, %(timeout)s, %(max_attempts)s)
+            RETURNING id
+            """,
+            {"queue": args.queue, "title": args.title, "spec_md": spec_md,
+             "repo": args.repo, "base": contract["base_branch"],
+             "contract": json.dumps(contract), "priority": args.priority,
+             "objective": args.objective, "max_cost": max_cost,
+             "timeout": timeout, "max_attempts": args.max_attempts},
+        ).fetchone()
+        conn.commit()
+
+    print(f"task {row['id']} queued: {args.title}")
+    print(f"  repo         {args.repo} @ {contract['base_branch']}")
+    print(f"  spec         {spec_path} ({len(spec_md.splitlines())} lines)")
+    print(f"  budget       £{float(max_cost):.2f}   timeout {timeout}s   "
+          f"attempts {args.max_attempts}")
+    print(f"  writable     {len(contract['writable_paths'])} globs")
+    print(f"  protected    {len(contract['protected_paths'])} globs")
+    print(f"  verification {'; '.join(contract['verification'])}")
+    return 0
+
+
+# ---- list -----------------------------------------------------------------
+
+def cmd_list(args: argparse.Namespace) -> int:
+    where, params = [], {}
+    if args.status:
+        where.append("t.status = %(status)s")
+        params["status"] = args.status
+    if args.queue:
+        where.append("t.queue = %(queue)s")
+        params["queue"] = args.queue
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT t.id, t.status, t.queue, t.priority, t.title, t.repo,
+                   t.branch_name, t.attempts, t.max_attempts, t.max_cost_gbp,
+                   t.objective_ref, t.created_at,
+                   r.committed_gbp
+              FROM tasks t
+              LEFT JOIN runs r ON r.task_id = t.id
+              {clause}
+             ORDER BY array_position(%(order)s::text[], t.status),
+                      t.priority, t.id
+            """,
+            {**params, "order": list(STATUS_ORDER)},
+        ).fetchall()
+
+    if not rows:
+        print("no tasks" + (f" with status {args.status}" if args.status else ""))
+        return 0
+
+    print(f"{'id':>4}  {'status':<17} {'pri':>4} {'att':>5} {'£cap':>6} "
+          f"{'£spent':>7}  title")
+    for r in rows:
+        spent = f"{r['committed_gbp']:.2f}" if r["committed_gbp"] is not None else "-"
+        att = f"{r['attempts']}/{r['max_attempts']}"
+        print(f"{r['id']:>4}  {r['status']:<17} {r['priority']:>4} {att:>5} "
+              f"{r['max_cost_gbp']:>6.2f} {spent:>7}  {r['title']}")
+        if r["branch_name"]:
+            print(f"      {r['branch_name']}")
+
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    print("\n" + "  ".join(f"{s} {counts[s]}"
+                           for s in STATUS_ORDER if s in counts))
+    return 0
+
+
+# ---- status ---------------------------------------------------------------
+
+def cmd_status(args: argparse.Namespace) -> int:
+    with connect() as conn:
+        task = conn.execute(
+            "SELECT * FROM tasks WHERE id = %s", (args.task_id,)).fetchone()
+        if task is None:
+            print(f"no task {args.task_id}", file=sys.stderr)
+            return 2
+        run = conn.execute(
+            "SELECT * FROM runs WHERE task_id = %s ORDER BY id DESC LIMIT 1",
+            (args.task_id,)).fetchone()
+        steps = conn.execute(
+            "SELECT sequence, step_type, actor, created_at, payload"
+            "  FROM run_steps WHERE run_id = %s ORDER BY sequence",
+            (run["id"],)).fetchall() if run else []
+        nxt = conn.execute(
+            "SELECT to_status, required_role, note FROM task_transitions"
+            " WHERE from_status = %s ORDER BY to_status", (task["status"],)
+        ).fetchall()
+
+    c = task["acceptance_contract"]
+    print(f"task {task['id']}  {task['status']}")
+    print(f"  {task['title']}")
+    print(f"  queue        {task['queue']}   priority {task['priority']}")
+    print(f"  repo         {task['repo']} @ {task['base_branch']}")
+    print(f"  objective    {task['objective_ref'] or '-'}")
+    print(f"  budget       £{task['max_cost_gbp']:.2f}   "
+          f"timeout {task['timeout_seconds']}s   "
+          f"attempts {task['attempts']}/{task['max_attempts']}")
+    print(f"  created      {task['created_at']:%Y-%m-%d %H:%M}")
+    if task["claimed_at"]:
+        print(f"  claimed      {task['claimed_at']:%Y-%m-%d %H:%M}")
+    if task["completed_at"]:
+        print(f"  completed    {task['completed_at']:%Y-%m-%d %H:%M}")
+    print(f"  branch       {task['branch_name'] or '-'}")
+
+    print("\n  contract")
+    print(f"    verification   {'; '.join(c['verification'])}")
+    print(f"    max diff       {c['max_diff_lines']} lines")
+    print(f"    writable       {', '.join(c['writable_paths'])}")
+    print(f"    protected      {', '.join(c['protected_paths'])}")
+
+    if run:
+        print(f"\n  run {run['id']}  {run['status']}  "
+              f"£{run['committed_gbp']} of £{run['spend_limit_gbp']}")
+        for s in steps:
+            detail = ""
+            if s["step_type"] == "VERIFICATION_RUN":
+                detail = f"  {s['payload'].get('result', '?')}"
+            elif s["step_type"] == "PATCH_PROPOSED":
+                detail = f"  {(s['payload'].get('patch_commit_sha') or '')[:12]}"
+            print(f"    {s['sequence']:>2}. {s['step_type']:<20} "
+                  f"{s['actor']:<12} {s['created_at']:%H:%M:%S}{detail}")
+    else:
+        print("\n  no run yet")
+
+    print("\n  from here")
+    for t in nxt:
+        print(f"    -> {t['to_status']:<17} {t['required_role']:<18} {t['note']}")
+    if not nxt:
+        print("    (terminal)")
+    return 0
+
+
+# ---- entry ----------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="fleet", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="group", required=True)
+    task = sub.add_parser("task", help="the task queue").add_subparsers(
+        dest="command", required=True)
+
+    a = task.add_parser("add", help="queue a task")
+    a.add_argument("--title", required=True)
+    a.add_argument("--spec", required=True, help="path to the spec markdown")
+    a.add_argument("--repo", default="deadly-digital-platform")
+    a.add_argument("--contract", help="contract yaml (default: contracts/<repo>.yaml)")
+    a.add_argument("--base-branch", help="override the contract's base branch")
+    a.add_argument("--objective", help="objective id from the quarter's file")
+    a.add_argument("--max-cost", type=float, help="£ ceiling for this task")
+    a.add_argument("--timeout", type=int, help="wall-clock seconds, max 3600")
+    a.add_argument("--priority", type=int, default=100, help="lower is sooner")
+    a.add_argument("--queue", default="default")
+    a.add_argument("--max-attempts", type=int, default=1)
+    a.set_defaults(fn=cmd_add)
+
+    l = task.add_parser("list", help="what is queued and what is waiting on you")
+    l.add_argument("--status", choices=STATUS_ORDER)
+    l.add_argument("--queue")
+    l.set_defaults(fn=cmd_list)
+
+    s = task.add_parser("status", help="one task in full")
+    s.add_argument("task_id", type=int)
+    s.set_defaults(fn=cmd_status)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.fn(args)
+    except psycopg.errors.RaiseException as exc:
+        print(str(exc).split("\n")[0], file=sys.stderr)
+        return 1
+    except (psycopg.errors.CheckViolation, psycopg.errors.InsufficientPrivilege) as exc:
+        print(str(exc).split("\n")[0], file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

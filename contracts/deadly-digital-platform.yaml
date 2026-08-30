@@ -1,0 +1,59 @@
+# The default acceptance contract for deadly-digital-platform.
+#
+# Paths here were checked against the working tree, not written from memory.
+# The spec's example named alembic/**, docker-compose.yml and dd/detectors/**;
+# none of the three exists at those paths. Migrations are api/alembic/** and
+# api/analytics/migrations/**, there is no compose file at the repo root, and
+# the detectors are in the fleet repo, which a task against this repo cannot
+# reach in the first place.
+#
+# protected_paths must name every glob in protected_path_floor for this repo
+# or the task cannot be inserted. Listing them here rather than relying on the
+# floor implicitly is deliberate: the contract is the artifact a review reads
+# to find out what the agent was allowed to do.
+
+work_type: dd_feature
+repo: deadly-digital-platform
+base_branch: main
+
+writable_paths:
+  - api/app.py
+  - api/services/**
+  # enumerated rather than api/analytics/**, because that would have
+  # swallowed api/analytics/migrations/** and made the contract contradict
+  # itself. The insert-time check refuses such a contract; this is what it
+  # forced.
+  - api/analytics/routes/**
+  - api/analytics/services/**
+  - api/analytics/models.py
+  - platform/app/**
+  - platform/components/**
+  - platform/lib/**
+
+protected_paths:
+  # the floor, and the reason each is on it
+  - api/tests/**                    # the suite that judges the work
+  - api/pytest.ini                  # an ignore rule here passes everything
+  - api/ruff.toml                   # same, for lint
+  - api/alembic/**                  # a schema change is a separate decision
+  - api/analytics/migrations/**     # the analytics schema, same reason
+  - platform/__tests__/**           # the platform suite
+  - platform/vitest.config.ts       # platform suite configuration
+  - platform/playwright.config.ts   # end-to-end configuration
+  # not floor, but not a feature's business either
+  - .github/**
+  - api/Dockerfile
+  - api/deploy.sh
+  - api/docker-compose.yml
+  - platform/docker-compose.yml
+  - platform/next.config.js
+  - platform/package.json
+  - platform/package-lock.json
+
+verification:
+  - ruff check api/
+  - pytest api/tests/ -q
+
+max_diff_lines: 800
+max_cost_gbp: 3.00
+timeout_seconds: 1800
