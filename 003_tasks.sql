@@ -386,6 +386,13 @@ ALTER FUNCTION enforce_contract_floor()    OWNER TO fleet_owner;
 ALTER FUNCTION guard_task_immutability()   OWNER TO fleet_owner;
 ALTER FUNCTION glob_prefix(text)           OWNER TO fleet_owner;
 
+-- What those definer functions read, and nothing else -- the same note 002
+-- carries. runs_task_budget fires inside reserve_model_budget() and
+-- settle_model_budget(), which are SECURITY DEFINER and therefore run as
+-- fleet_owner; without this the budget path fails with "permission denied
+-- for table tasks" rather than with the cap it exists to enforce.
+GRANT SELECT ON public.tasks TO fleet_owner;
+
 -- ============================================================ 10. GRANTS
 
 REVOKE ALL ON tasks, task_transitions, protected_path_floor FROM PUBLIC;

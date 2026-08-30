@@ -136,4 +136,8 @@ IF has_function_privilege('fleet_task_runner', 'rework_task(bigint,text)', 'EXEC
 THEN RAISE EXCEPTION 'C14 FAIL: the runner can rework its own task'; END IF;
 RAISE NOTICE 'C14 pass  rework appends, and only the console may call it'; END $$;
 
+DO $$ BEGIN IF NOT has_table_privilege('fleet_owner', 'public.tasks'::regclass, 'SELECT')
+THEN RAISE EXCEPTION 'C15 FAIL: fleet_owner cannot read tasks, so the budget triggers fired inside reserve_model_budget() will fail on a permission error rather than on the cap'; END IF;
+RAISE NOTICE 'C15 pass  the definer budget path can read the cap it enforces'; END $$;
+
 DO $$ BEGIN RAISE NOTICE '--- 003 assertions complete ---'; END $$;

@@ -94,3 +94,28 @@ def load_contract(repo: str, path: Path | None = None) -> dict[str, Any]:
         raise RuntimeError(f"{path} contradicts itself: {'; '.join(clashes)}")
 
     return contract
+
+
+RUNNER_CONFIG_PATH = PROJECT_ROOT / "runner.yaml"
+
+
+def model_gateway_dsn() -> str:
+    """reserve_model_budget / settle_model_budget are granted to
+    fleet_model_gateway and to nothing else. The runner invoking a model is
+    acting as that gateway, so it connects as one."""
+    return base_config.require("FLEET_MODEL_GATEWAY_DSN")
+
+
+def load_runner_config(path: Path | None = None) -> dict[str, Any]:
+    import os
+    path = path or Path(os.environ.get("FLEET_RUNNER_CONFIG", RUNNER_CONFIG_PATH))
+    if not path.exists():
+        raise RuntimeError(f"runner configuration missing: {path}")
+    loaded = yaml.safe_load(path.read_text())
+    if not isinstance(loaded, dict):
+        raise RuntimeError(f"{path} is not a mapping")
+    for key in ("worktree_root", "repo_root", "remote", "agent_tools",
+                "usd_to_gbp"):
+        if key not in loaded:
+            raise RuntimeError(f"{path} is missing {key}")
+    return loaded

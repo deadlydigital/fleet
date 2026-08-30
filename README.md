@@ -375,6 +375,98 @@ at the repo root, and the detectors are in this repo, which a task against
 the platform cannot reach. `contracts/deadly-digital-platform.yaml` names
 what is actually there, and a test asserts every glob in it resolves.
 
+## Stage 2 is the runner
+
+    python run_task.py                 claim the next queued task and run it
+    python run_task.py --task 7        run that task, if it is QUEUED
+    python run_task.py --no-push       leave the branch local
+
+Invoked by hand. `systemd/` carries no unit for this and no timer is enabled:
+the build order puts the timer after three tasks have gone through by hand,
+and that has not happened.
+
+One task per tick. There is no loop in `run_task.py`, so two tasks are two
+invocations and the cost and blast radius of an invocation stay one task
+wide.
+
+    runner/worktree.py  worktrees, and the guards around the one push
+    runner/agent.py     the Claude CLI, under the runner's clock
+    runner/boundary.py  the derived diff, and what it refuses
+    runner/verify.py    the contract's verification commands
+    runner/cycle.py     one tick
+
+## The runner derives the diff, and the order is not the spec's
+
+The spec's tick runs verification (step 5) before deriving the diff (step 6).
+This runs them the other way round and refuses to verify a tree whose
+boundary is dirty.
+
+The reason is that a suite executed after the agent may have edited that
+suite returns a result about the agent's tests rather than the project's. A
+PASS obtained that way is worse than no result, because it arrives with
+provenance attached. So: commit whatever the agent left, derive the diff from
+git, judge it, and only then run anything.
+
+The agent never commits and is told not to. The runner commits with `git add
+-A`, which picks up deletions and files the agent simply left on disk, so
+nothing it wrote sits outside the comparison. A diff derived from a commit
+the agent composed would be a diff the agent chose the contents of.
+
+Three ways to fail the boundary, kept apart because they mean different
+things to whoever reads the branch:
+
+    protected    it edited the suite, a migration, a deploy script
+    outside      it edited something the contract never mentioned
+    over limit   more changed lines than the contract allows
+
+The agent is asked to end with a JSON list of what it changed. That list is
+recorded next to the derived one and **no decision reads it**. Where the two
+disagree, the divergence is stored on the `PATCH_PROPOSED` step, so an agent
+that under-reports is visible afterwards rather than merely refused at the
+time. `test_a_lying_agent_does_not_get_a_clean_boundary` is the case the
+module exists for.
+
+## The wall clock is the runner's, not the agent's
+
+`timeout_seconds` is enforced by `subprocess` and a signal, never by asking
+the agent to mind the clock -- an agent that is stuck is by definition not
+going to notice. The kill goes to the process group rather than the child,
+because the CLI spawns its own children and terminating only the visible
+process leaves them running with the budget already spent.
+`test_the_agents_children_are_killed_too` starts a real grandchild and checks
+it is gone.
+
+## It never merges and never deploys
+
+Enforced in four places rather than promised in one:
+
+* no transition in `task_transitions` reaches a deploying state, and
+  `fleet_task_runner` is not a member of `fleet_deployer`
+* `runs.status` is set to `AWAITING_HUMAN` or `FAILED` and never `DEPLOYED`
+* `worktree.push` refuses the base branch, refuses a name that is not a task
+  branch, never forces, and names an explicit refspec
+* the checkout is snapshotted before the agent runs and compared afterwards,
+  so "the working tree is never touched" is checked rather than assumed
+
+## Four identities on four connections
+
+    fleet_task_runner    claims the task, opens the run, records the branch
+    fleet_model_gateway  reserves and settles budget
+    fleet_agent          writes PATCH_PROPOSED
+    fleet_verifier       writes VERIFICATION_RUN
+
+001's `step_authority` is what makes the last two separate. One connection
+holding all four would satisfy every trigger while proving nothing.
+
+`reserve_model_budget` and `settle_model_budget` are `SECURITY DEFINER`, so
+the budget trigger 003 puts on `runs` executes as `fleet_owner`. Without a
+read on `tasks` that path failed with a permission error instead of the cap
+it exists to enforce; the grant is in 003 and assertion C15 checks it on the
+deployed database.
+
+Cost is converted from the CLI's USD at a stated constant in `runner.yaml`,
+not a live rate. Treat every cost in the database as accurate to about that.
+
 ## Tests
 
     .venv/bin/python -m pytest tests/ -q
@@ -385,3 +477,8 @@ The same harness. `fleet_test` is built from `001_v1_core.sql`,
 `fleet_test_console`, so the separation the design rests on is the one under
 test. `003_tasks_assertions.sql` proves the deployed grants and triggers are
 the ones that behaviour was proved on.
+
+The runner's tests use a real git repository, real worktrees and the real
+four identities, with the agent faked -- deliberately hostile in several of
+them. An agent that edits the suite and reports that it did not is the case
+the runner exists for, and it is easier to arrange than to wait for.

@@ -53,6 +53,7 @@ CONSOLE_TEST_DSN = _login_dsn("fleet_test_console")
 RUNNER_TEST_DSN = _login_dsn("fleet_test_task_runner")
 AGENT_TEST_DSN = _login_dsn("fleet_test_agent")
 VERIFIER_TEST_DSN = _login_dsn("fleet_test_verifier")
+GATEWAY_TEST_DSN = _login_dsn("fleet_test_model_gateway")
 
 
 def _admin(sql: str) -> None:
@@ -106,10 +107,12 @@ def dsns(templates, monkeypatch) -> dict[str, str]:
     monkeypatch.setenv("FLEET_TASK_RUNNER_DSN", RUNNER_TEST_DSN)
     monkeypatch.setenv("FLEET_AGENT_DSN", AGENT_TEST_DSN)
     monkeypatch.setenv("FLEET_VERIFIER_DSN", VERIFIER_TEST_DSN)
+    monkeypatch.setenv("FLEET_MODEL_GATEWAY_DSN", GATEWAY_TEST_DSN)
     return {"fleet": FLEET_TEST_DSN, "dd": DD_TEST_DSN,
             "reader": READER_TEST_DSN, "proposer": PROPOSER_TEST_DSN,
             "console": CONSOLE_TEST_DSN, "runner": RUNNER_TEST_DSN,
-            "agent": AGENT_TEST_DSN, "verifier": VERIFIER_TEST_DSN}
+            "agent": AGENT_TEST_DSN, "verifier": VERIFIER_TEST_DSN,
+            "gateway": GATEWAY_TEST_DSN}
 
 
 @pytest.fixture

@@ -1,0 +1,36 @@
+# Runner settings. Thresholds live here for the same reason track 1 keeps its
+# in detector_registry: retuning one must not be a redeploy.
+#
+# What is NOT here, deliberately:
+#   - the wall-clock cap. It is per task, NOT NULL, and ceilinged in a check
+#     constraint, because a cap that can be edited in a config file is a cap
+#     that gets edited on the morning something needs longer.
+#   - protected paths. They are in the database, checked at insert.
+
+# Where worktrees are created. One per task, removed when the tick ends.
+worktree_root: /home/ubuntu/.fleet-worktrees
+
+# Where the repositories are checked out.
+repo_root: /home/ubuntu
+
+# The remote a finished branch is pushed to. The runner refuses to push the
+# base branch to it and never forces.
+remote: origin
+
+# The agent's tools. Bash is absent on purpose: the runner runs the
+# contract's verification commands itself, so an agent that could run
+# arbitrary shell would gain nothing it needs and would gain a way out of the
+# worktree. A contract may widen this per task if a job genuinely needs it.
+agent_tools:
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+
+# A stated constant, not a live rate. The fleet records cost in GBP and the
+# CLI reports USD; converting at an invented precision would make a guess
+# look like a measurement. Revise it when it is wrong enough to matter, and
+# treat every cost in the database as accurate to about this.
+usd_to_gbp: 0.79
+usd_to_gbp_as_of: 2026-08-30
