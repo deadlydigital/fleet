@@ -17,6 +17,17 @@ class NotReadOnly(RuntimeError):
 
 
 @contextmanager
+def writer() -> Iterator[psycopg.Connection]:
+    """The write side, as fleet_console, for the two decision routes only.
+
+    Not read_only, obviously, and deliberately not reachable from any render
+    path: nothing in queries.py or app.py's GET handlers opens this.
+    """
+    with psycopg.connect(config.console_writer_dsn(), row_factory=dict_row) as conn:
+        yield conn
+
+
+@contextmanager
 def connect() -> Iterator[psycopg.Connection]:
     """A read-only session, as a role that could not write in any case.
 
@@ -57,6 +68,43 @@ def assert_read_only() -> str:
                 f"credential that can only read; point "
                 f"FLEET_CONSOLE_READER_DSN at fleet_console_reader_login."
             )
+        return who
+
+
+class NotAWriter(RuntimeError):
+    """The decision routes were pointed at something that cannot record one."""
+
+
+def assert_can_write() -> str:
+    """The mirror of assert_read_only, and it is not symmetry for its own sake.
+
+    Two DSNs that were accidentally the same would fail in only one direction:
+    if both pointed at the reader, every page would still render and the
+    failure would appear the first time somebody pressed Accept, after the
+    merge had already happened. So the writer is checked at startup too --
+    that it can do the two things a verdict needs, and that it is a different
+    principal from the reader.
+    """
+    with psycopg.connect(config.console_reader_dsn(), row_factory=dict_row) as r:
+        reader = r.execute("SELECT current_user AS u").fetchone()["u"]
+    with psycopg.connect(config.console_writer_dsn(), row_factory=dict_row) as conn:
+        who = conn.execute("SELECT current_user AS u").fetchone()["u"]
+        if who == reader:
+            raise NotAWriter(
+                f"the reader and the writer are the same role ({who}). "
+                f"FLEET_CONSOLE_DSN and FLEET_CONSOLE_READER_DSN must be "
+                f"different principals or the separation is decorative.")
+        checks = conn.execute(
+            """
+            SELECT has_table_privilege(current_user,'tasks','UPDATE')      AS can_update_task,
+                   has_table_privilege(current_user,'run_steps','INSERT')  AS can_write_step,
+                   pg_has_role(current_user,'fleet_console','MEMBER')      AS is_console
+            """).fetchone()
+        missing = [k for k, v in checks.items() if not v]
+        if missing:
+            raise NotAWriter(
+                f"{who} cannot record a verdict ({', '.join(missing)}). The "
+                f"database accepts a task verdict only from fleet_console.")
         return who
 
 

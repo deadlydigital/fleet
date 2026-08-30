@@ -129,10 +129,25 @@ def test_the_proposal_layers_reader_still_cannot_see_decisions(dsns):
             conn.execute("SELECT 1 FROM decisions")
 
 
-def test_the_app_exposes_no_write_method(client):
+def test_the_only_write_routes_are_accept_and_reject(client):
+    """Two actions, no more. No rework, no re-run, no deploy, no task creation.
+
+    This is the assertion that stops the next feature becoming a button
+    without somebody deciding it should be.
+    """
     from console.app import app
-    methods = {m for r in app.routes if hasattr(r, "methods") for m in r.methods}
-    assert not methods & {"POST", "PUT", "PATCH", "DELETE"}
+    writes = {r.path for r in app.routes
+              if hasattr(r, "methods") and r.methods & {"POST", "PUT", "PATCH", "DELETE"}}
+    assert writes == {"/tasks/{task_id}/accept", "/tasks/{task_id}/reject"}
+    assert not any("PUT" in r.methods or "DELETE" in r.methods
+                   for r in app.routes if hasattr(r, "methods"))
+
+
+def test_every_page_route_is_still_a_read(client):
+    from console.app import app
+    pages = {r.path for r in app.routes
+             if hasattr(r, "methods") and r.methods == {"GET"}}
+    assert {"/tasks", "/tasks/{task_id}", "/detectors", "/proposals"} <= pages
 
 
 # ---- page 1 --------------------------------------------------------------

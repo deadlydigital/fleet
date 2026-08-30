@@ -13,22 +13,32 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from console import config, db, gitdiff, queries
+from console import config, db, decide, gitdiff, merge, queries
 
 RUNNING_AS: str = ""
+WRITING_AS: str = ""
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Refuse to serve as a credential that can write."""
-    global RUNNING_AS
+    """Both credentials are checked, and in opposite directions.
+
+    The reader must be provably unable to write -- that is what makes every
+    page safe. The writer must be provably able to record a verdict, and must
+    be a different principal. Two DSNs accidentally set to the same value
+    would otherwise fail only at the moment somebody pressed Accept, after the
+    merge had already happened.
+    """
+    global RUNNING_AS, WRITING_AS
     RUNNING_AS = db.assert_read_only()
+    WRITING_AS = db.assert_can_write()
     yield
 
 
@@ -71,8 +81,25 @@ def render(request: Request, template: str, status_code: int = 200,
     """Every page gets the running identity and the diff stylesheet."""
     return templates.TemplateResponse(
         request, template,
-        {"running_as": RUNNING_AS, "diff_css": gitdiff.diff_css(), **extra},
+        {"running_as": RUNNING_AS, "writing_as": WRITING_AS,
+         "diff_css": gitdiff.diff_css(), "now": time.time(), **extra},
         status_code=status_code)
+
+
+def same_origin(request: Request) -> bool:
+    """Refuse a decision that did not come from this page.
+
+    Basic auth is sent by the browser on every request to this host, including
+    ones a different site caused. Without an origin check, a page elsewhere
+    could make a logged-in reviewer merge a branch by loading an image. The
+    two decision routes are the only places in this app where that matters,
+    and they are the only places that would ever matter.
+    """
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if not origin:
+        return False
+    host = request.headers.get("host", "")
+    return bool(host) and (origin.split("://", 1)[-1].split("/", 1)[0] == host)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -111,6 +138,9 @@ def task_detail(request: Request, task_id: int):
     return render(
         request, "task_detail.html",
         task=task,
+        reject_reasons=decide.REJECT_REASONS,
+        reason_help=decide.REASON_HELP,
+        outcome=_take_outcome(task_id),
         contract=task["acceptance_contract"] or {},
         steps=steps,
         patch=(patch or {}).get("payload", {}),
@@ -144,3 +174,135 @@ def proposals(request: Request):
         evidence=queries.proposal_evidence(),
         cycles=queries.cycles(),
     )
+
+
+# ---------------------------------------------------------------- decisions
+#
+# The only two routes in this application that write. Everything else, on
+# every page, reads as fleet_console_reader.
+#
+# There is no rework here, no task creation, no deploy and no re-run. Those
+# stay in the shell where they are deliberate.
+
+# The result of the last decision, held until the redirected page collects it.
+# In-process and single-user; the console is one person with a browser, and a
+# durable store for a message that survives one redirect would be a schema
+# change for a toast.
+_OUTCOMES: dict[int, dict[str, Any]] = {}
+
+
+def _take_outcome(task_id: int) -> dict[str, Any] | None:
+    return _OUTCOMES.pop(task_id, None)
+
+
+def _load(task_id: int):
+    task = queries.task_detail(task_id)
+    if task is None:
+        return None, None, None
+    steps = queries.run_steps(task["run_id"])
+    patch = next((s["payload"] for s in steps
+                  if s["step_type"] == "PATCH_PROPOSED"), {})
+    return task, patch, task["run_id"]
+
+
+@app.post("/tasks/{task_id}/accept")
+def accept(request: Request, task_id: int,
+           branch: str = Form(...), rendered_at: float = Form(...),
+           note: str = Form("")):
+    """Merge the branch into its base, push the base, then record the verdict.
+
+    In that order, and never the other way round: a verdict recorded before
+    the merge would be a claim about something that had not happened yet.
+    """
+    if not same_origin(request):
+        return render(request, "decided.html", status_code=403, task_id=task_id,
+                      outcome={"ok": False, "headline": "Refused",
+                               "detail": ["This decision did not come from the "
+                                          "console's own page."]})
+    task, patch, run_id = _load(task_id)
+    if task is None:
+        return render(request, "missing.html", status_code=404,
+                      what=f"task {task_id}")
+
+    result = merge.merge_and_push(
+        config.repo_root() / task["repo"], task, branch,
+        recorded_base=(patch or {}).get("base_commit_sha", ""),
+        recorded_patch=(patch or {}).get("patch_commit_sha", ""))
+
+    if not result.ok:
+        _OUTCOMES[task_id] = {
+            "ok": False, "headline": "Not merged, and nothing recorded",
+            "loud": result.merged or result.pushed,
+            "detail": [result.reason] + [d for d in result.detail if d]}
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    merge_record = {
+        "already_merged": result.already_merged,
+        "merge_commit": result.base_sha_after,
+        "base_before": result.base_sha_before,
+        "branch_tip": result.branch_tip,
+        "pushed": result.pushed,
+        "push_verified": result.push_verified,
+        "remote_sha": result.remote_sha,
+    }
+    try:
+        decide.record(task=task, run_id=run_id, verdict="MERGED",
+                      decision=decide.ACCEPT_DECISION, note=note,
+                      rendered_at=rendered_at, merge=merge_record)
+    except decide.VerdictNotRecorded as exc:
+        # The loud case. The merge happened and is on the remote; the database
+        # does not know. Never swallowed.
+        _OUTCOMES[task_id] = {
+            "ok": False, "loud": True,
+            "headline": "MERGED AND PUSHED, BUT THE VERDICT WAS NOT RECORDED",
+            "detail": [str(exc),
+                       f"{task['base_branch']} is at {result.base_sha_after[:12]} "
+                       f"locally and on origin.",
+                       "The branch is merged. The task still reads "
+                       "READY_FOR_REVIEW. Record it by hand:",
+                       f"UPDATE tasks SET status='MERGED' WHERE id={task_id};"]}
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    _OUTCOMES[task_id] = {
+        "ok": True,
+        "headline": ("Recorded as MERGED; the branch was already in "
+                     + task["base_branch"] + ", so no merge was performed"
+                     if result.already_merged else
+                     "Merged, pushed and recorded"),
+        "detail": result.detail}
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+
+@app.post("/tasks/{task_id}/reject")
+def reject(request: Request, task_id: int,
+           reason: str = Form(...), rendered_at: float = Form(...),
+           note: str = Form("")):
+    """Record the verdict. The branch is not touched."""
+    if not same_origin(request):
+        return render(request, "decided.html", status_code=403, task_id=task_id,
+                      outcome={"ok": False, "headline": "Refused",
+                               "detail": ["This decision did not come from the "
+                                          "console's own page."]})
+    task, _, run_id = _load(task_id)
+    if task is None:
+        return render(request, "missing.html", status_code=404,
+                      what=f"task {task_id}")
+    if reason not in decide.REJECT_REASONS:
+        _OUTCOMES[task_id] = {"ok": False, "headline": "Not recorded",
+                              "detail": [f"{reason!r} is not a reason code the "
+                                         f"database accepts."]}
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    try:
+        decide.record(task=task, run_id=run_id, verdict="REJECTED",
+                      decision=reason, note=note, rendered_at=rendered_at)
+    except decide.VerdictNotRecorded as exc:
+        _OUTCOMES[task_id] = {"ok": False, "headline": "Not recorded",
+                              "detail": [str(exc)]}
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    _OUTCOMES[task_id] = {
+        "ok": True, "headline": f"Recorded as REJECTED ({reason})",
+        "detail": ["The branch was not touched. It is still in the checkout "
+                   "and on the remote if it was pushed."]}
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)

@@ -9,6 +9,58 @@
   · {{ task.objective_ref or 'no objective' }}
   · attempt {{ task.attempts }}/{{ task.max_attempts }}</p>
 
+{# ---- the result of the last decision, if there was one ---- #}
+{% if outcome %}
+  {% if outcome.ok %}
+    <div class="good"><strong>{{ outcome.headline }}</strong>
+      {% for d in outcome.detail %}<div class="dim mono">{{ d }}</div>{% endfor %}</div>
+  {% else %}
+    <div class="loud">
+      <h3>{{ outcome.headline }}</h3>
+      {% for d in outcome.detail %}<div class="mono">{{ d }}</div>{% endfor %}
+    </div>
+  {% endif %}
+{% endif %}
+
+{# ---- the two actions, and only these two ---- #}
+{% if task.status == 'READY_FOR_REVIEW' %}
+<h2>Decide</h2>
+<div class="decide">
+  <form method="post" action="/tasks/{{ task.id }}/accept">
+    <input type="hidden" name="branch" value="{{ task.branch_name }}">
+    <input type="hidden" name="rendered_at" value="{{ now }}">
+    <strong>Accept</strong>
+    <p class="dim">Merges <code>{{ task.branch_name }}</code> into
+      <code>{{ task.base_branch }}</code> with <code>--no-ff</code>, pushes
+      {{ task.base_branch }}, re-reads the remote to check the push landed,
+      then records the verdict. It does not deploy.</p>
+    <label for="an">note (optional)</label>
+    <input type="text" id="an" name="note" size="40" placeholder="why you took it">
+    <p><button class="accept" type="submit">Accept and merge</button></p>
+  </form>
+
+  <form method="post" action="/tasks/{{ task.id }}/reject">
+    <input type="hidden" name="rendered_at" value="{{ now }}">
+    <strong>Reject</strong>
+    <p class="dim">Records the verdict. The branch is not touched, not deleted
+      and not pushed.</p>
+    <label for="rr">reason</label>
+    <select id="rr" name="reason" required>
+      {% for r in reject_reasons %}
+      <option value="{{ r }}">{{ r }} — {{ reason_help[r] }}</option>
+      {% endfor %}
+    </select>
+    <label for="rn">note (optional)</label>
+    <input type="text" id="rn" name="note" size="40" placeholder="what would make it right">
+    <p><button class="reject" type="submit">Reject</button></p>
+  </form>
+</div>
+<p class="dim">These are the only two actions the console has. No rework, no
+  re-run, no deploy, no task creation — those stay in the shell, where they are
+  deliberate. Writes go as <code>{{ writing_as }}</code>; every page you have
+  read was <code>{{ running_as }}</code>.</p>
+{% endif %}
+
 {# ---- the diff, which is what you are here for ---- #}
 <h2>Diff</h2>
 {% if not diff.ok %}
@@ -137,10 +189,30 @@
 <tr><td>{{ s.sequence }}</td><td>{{ s.step_type }}</td>
     <td class="mono dim">{{ s.actor }}</td>
     <td class="dim">{{ s.created_at.strftime('%d %b %H:%M:%S') }}</td></tr>
+{% if s.step_type == 'HUMAN_DECISION' %}
+<tr><td></td><td colspan="3">
+  <span class="pill {{ 'ok' if s.payload.decision == 'APPROVED' else 'bad' }}">{{ s.payload.decision }}</span>
+  <span class="dim">reviewed in {{ s.payload.decision_seconds }}s after waiting
+    {{ (s.payload.waited_seconds or 0) | round(0) }}s in READY_FOR_REVIEW</span>
+  {% if s.payload.note %}<div class="dim">{{ s.payload.note }}</div>{% endif %}
+  {% if s.payload.merge %}
+    <div class="dim mono">
+      {% if s.payload.merge.already_merged %}no merge performed — the branch was
+        already in {{ task.base_branch }};{% else %}merge {{ s.payload.merge.merge_commit[:12] }};{% endif %}
+      push {{ 'verified' if s.payload.merge.push_verified else 'NOT VERIFIED' }}
+      at {{ (s.payload.merge.remote_sha or '')[:12] }}
+    </div>
+  {% endif %}
+</td></tr>
+{% endif %}
 {% endfor %}
 </table>
 <p class="dim">The identity in <em>written by</em> is descriptive; the database enforced
   the role. A patch and a verification cannot be written by the same one.</p>
+<p class="dim"><strong>The checks above are the contract's, not CI's.</strong> If a
+  green tick from GitHub Actions ever appears on this page it will mean less than
+  it looks: per <code>TEST-004</code>, those workflows cannot fail on the api
+  suite's ~81 known failures, so they pass whether or not the suite does.</p>
 {% endif %}
 
 {# ---- contract ---- #}

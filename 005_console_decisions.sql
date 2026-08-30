@@ -1,0 +1,37 @@
+-- ============================================================================
+-- 005_console_decisions.sql  —  let the console record the verdict 001 designed
+--
+-- 001 built everything a task verdict needs: a HUMAN_DECISION step type, a
+-- branch-shaped reason vocabulary in run_steps' CHECK constraint, an index on
+-- (payload->>'decision'), and step_authority gating that step type to
+-- fleet_console. It then granted step_authority to nobody.
+--
+-- So enforce_step_authority() raised "permission denied for table
+-- step_authority" instead of the message it was written to raise, and the
+-- HUMAN_DECISION path was unreachable by the only role permitted to use it.
+-- It failed closed, so nothing was ever unguarded -- but the feature the
+-- table exists for could not be used at all.
+--
+-- 003 fixed this for fleet_agent, fleet_verifier and fleet_task_runner when
+-- the runner first needed it. Two roles were missed because nothing had
+-- exercised them yet: fleet_console, which needs it now, and fleet_deployer,
+-- which does not and never will in this system.
+--
+-- fleet_deployer is granted anyway. The grant confers no capability it lacks
+-- -- it already holds INSERT on run_steps from 001, and what stops a deploy is
+-- enforce_acceptance_boundary and the absence of any code that would write
+-- one. All this changes is which error appears, and leaving one role behind
+-- to hit the wrong error later is how the bug survived this long.
+--
+-- Target: PostgreSQL 13+ (RDS 15.17), applied with the listmonk identity.
+-- ============================================================================
+
+GRANT SELECT ON step_authority TO fleet_console, fleet_deployer;
+
+-- The console reads what it wrote back, to render the decision on the page.
+-- It already holds SELECT on run_steps from 003; this is the write side, and
+-- it is 001's grant, restated here only as documentation of what the two new
+-- routes depend on:
+--     GRANT SELECT, INSERT ON run_steps TO ... fleet_console;   -- 001
+--     GRANT SELECT, INSERT, UPDATE, DELETE ON tasks TO fleet_console;  -- 003
+-- Nothing further is granted. Accept and reject need exactly those two writes.

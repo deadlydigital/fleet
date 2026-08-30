@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}decision{% endblock %}
+{% block body %}
+<h1>{{ outcome.headline }}</h1>
+{% for d in outcome.detail %}<p class="mono">{{ d }}</p>{% endfor %}
+<p><a class="t" href="/tasks/{{ task_id }}">back to task {{ task_id }}</a></p>
+{% endblock %}

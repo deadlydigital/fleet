@@ -38,3 +38,15 @@ def repo_root() -> Path:
     path = Path(__file__).resolve().parent.parent / "runner.yaml"
     settings: dict[str, Any] = yaml.safe_load(path.read_text())
     return Path(settings["repo_root"])
+
+
+def console_writer_dsn() -> str:
+    """fleet_console: the only identity the database accepts a task verdict from.
+
+    Used by exactly two routes, accept and reject, and by nothing that renders
+    a page. Every read on every page goes through console_reader_dsn(). Two
+    connections rather than one role widened -- the same rule the proposal
+    layer follows, and for the same reason: the separation is only real if the
+    reading identity and the writing identity are different principals.
+    """
+    return base_config.require("FLEET_CONSOLE_DSN")
