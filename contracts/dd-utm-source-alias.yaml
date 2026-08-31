@@ -1,0 +1,64 @@
+# Task contract: read source normalisation from utm_source_alias.
+# The api contract plus this task's own acceptance check.
+#
+# Spec: specs/utm-source-alias-route.md
+#
+# writable_paths is narrowed to the two files the task touches. The api
+# contract makes the whole of api/services and api/analytics/routes writable,
+# which is right for a general backend task and too wide for this one: a
+# proving run should fail if the agent wanders, and the spec names exactly two
+# files -- one edited, one new.
+#
+# api/alembic/** STAYS PROTECTED, and that is the point rather than an
+# oversight. The table this task reads is created by a migration that is
+# deliberately not fleet work -- specs/utm-source-alias-migration.md sets out
+# why, in short: the seed is 245 lines of already-settled SQL carrying six
+# operator decisions in its notes, ruff excludes alembic/versions so the lint
+# ratchet never reads it, and there is no test gate behind it. An agent could
+# only transcribe it, and nothing here would catch a transcription error.
+#
+# This task does not need the migration to have run. The spec requires the
+# loader to degrade to {} on a missing table and requires {} to mean today's
+# behaviour, so the branch is safe to merge in either order -- and the
+# acceptance check reads the seed from the fleet repo rather than the database
+# schema, so it does not need the table either.
+work_type: dd_api
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 1
+
+writable_paths:
+  - api/analytics/routes/sources.py
+  - api/services/utm_source_alias.py
+
+protected_paths:
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  - platform/**
+  - .github/**
+  - api/Dockerfile
+  - api/deploy.sh
+  - api/docker-compose.yml
+  - api/worker.py
+
+# api/.venv is gitignored and absent from a worktree, so the interpreter and
+# ruff are named by absolute path. They are read, never written.
+#
+# The third check needs a read-only reader for deadly_digital and uses DD_DSN
+# (dd_detector_login) through the same detectors.config the evidence pack uses.
+# It runs as the RUNNER, not the agent -- the agent has no Bash and no
+# credential, which is the property that keeps it in its worktree.
+verification:
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/ruff_no_new_findings.py
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/utm_alias_cutover_diff.py
+
+max_diff_lines: 250
+max_cost_gbp: 3.00
+timeout_seconds: 1800
