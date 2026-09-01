@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from console import decide, merge
 
@@ -391,3 +392,80 @@ def test_the_reader_session_is_also_read_only(dsns):
 def test_the_writer_is_a_different_principal_from_the_reader(dsns):
     from console import db
     assert db.assert_read_only() != db.assert_can_write()
+
+
+# ---- accept: driven over the HTTP route -----------------------------------
+#
+# Every test above calls merge.merge_and_push and decide.record directly. That
+# is the right shape for testing a guard -- the guard is the unit -- but it
+# means the route body itself had no coverage at all: form parsing, the origin
+# check, the re-verification call, the redirect, and the module-level names
+# each of those needs.
+#
+# That gap shipped a NameError. accept() called Path(_runner_setting(...)) and
+# console/app.py never imported Path; every test passed, because none of them
+# executed a single line of accept(). A name used in one branch of one route
+# is only proved to exist by a request that reaches it.
+
+
+@pytest.fixture
+def route(dsns, repo, tmp_path, monkeypatch):
+    """The console as its real ASGI app, pointed at the fixture repository.
+
+    The two things accept() reads from the environment are redirected: the
+    repository root, and the worktree root the trial merge is built under.
+    Both are redirected to tmp_path rather than mocked away -- the trial
+    worktree is really created, the verification really runs, and the code
+    under test is the code that ships.
+    """
+    from console import app as app_module
+    worktrees = tmp_path / "worktrees"
+    worktrees.mkdir()
+    monkeypatch.setattr(app_module.config, "repo_root", lambda: repo.parent)
+    monkeypatch.setattr(app_module, "_runner_setting",
+                        lambda key: {"worktree_root": str(worktrees)}[key])
+    with TestClient(app_module.app) as c:
+        yield c
+
+
+def test_accept_over_the_route_merges_reverifies_and_records(
+        dsns, repo, task, console, route):
+    """The whole route, end to end, as the browser drives it."""
+    tid = task["task"]["id"]
+    r = route.post(f"/tasks/{tid}/accept",
+                   data={"branch": task["branch"],
+                         "rendered_at": time.time() - 12,
+                         "note": "looks right"},
+                   headers={"Origin": "http://testserver"},
+                   follow_redirects=False)
+    assert r.status_code == 303, r.text
+    assert r.headers["location"] == f"/tasks/{tid}"
+
+    assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                           (tid,)).fetchone()["status"] == "MERGED"
+    assert subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor",
+                           task["branch"], "main"]).returncode == 0
+
+    payload = console.execute(
+        "SELECT payload FROM run_steps WHERE run_id=%s AND step_type='HUMAN_DECISION'",
+        (task["run_id"],)).fetchone()["payload"]
+    # The re-verification branch is the one that carried the NameError, so the
+    # test is only worth anything if it actually ran. A skipped or absent
+    # re-verification would pass every other assertion here.
+    reverified = payload["merge"]["reverified"]
+    assert reverified is not None and reverified["ok"]
+    assert not reverified["skipped_reason"]
+    assert [c["command"] for c in reverified["checks"]] == ["true"]
+
+
+def test_accept_over_the_route_refuses_a_cross_origin_post(
+        dsns, repo, task, console, route):
+    """The CSRF guard, which is route-only logic and so was also uncovered."""
+    tid = task["task"]["id"]
+    r = route.post(f"/tasks/{tid}/accept",
+                   data={"branch": task["branch"], "rendered_at": time.time()},
+                   headers={"Origin": "http://evil.example"},
+                   follow_redirects=False)
+    assert r.status_code == 403
+    assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                           (tid,)).fetchone()["status"] == "READY_FOR_REVIEW"
