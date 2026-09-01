@@ -11,6 +11,7 @@ is deleted is not testing the guard.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -402,42 +403,55 @@ def test_the_writer_is_a_different_principal_from_the_reader(dsns):
 # check, the re-verification call, the redirect, and the module-level names
 # each of those needs.
 #
-# That gap shipped a NameError. accept() called Path(_runner_setting(...)) and
-# console/app.py never imported Path; every test passed, because none of them
-# executed a single line of accept(). A name used in one branch of one route
-# is only proved to exist by a request that reaches it.
+# That gap shipped a NameError. accept() built a Path and console/app.py never
+# imported pathlib; every test passed, because none of them executed a single
+# line of accept(). A name used in one branch of one route is only proved to
+# exist by a request that reaches it.
 
 
 @pytest.fixture
-def route(dsns, repo, tmp_path, monkeypatch):
-    """The console as its real ASGI app, pointed at the fixture repository.
+def trial_root(tmp_path, monkeypatch) -> Path:
+    """The trial worktree root, pointed somewhere disposable.
 
-    The two things accept() reads from the environment are redirected: the
-    repository root, and the worktree root the trial merge is built under.
-    Both are redirected to tmp_path rather than mocked away -- the trial
-    worktree is really created, the verification really runs, and the code
-    under test is the code that ships.
+    Set through the environment variable the real config function reads, not
+    by patching the function out: the setting is part of what is under test
+    here, and a test that replaces it would not notice it being read wrongly.
     """
+    root = tmp_path / "trials"
+    monkeypatch.setenv("FLEET_CONSOLE_TRIAL_ROOT", str(root))
+    return root
+
+
+@pytest.fixture
+def route(dsns, repo, trial_root, monkeypatch):
+    """The console as its real ASGI app, pointed at the fixture repository."""
     from console import app as app_module
-    worktrees = tmp_path / "worktrees"
-    worktrees.mkdir()
     monkeypatch.setattr(app_module.config, "repo_root", lambda: repo.parent)
-    monkeypatch.setattr(app_module, "_runner_setting",
-                        lambda key: {"worktree_root": str(worktrees)}[key])
     with TestClient(app_module.app) as c:
         yield c
 
 
+def post_accept(client, task, **over):
+    data = {"branch": task["branch"], "rendered_at": time.time() - 12,
+            "note": "looks right"}
+    data.update(over.pop("data", {}))
+    return client.post(f"/tasks/{task['task']['id']}/accept", data=data,
+                       headers=over.pop("headers", {"Origin": "http://testserver"}),
+                       follow_redirects=False, **over)
+
+
+def human_decision(console, run_id):
+    row = console.execute(
+        "SELECT payload FROM run_steps WHERE run_id=%s AND step_type='HUMAN_DECISION'",
+        (run_id,)).fetchone()
+    return row["payload"] if row else None
+
+
 def test_accept_over_the_route_merges_reverifies_and_records(
-        dsns, repo, task, console, route):
+        dsns, repo, task, console, route, trial_root):
     """The whole route, end to end, as the browser drives it."""
     tid = task["task"]["id"]
-    r = route.post(f"/tasks/{tid}/accept",
-                   data={"branch": task["branch"],
-                         "rendered_at": time.time() - 12,
-                         "note": "looks right"},
-                   headers={"Origin": "http://testserver"},
-                   follow_redirects=False)
+    r = post_accept(route, task)
     assert r.status_code == 303, r.text
     assert r.headers["location"] == f"/tasks/{tid}"
 
@@ -446,26 +460,194 @@ def test_accept_over_the_route_merges_reverifies_and_records(
     assert subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor",
                            task["branch"], "main"]).returncode == 0
 
-    payload = console.execute(
-        "SELECT payload FROM run_steps WHERE run_id=%s AND step_type='HUMAN_DECISION'",
-        (task["run_id"],)).fetchone()["payload"]
     # The re-verification branch is the one that carried the NameError, so the
     # test is only worth anything if it actually ran. A skipped or absent
     # re-verification would pass every other assertion here.
-    reverified = payload["merge"]["reverified"]
+    reverified = human_decision(console, task["run_id"])["merge"]["reverified"]
     assert reverified is not None and reverified["ok"]
-    assert not reverified["skipped_reason"]
+    assert not reverified["skipped_reason"] and not reverified["could_not_run"]
     assert [c["command"] for c in reverified["checks"]] == ["true"]
+
+    # And it really used the configured root, rather than falling back to a
+    # location the service is not allowed to write to.
+    assert trial_root.exists()
 
 
 def test_accept_over_the_route_refuses_a_cross_origin_post(
         dsns, repo, task, console, route):
     """The CSRF guard, which is route-only logic and so was also uncovered."""
     tid = task["task"]["id"]
-    r = route.post(f"/tasks/{tid}/accept",
-                   data={"branch": task["branch"], "rendered_at": time.time()},
-                   headers={"Origin": "http://evil.example"},
-                   follow_redirects=False)
+    r = post_accept(route, task, headers={"Origin": "http://evil.example"})
     assert r.status_code == 403
     assert console.execute("SELECT status FROM tasks WHERE id=%s",
                            (tid,)).fetchone()["status"] == "READY_FOR_REVIEW"
+
+
+def test_a_trial_worktree_that_cannot_be_created_refuses_and_says_why(
+        dsns, repo, task, console, route, tmp_path, monkeypatch):
+    """The environmental failure, which used to be an uncaught 500.
+
+    This is the shape the sandbox produced in production: the trial root was
+    somewhere the unit could not write, worktree creation raised, and nothing
+    caught it. A 500 tells the reviewer the console is broken. The truth is
+    narrower and worth saying -- the merge was not made, and the reason is
+    that it could not be checked, which is not the same as it failing a check.
+    """
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("")                      # mkdir under a file: OSError
+    monkeypatch.setenv("FLEET_CONSOLE_TRIAL_ROOT", str(blocked / "trials"))
+
+    tid = task["task"]["id"]
+    r = post_accept(route, task)
+    assert r.status_code == 303, r.text         # a refusal, never a 500
+
+    # Nothing happened: not merged, not recorded, branch untouched.
+    assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                           (tid,)).fetchone()["status"] == "READY_FOR_REVIEW"
+    assert human_decision(console, task["run_id"]) is None
+    assert subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor",
+                           task["branch"], "main"]).returncode != 0
+
+    # And the page says which of the two things went wrong. "the trial never
+    # ran" is the distinction being tested: a reviewer who reads this must not
+    # go looking at the diff for a conflict or a failing check.
+    page = route.get(f"/tasks/{tid}").text
+    assert "was NOT re-verified" in page
+    assert "the trial never ran" in page
+    assert "conflicted and was aborted" not in page
+
+
+def test_a_trial_that_could_not_run_is_distinct_from_one_that_failed(
+        dsns, repo, task, tmp_path):
+    """could_not_run and a failing check both refuse, and must not look alike.
+
+    Reported as the same thing, a sandbox misconfiguration sends the reviewer
+    to read a diff that is perfectly fine.
+    """
+    from console import reverify
+    t = dict(task["task"])
+
+    cannot = reverify.run(repo, Path("/proc/nonexistent/trials"), t,
+                          contract(), task["branch"],
+                          recorded_base=task["base_sha"], changed_files=[])
+    assert not cannot.ok and cannot.could_not_run
+    assert cannot.checks == []                  # nothing ran, so nothing to show
+
+    failed = reverify.run(repo, tmp_path / "trials", t,
+                          contract(verification=["false"]), task["branch"],
+                          recorded_base=task["base_sha"], changed_files=[])
+    assert not failed.ok and not failed.could_not_run
+    assert [c["exit_code"] for c in failed.checks] == [1]
+
+
+# ---- accept: the sandbox the route actually runs inside --------------------
+#
+# The route can be correct and Accept still fail, because the console runs
+# under a systemd sandbox and the trial worktree is a write. That is exactly
+# what happened: ProtectHome=read-only made runner.yaml's worktree_root
+# unwritable, so the first Accept to reach re-verification died on it.
+#
+# The unit file is the source of truth for both tests below -- they parse the
+# real one rather than restating it, so relaxing or tightening the sandbox is
+# reflected here instead of drifting away from here.
+
+UNIT = Path(__file__).resolve().parent.parent / "systemd" / "fleet-console.service"
+
+
+def unit_settings() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in UNIT.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
+def test_the_trial_root_is_not_a_path_the_unit_denies():
+    """A static tie between the setting and the sandbox, with no sudo needed.
+
+    The sandbox test below is the real proof, but it needs privileges that not
+    every checkout has. This one always runs, so pointing the trial root back
+    into home fails the suite everywhere rather than only where sudo works.
+    """
+    from console import config
+    root = config.TRIAL_WORKTREE_ROOT
+    settings = unit_settings()
+    writable = [Path(p) for p in settings.get("ReadWritePaths", "").split()]
+
+    if settings.get("ProtectHome") in ("read-only", "yes", "tmpfs"):
+        under_home = root == Path("/home") or Path("/home") in root.parents
+        granted = any(w == root or w in root.parents for w in writable)
+        assert not under_home or granted, (
+            f"{root} is under /home, which the unit mounts "
+            f"{settings['ProtectHome']}, and no ReadWritePaths entry covers it")
+
+    # /tmp is the intended home for it, and only because PrivateTmp gives the
+    # unit its own. Without that the trial would be world-visible scratch.
+    if root == Path("/tmp") or Path("/tmp") in root.parents:
+        assert settings.get("PrivateTmp") == "true", (
+            f"{root} is in /tmp but the unit does not set PrivateTmp")
+
+
+@pytest.mark.skipif(
+    subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0
+    or shutil.which("systemd-run") is None,
+    reason="needs passwordless sudo and systemd-run to build the real sandbox")
+def test_the_trial_root_is_writable_under_the_service_sandbox():
+    """Build the unit's actual sandbox and try the write that broke Accept.
+
+    Not a re-implementation of the sandbox: the confinement settings are read
+    out of the unit file, so this asserts the property for the sandbox that is
+    really deployed.
+    """
+    settings = unit_settings()
+    confinement = [f"-p{k}={settings[k]}"
+                   for k in ("ProtectSystem", "ProtectHome", "ReadWritePaths",
+                             "PrivateTmp")
+                   if k in settings]
+    assert confinement, f"{UNIT.name} declares no confinement to test"
+
+    from console import config
+    root = config.TRIAL_WORKTREE_ROOT
+    probe = root / "sandbox-probe"
+    r = subprocess.run(
+        ["sudo", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+         "-pUser=ubuntu", *confinement,
+         "/bin/bash", "-c", f"mkdir -p {probe} && rmdir {probe}"],
+        capture_output=True, text=True)
+    assert r.returncode == 0, (
+        f"the console cannot create its trial worktree root under its own "
+        f"sandbox: {(r.stdout + r.stderr).strip()}")
+
+
+@pytest.mark.skipif(
+    subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0
+    or shutil.which("systemd-run") is None,
+    reason="needs passwordless sudo and systemd-run to build the real sandbox")
+def test_the_runners_worktree_root_is_not_writable_under_that_sandbox():
+    """The reason the console has a root of its own, kept as an assertion.
+
+    If this ever starts failing, the sandbox has been widened and the separate
+    console root is no longer buying anything -- which is worth finding out
+    deliberately rather than discovering the grant by accident.
+    """
+    import yaml
+    runner_root = Path(yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / "runner.yaml").read_text()
+    )["worktree_root"])
+    settings = unit_settings()
+    confinement = [f"-p{k}={settings[k]}"
+                   for k in ("ProtectSystem", "ProtectHome", "ReadWritePaths",
+                             "PrivateTmp")
+                   if k in settings]
+    probe = runner_root / "sandbox-probe"
+    r = subprocess.run(
+        ["sudo", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+         "-pUser=ubuntu", *confinement,
+         "/bin/bash", "-c", f"mkdir -p {probe} && rmdir {probe}"],
+        capture_output=True, text=True)
+    assert r.returncode != 0, (
+        f"{runner_root} is writable under the console's sandbox -- the unit "
+        f"has been widened, and console/config.py's reasoning is now stale")

@@ -15,7 +15,6 @@ from typing import Any
 
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -201,12 +200,6 @@ def _take_outcome(task_id: int) -> dict[str, Any] | None:
     return _OUTCOMES.pop(task_id, None)
 
 
-def _runner_setting(key: str) -> str:
-    import yaml
-    return yaml.safe_load(
-        (config.PROJECT_ROOT / "runner.yaml").read_text())[key]
-
-
 def _load(task_id: int):
     task = queries.task_detail(task_id)
     if task is None:
@@ -253,7 +246,7 @@ def accept(request: Request, task_id: int,
     again = None
     if check.ok and not check.already_merged:
         again = reverify.run(
-            repo, Path(_runner_setting("worktree_root")), task, contract, branch,
+            repo, config.trial_worktree_root(), task, contract, branch,
             recorded_base=recorded_base,
             changed_files=[p for p in (patch or {}).get("files_changed", [])
                            if (patch or {}).get("file_status", {}).get(p) != "D"])

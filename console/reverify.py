@@ -55,13 +55,21 @@ class Reverification:
     duration_s: float = 0.0
     checks: list[dict[str, Any]] = field(default_factory=list)
     skipped_reason: str = ""
+    # "could not re-verify" is not "re-verification failed". The first means
+    # the trial never ran and nothing is known about the merged tree; the
+    # second means it ran and said no. Both refuse the merge -- not knowing is
+    # not permission -- but they send the reader to different places, and a
+    # setup failure reported as a verification failure would have them reading
+    # a diff that is fine.
+    could_not_run: bool = False
 
     def as_record(self) -> dict[str, Any]:
         return {"ok": self.ok, "reason": self.reason, "merged_sha": self.merged_sha,
                 "base_sha": self.base_sha, "conflicted": self.conflicted,
                 "boundary_clean": self.boundary_clean,
                 "violations": self.violations, "duration_s": round(self.duration_s, 1),
-                "checks": self.checks, "skipped_reason": self.skipped_reason}
+                "checks": self.checks, "skipped_reason": self.skipped_reason,
+                "could_not_run": self.could_not_run}
 
 
 def run(repo: Path, worktree_root: Path, task: dict[str, Any],
@@ -77,7 +85,23 @@ def run(repo: Path, worktree_root: Path, task: dict[str, Any],
             duration_s=time.monotonic() - started)
 
     name = f"{TRIAL_PREFIX}-{task['id']}"
-    trial, base_sha = worktree.create_detached(repo, worktree_root, name, base)
+    # Inside a handler, because everything this line touches is environmental
+    # -- a root the sandbox will not let the console write to, a stale
+    # worktree registration, a full disk. Uncaught, those became a 500 on
+    # Accept: the same shape as any other rarely-taken path with no handler,
+    # and indistinguishable to the reviewer from the app being broken.
+    try:
+        worktree_root.mkdir(parents=True, exist_ok=True)
+        trial, base_sha = worktree.create_detached(repo, worktree_root, name, base)
+    except (boundary.GitError, OSError) as exc:
+        return Reverification(
+            ok=False, could_not_run=True,
+            reason=(f"the trial worktree could not be created under "
+                    f"{worktree_root}, so the merge into {base} was NOT "
+                    f"re-verified and has not been made. This is not a failing "
+                    f"check and not a conflict -- the trial never ran: {exc}"),
+            duration_s=time.monotonic() - started)
+
     try:
         # The exit code, not a search for "CONFLICT" in the output: git's
         # wording is not an API, and a merge can fail for reasons that never
