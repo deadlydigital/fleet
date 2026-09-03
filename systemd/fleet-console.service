@@ -41,6 +41,9 @@ RestartSec=5s
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/ubuntu/deadly-digital-platform
+# Load-bearing for Accept: re-verification builds its trial worktree in
+# /tmp/fleet-console-trials, which is writable only because this is private.
+# Removing it breaks Accept. A static test guards this.
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectKernelTunables=true
