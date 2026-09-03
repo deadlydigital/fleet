@@ -55,6 +55,7 @@ AGENT_TEST_DSN = _login_dsn("fleet_test_agent")
 VERIFIER_TEST_DSN = _login_dsn("fleet_test_verifier")
 GATEWAY_TEST_DSN = _login_dsn("fleet_test_model_gateway")
 CONSOLE_READER_TEST_DSN = _login_dsn("fleet_test_console_reader")
+EVALUATOR_TEST_DSN = _login_dsn("fleet_test_evaluator")
 
 
 def _admin(sql: str) -> None:
@@ -121,7 +122,8 @@ def dsns(templates, monkeypatch) -> dict[str, str]:
             "console": CONSOLE_TEST_DSN, "runner": RUNNER_TEST_DSN,
             "agent": AGENT_TEST_DSN, "verifier": VERIFIER_TEST_DSN,
             "gateway": GATEWAY_TEST_DSN,
-            "console_reader": CONSOLE_READER_TEST_DSN}
+            "console_reader": CONSOLE_READER_TEST_DSN,
+            "evaluator": EVALUATOR_TEST_DSN}
 
 
 @pytest.fixture
@@ -173,6 +175,13 @@ def runner(dsns):
 def agent_conn(dsns):
     """Writes PATCH_PROPOSED. Cannot write VERIFICATION_RUN."""
     with psycopg.connect(dsns["agent"], row_factory=dict_row) as conn:
+        yield conn
+
+
+@pytest.fixture
+def evaluator(dsns):
+    """The other role that may record a verdict, holding no ownership."""
+    with psycopg.connect(dsns["evaluator"], row_factory=dict_row) as conn:
         yield conn
 
 

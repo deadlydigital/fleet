@@ -32,5 +32,13 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fleet_test_detector') THEN
     CREATE ROLE fleet_test_detector LOGIN PASSWORD 'fleet_test_detector';
   END IF;
+  -- The other half of the verdict path. fleet_evaluator records verdicts by
+  -- hand as well as clearing issues on a timer, and only the first half needs
+  -- grants: the timer runs through SECURITY DEFINER functions. A test role
+  -- that owns nothing is the only way to tell the two apart.
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fleet_test_evaluator') THEN
+    CREATE ROLE fleet_test_evaluator LOGIN PASSWORD 'fleet_test_evaluator';
+  END IF;
 END $$;
-GRANT fleet_detector TO fleet_test_detector;
+GRANT fleet_detector  TO fleet_test_detector;
+GRANT fleet_evaluator TO fleet_test_evaluator;

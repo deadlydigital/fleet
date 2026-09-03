@@ -1459,6 +1459,18 @@ GRANT UPDATE (final_outcome, outcome_at) ON runs TO fleet_evaluator;
 GRANT SELECT, INSERT ON observation_verdicts TO fleet_console, fleet_evaluator;
 GRANT USAGE, SELECT ON SEQUENCE observation_verdicts_id_seq
       TO fleet_console, fleet_evaluator;
+-- Both verdict-recording roles must be able to read what they are ruling on.
+-- Without this the verdict path is INSERT-only on a fresh install: the role
+-- can record a judgement but cannot see the observation it is judging, and
+-- cannot find the untriaged ones at all. It worked in the deployed database
+-- only because the migration identity happens to own the tables, which is
+-- exactly the difference a fresh install exposes.
+--
+-- fleet_evaluator is here for the manual half of its job, not the automated
+-- one. resolve_cleared_issues() and execute_due_outcome_checks() are
+-- SECURITY DEFINER and never needed the grant, which is why the gap survived
+-- being exercised: the code path that runs on a timer does not take it.
+GRANT SELECT ON observations, issues TO fleet_console, fleet_evaluator;
 
 REVOKE ALL ON FUNCTION reserve_model_budget(bigint,numeric) FROM PUBLIC;
 REVOKE ALL ON FUNCTION settle_model_budget(uuid,numeric,jsonb) FROM PUBLIC;
