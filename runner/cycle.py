@@ -242,20 +242,40 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
 
         token, reserved = _reserve(task, run_id, log)
         prompt = agent_mod.build_prompt(task, contract)
+        # The reservation, in the currency the CLI caps in. Converted with the
+        # same stated constant settlement uses, so the cap the agent is given
+        # and the figure the ledger records cannot disagree by definition.
+        cap_usd = reserved / float(settings["usd_to_gbp"])
+        log(f"  spend cap ${cap_usd:.4f} (£{reserved:.4f} at "
+            f"{settings['usd_to_gbp']})")
         outcome = agent_mod.invoke(
             wt_path, prompt, int(remaining),
             allowed_tools=tuple(contract.get("agent_tools",
                                              settings["agent_tools"])),
-            readable=tuple(readable))
+            readable=tuple(readable),
+            max_cost_usd=cap_usd)
         result.cost_gbp = _settle(token, reserved, outcome, run_id, settings,
                                   result, log)
         log(f"  agent exit {outcome.exit_code} in {outcome.duration_ms}ms"
-            + ("  TIMED OUT" if outcome.timed_out else ""))
+            + ("  TIMED OUT" if outcome.timed_out else "")
+            + ("  BUDGET EXHAUSTED" if outcome.budget_exhausted else ""))
 
         if outcome.timed_out:
             result.outcome = "FAILED"
             result.reason = (f"agent exceeded the {task['timeout_seconds']}s "
                              f"wall clock and was killed")
+            _record_patch(task, run_id, base_sha, None, outcome, log,
+                          branch_point_sha=branch_point_sha)
+            return
+
+        if outcome.budget_exhausted:
+            # Its own outcome, not a generic non-zero exit. A task stopped for
+            # spending its budget and a task stopped by a crash need different
+            # answers from whoever reads the queue, and the branch is
+            # abandoned either way: a half-finished diff is not reviewable.
+            result.outcome = "FAILED"
+            result.reason = (f"agent reached the £{reserved:.2f} spend cap "
+                             f"and was stopped")
             _record_patch(task, run_id, base_sha, None, outcome, log,
                           branch_point_sha=branch_point_sha)
             return
@@ -398,20 +418,56 @@ def _reserve(task, run_id, log) -> tuple[str | None, float]:
     return token, reserved
 
 
+def _model_usage_totals(raw: dict) -> tuple[int, int]:
+    """Sum input and output tokens across every model a run billed.
+
+    Every model, not just the one named in the contract: a single turn also
+    bills the small models the CLI uses for its own housekeeping, and a total
+    that silently omits them is not the total.
+    """
+    models = raw.get("modelUsage")
+    if not isinstance(models, dict):
+        return 0, 0
+    prompt = completion = 0
+    for entry in models.values():
+        if not isinstance(entry, dict):
+            continue
+        prompt += int(entry.get("inputTokens") or 0)
+        prompt += int(entry.get("cacheReadInputTokens") or 0)
+        prompt += int(entry.get("cacheCreationInputTokens") or 0)
+        completion += int(entry.get("outputTokens") or 0)
+    return prompt, completion
+
+
 def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
     """Close the reservation with what the call actually cost.
 
     If the agent spent more than the task authorised, the reservation is
     closed at its upper bound -- the function refuses anything higher -- and
-    the true figure goes in the payload rather than being lost. The wall
-    clock, not this, is what stops a runaway.
+    the true figure goes in the payload rather than being lost.
+
+    What stops a runaway is the CLI's own --max-budget-usd, set from this same
+    reservation (see runner/agent.py). That cap gates between turns, so the
+    turn crossing it completes and a small overshoot is expected and normal.
+    An overshoot with NO exhaustion reported is a different thing: it means
+    the cap did not fire at all, and it is called out by name below rather
+    than absorbed into the same note as an ordinary one-turn overrun.
     """
     usd = outcome.cost_usd or 0.0
     gbp = round(usd * float(settings["usd_to_gbp"]), 6)
     settled = min(gbp, reserved)
     if gbp > reserved:
-        note = (f"agent cost £{gbp:.4f} exceeded the reserved £{reserved:.4f}; "
-                f"settled at the cap and recorded the true figure")
+        if outcome.budget_exhausted:
+            note = (f"agent cost £{gbp:.4f} against the reserved "
+                    f"£{reserved:.4f}; the cap fired and stopped it, and the "
+                    f"overshoot is the turn that crossed the cap. Settled at "
+                    f"the cap and recorded the true figure")
+        else:
+            note = (f"BREAKER DID NOT FIRE: agent cost £{gbp:.4f} against the "
+                    f"reserved £{reserved:.4f} and reported no budget "
+                    f"exhaustion. The spend cap was not enforced -- check that "
+                    f"the CLI still supports --max-budget-usd. Settled at the "
+                    f"cap and recorded the true figure")
         result.notes.append(note)
         log(f"  ! {note}")
 
@@ -423,10 +479,20 @@ def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
         "total_duration_ms": outcome.duration_ms,
         "ok": outcome.ok,
     }
+    # On a budget-exhausted result the CLI zeroes the top-level `usage` block
+    # (and empties `iterations`) while `modelUsage` still carries the real
+    # figures. Reading only `usage` would record 0 tokens for precisely the
+    # runs most worth looking at, so fall back to the per-model totals.
     usage = outcome.raw.get("usage") or {}
     if isinstance(usage, dict):
         call["prompt_tokens"] = usage.get("input_tokens")
         call["completion_tokens"] = usage.get("output_tokens")
+    if not call.get("prompt_tokens") and not call.get("completion_tokens"):
+        prompt_tokens, completion_tokens = _model_usage_totals(outcome.raw)
+        if prompt_tokens or completion_tokens:
+            call["prompt_tokens"] = prompt_tokens
+            call["completion_tokens"] = completion_tokens
+            call["token_source"] = "modelUsage"
 
     with _connect(config.model_gateway_dsn()) as gw:
         gw.execute("SELECT settle_model_budget(%s::uuid, %s::numeric, %s::jsonb)",

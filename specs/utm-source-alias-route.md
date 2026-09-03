@@ -202,3 +202,46 @@ pre-existing failures on a clean database and cannot be run on this host at all
 (`TEST-004`). A passing run means this compiles, lints clean, and does not move
 the paid population. Whether the SQL groups the right rows is a question for a
 human reading the diff.
+
+## Review notes — accepted on the branch (1 Sep 2026)
+
+One point was raised reviewing `fleet/task-7` and is recorded here rather than
+left in a session. It is **accepted as correct behaviour**, not an open defect.
+
+### Canonicalisation moves the row counters, and no order changes side
+
+§4 says the `unattributable_paid` / `not_paid` decision "must not move". At
+**order** level it does not, and the 0/0 cutover check proves that. At **row**
+level it does, and that is a consequence of canonicalisation working.
+
+The three CTEs now `GROUP BY utm_campaign, utm_source, channel, utm_medium`
+where `utm_source` is the *canonical* source, so two raw spellings that
+resolve to the same alias merge into one row. `is_paid_meta` is carried
+through the grouping as `bool_or`, so the merged row is Meta-paid if **any**
+spelling in it can carry Meta spend.
+
+`_enrich_sources_with_spend` counts **rows, not orders**. So a row combining
+`meta_paid` with `m.facebook.com` under the same campaign, medium and channel
+now counts **once toward `unattributable_paid`** where the `m.facebook.com`
+half previously counted toward `not_paid`.
+
+**Why this is right.** Those two counters describe rows of the sources table,
+and a merged row does contain paid traffic. `bool_or` is the safe direction:
+calling a row unattributable-paid overstates what is unattributable, whereas
+`bool_and` would hide real paid traffic behind an organic spelling. The
+alternative — counting orders instead of rows — would be a different
+measurement from the one the table displays, which is the mismatch this whole
+change exists to remove.
+
+**Why the acceptance check cannot cover it.** `contracts/checks/utm_alias_cutover_diff.py`
+measures **orders by raw spelling**: it asserts the seed's four
+`is_paid_meta=true` rows classify exactly the orders `_META_PAID_SOURCES`
+classifies, and that is 0 lost / 0 gained. Row totals are a different
+population, so a 0/0 pass says nothing about them either way. The check is not
+weaker than advertised; the counters are simply outside what it measures.
+
+**What follows from it.** `unattributable_paid` and `not_paid` are
+merchant-visible. Their totals will step at cutover with no order having
+changed side, and anyone comparing a before and after screenshot will see it.
+Recorded in the platform repo under `ATTR-001` so the movement has a written
+cause. There is no action outstanding.

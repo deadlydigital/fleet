@@ -1,13 +1,32 @@
 """Invoking the coding agent, and stopping it.
 
-The timeout is enforced here, by the runner, and never by asking the agent to
-mind the clock. A stuck agent burning budget in a loop is the failure mode
-this guards, and an agent that is stuck is by definition not going to notice
-that it is.
+Two caps are enforced here, by the runner, and neither by asking the agent to
+mind them. A stuck agent burning budget in a loop is the failure mode this
+guards, and an agent that is stuck is by definition not going to notice that
+it is.
+
+  the wall clock   the runner's own deadline, against communicate().
+  the spend cap    --max-budget-usd, which is the CLI's cap, not ours.
+
+The spend cap is delegated deliberately. The CLI reports cost ONLY in its
+terminal result payload -- no cost figure streams, and the session transcript
+carries none either -- so the runner cannot observe money mid-run at any
+price. It could observe tokens under --output-format stream-json and price
+them itself, but that would mean a second rate table (per model, cache-write
+premium, cache reads, and the sub-agent models a single turn also bills) whose
+answer would drift away from the figure settle_model_budget records. One
+source of truth for money is worth more than a check the runner owns.
+
+What the CLI's cap is NOT is exact. It gates between turns, so the turn that
+crosses the cap completes: overshoot is bounded by one model request, not by
+zero. Settling at the reservation and recording the true figure stays
+necessary.
 
 The kill is against the process group, not the child: the CLI spawns its own
 children, and terminating only the process the runner can see leaves them
-running with the budget already spent.
+running with the budget already spent. That applies to an agent that exited on
+its own as much as to one the runner killed, so the group is reaped either
+way.
 """
 from __future__ import annotations
 
@@ -35,6 +54,7 @@ class AgentResult:
     exit_code: int
     timed_out: bool
     duration_ms: int
+    budget_exhausted: bool = False
     text: str = ""
     cost_usd: float | None = None
     num_turns: int | None = None
@@ -45,7 +65,8 @@ class AgentResult:
 
     @property
     def ok(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out
+        return (self.exit_code == 0 and not self.timed_out
+                and not self.budget_exhausted)
 
 
 def build_prompt(task: dict, contract: dict) -> str:
@@ -108,8 +129,14 @@ def parse_report(text: str) -> list[str] | None:
 def invoke(worktree: Path, prompt: str, timeout_seconds: int,
            model: str | None = None,
            allowed_tools: tuple[str, ...] = DEFAULT_TOOLS,
-           readable: tuple[Path, ...] = ()) -> AgentResult:
-    """Run the agent in the worktree under a hard wall clock.
+           readable: tuple[Path, ...] = (),
+           max_cost_usd: float | None = None) -> AgentResult:
+    """Run the agent in the worktree under a hard wall clock and a spend cap.
+
+    `max_cost_usd` becomes --max-budget-usd. It is the reservation, converted
+    at the same rate settlement uses, so the cap the agent is given and the
+    figure the ledger records are the same number in two currencies rather
+    than two independent estimates.
 
     `readable` adds directories the agent may look at -- a research task reads
     the platform checkout. --add-dir grants READ, but it does not make the
@@ -127,6 +154,11 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
     ]
     if model:
         cmd += ["--model", model]
+    if max_cost_usd is not None:
+        # Print mode only, which is what -p gives us. The CLI stops issuing
+        # new work once its own accounting reaches this, and reports
+        # subtype=error_max_budget_usd with exit 1.
+        cmd += ["--max-budget-usd", f"{max_cost_usd:.6f}"]
 
     started = time.monotonic()
     proc = subprocess.Popen(
@@ -134,13 +166,23 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=True)
 
+    # start_new_session put the child in a new group it leads, so the group
+    # id is its pid. Captured now rather than derived later: after the child
+    # is reaped there is no pid left to ask.
+    pgid = proc.pid
+
     timed_out = False
     try:
         out, err = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         timed_out = True
-        _kill_group(proc)
+        _kill_group(pgid, proc)
         out, err = proc.communicate()
+    finally:
+        # Whichever way the agent ended. A CLI that stops itself on its
+        # budget, or exits cleanly, can still leave a tool child behind, and
+        # a surviving child is spend the reservation no longer bounds.
+        _reap_group(pgid)
 
     duration_ms = int((time.monotonic() - started) * 1000)
     result = AgentResult(
@@ -160,21 +202,37 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
         result.cost_usd = payload.get("total_cost_usd")
         result.num_turns = payload.get("num_turns")
         result.session_id = payload.get("session_id")
+        # Two fields say the same thing; either alone is enough. Read both so
+        # a rename on one side does not silently turn the cap back off.
+        result.budget_exhausted = (
+            payload.get("subtype") == "error_max_budget_usd"
+            or payload.get("terminal_reason") == "budget_exhausted")
     if not result.text:
         result.text = (out or "")[-8000:]
     result.reported_paths = parse_report(result.text)
     return result
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+def _own_group(pgid: int) -> bool:
+    """Guard: never signal the runner's own group.
+
+    start_new_session should make this impossible. It is checked anyway
+    because the failure mode is the runner killing itself and every other
+    task in the tick, and the check costs one syscall.
+    """
+    try:
+        return pgid == os.getpgid(0)
+    except OSError:
+        return True
+
+
+def _kill_group(pgid: int, proc: subprocess.Popen) -> None:
     """TERM the group, then KILL what is left.
 
     A plain proc.kill() would leave the CLI's children running: they were
     started in the same new session, which is why the runner asked for one.
     """
-    try:
-        pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:
+    if _own_group(pgid):
         return
     for sig, grace in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 0.0)):
         try:
@@ -187,3 +245,23 @@ def _kill_group(proc: subprocess.Popen) -> None:
                 if proc.poll() is not None:
                     return
                 time.sleep(0.1)
+
+
+def _reap_group(pgid: int) -> None:
+    """Clear out whatever the agent left in its group.
+
+    Called after every run, not only after a timeout. The leader is already
+    gone by this point, so there is no process to poll and no reason to wait
+    five seconds: anything still in the group outlived its parent and is not
+    going to be talked down. ProcessLookupError is the normal case -- it
+    means the group emptied itself, which is what should happen.
+    """
+    if _own_group(pgid):
+        return
+    for sig, grace in ((signal.SIGTERM, 0.5), (signal.SIGKILL, 0.0)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        if grace:
+            time.sleep(grace)

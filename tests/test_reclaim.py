@@ -462,7 +462,7 @@ def test_a_tick_reclaims_before_it_claims(dsns, settings, console, runner,
     make_stale(admin, tid)
 
     def invoke(worktree_path, prompt, timeout_seconds, model=None,
-               allowed_tools=(), readable=()):
+               allowed_tools=(), readable=(), max_cost_usd=None):
         (worktree_path / "api" / "app.py").write_text("x = 2\n")
         return agent_mod.AgentResult(exit_code=0, timed_out=False,
                                      duration_ms=5, text="done", cost_usd=0.01)

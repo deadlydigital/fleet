@@ -123,7 +123,7 @@ def fake_agent(edits: dict[str, str] | None = None, *,
                cost_usd: float = 0.10, deletes: list[str] | None = None):
     """An agent that writes exactly what it is told to, and says what it likes."""
     def invoke(worktree: Path, prompt, timeout_seconds, model=None,
-               allowed_tools=(), readable=()):
+               allowed_tools=(), readable=(), max_cost_usd=None):
         for path, body in (edits or {}).items():
             f = worktree / path
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -394,7 +394,11 @@ def test_an_overspend_is_capped_and_recorded(dsns, settings, console,
         {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
         cost_usd=5.00))
     assert result.cost_gbp == pytest.approx(0.10)
-    assert any("exceeded the reserved" in n for n in result.notes)
+    # The true figure is not lost. Which of the two overspend notes is
+    # written -- cap fired, or cap dead -- is the spend-cap tests' subject,
+    # not this one's; this asserts only that the real number is reported.
+    true_gbp = round(5.00 * float(settings["usd_to_gbp"]), 4)
+    assert any(f"£{true_gbp:.4f}" in n for n in result.notes), result.notes
 
 
 # ---- push refusals --------------------------------------------------------
@@ -429,7 +433,7 @@ def test_the_agent_never_sees_the_linked_dependencies(dsns, settings, console,
     seen: dict[str, bool] = {}
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=()):
+               readable=(), max_cost_usd=None):
         seen["linked_during_agent"] = (worktree / "platform/node_modules").exists()
         (worktree / "api/app.py").write_text(
             "def app():\n    '''new'''\n    return 1\n")
@@ -491,3 +495,109 @@ def test_checks_are_given_the_derived_change_not_the_agents_account(
         {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
         reported=[]))                      # the agent claims it changed nothing
     assert result.outcome == "READY_FOR_REVIEW", result.reason
+
+
+# ---- the spend cap --------------------------------------------------------
+#
+# The runner cannot see money mid-run -- the CLI reports cost only in its
+# terminal payload -- so enforcement is delegated to the CLI's own
+# --max-budget-usd. These cover the runner's half: deriving the cap from the
+# reservation, and telling apart a cap that fired from one that did not.
+
+def test_the_reservation_becomes_the_cli_spend_cap(dsns, settings, console,
+                                                   monkeypatch):
+    """A reservation the agent is never told about caps nothing."""
+    tid = queue_task(console, max_cost_gbp=3.00)
+    seen: dict[str, float | None] = {}
+    inner = fake_agent({"api/app.py": "def app():\n    '''new'''\n    return 1\n"})
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        seen["cap"] = max_cost_usd
+        return inner(worktree, prompt, timeout_seconds, model=model,
+                     allowed_tools=allowed_tools, readable=readable)
+
+    result = run_tick(monkeypatch, invoke)
+
+    assert result.task_id == tid
+    assert seen["cap"] is not None, "the agent ran with no spend cap at all"
+    # £3.00 at the settings' stated rate, in the currency the CLI caps in.
+    assert seen["cap"] == pytest.approx(3.00 / float(settings["usd_to_gbp"]))
+
+
+def test_reaching_the_cap_fails_the_task_and_says_why(dsns, settings, console,
+                                                      monkeypatch):
+    queue_task(console, max_cost_gbp=3.00)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        (worktree / "api/app.py").write_text("half a change\n")
+        return agent_mod.AgentResult(
+            exit_code=1, timed_out=False, duration_ms=900,
+            budget_exhausted=True, text="", cost_usd=4.20,
+            raw={"model": "fake", "subtype": "error_max_budget_usd"})
+
+    result = run_tick(monkeypatch, invoke)
+
+    assert result.outcome == "FAILED"
+    assert "spend cap" in result.reason, result.reason
+    # Distinguishable from the wall clock, which is a different failure.
+    assert "wall clock" not in result.reason
+
+
+def test_an_overshoot_with_the_cap_fired_is_reported_as_expected(
+        dsns, settings, console, monkeypatch):
+    """The cap gates between turns, so one turn of overshoot is normal."""
+    queue_task(console, max_cost_gbp=3.00)
+    over_usd = 3.20 / float(settings["usd_to_gbp"])
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        (worktree / "api/app.py").write_text("x\n")
+        return agent_mod.AgentResult(
+            exit_code=1, timed_out=False, duration_ms=900,
+            budget_exhausted=True, text="", cost_usd=over_usd,
+            raw={"model": "fake"})
+
+    result = run_tick(monkeypatch, invoke)
+
+    notes = " ".join(result.notes)
+    assert "the cap fired and stopped it" in notes, notes
+    assert "BREAKER DID NOT FIRE" not in notes
+    assert result.cost_gbp == pytest.approx(3.00), "settled above the cap"
+
+
+def test_an_overshoot_with_no_exhaustion_is_named_as_a_dead_breaker(
+        dsns, settings, console, monkeypatch):
+    """This is the £8.75-on-£3.00 shape, and it must not read as routine."""
+    queue_task(console, max_cost_gbp=3.00)
+    runaway_usd = 8.75 / float(settings["usd_to_gbp"])
+
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        cost_usd=runaway_usd))
+
+    notes = " ".join(result.notes)
+    assert "BREAKER DID NOT FIRE" in notes, notes
+    assert "--max-budget-usd" in notes, "the note must say what to check"
+    assert "£8.75" in notes, "the true figure must still be reported"
+    assert result.cost_gbp == pytest.approx(3.00)
+
+
+def test_model_usage_is_the_token_source_when_usage_is_zeroed():
+    """A budget-exhausted payload zeroes `usage` but keeps `modelUsage`."""
+    raw = {"usage": {"input_tokens": 0, "output_tokens": 0, "iterations": []},
+           "modelUsage": {
+               "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 964,
+                                     "cacheReadInputTokens": 18774,
+                                     "cacheCreationInputTokens": 4380},
+               "claude-haiku-4-5": {"inputTokens": 537, "outputTokens": 19,
+                                    "cacheReadInputTokens": 0,
+                                    "cacheCreationInputTokens": 0}}}
+
+    prompt, completion = cycle._model_usage_totals(raw)
+
+    # Every model the run billed, not just the one the contract named.
+    assert prompt == 2 + 18774 + 4380 + 537
+    assert completion == 964 + 19
+    assert cycle._model_usage_totals({}) == (0, 0)

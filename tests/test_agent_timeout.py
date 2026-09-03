@@ -114,3 +114,113 @@ def test_the_prompt_states_the_boundary():
     assert "Do not commit anything" in prompt
     # The prompt says plainly that it is not what decides.
     assert "derives the real diff from git" in prompt
+
+
+# ---- the spend cap --------------------------------------------------------
+#
+# The cap is the CLI's, not the runner's: the CLI reports cost only in its
+# terminal payload, so the runner cannot see money mid-run and does not
+# pretend to. What is tested here is the runner's half of the contract --
+# that it asks for the cap, reads the answer, and leaves nothing running.
+
+BUDGET_EXHAUSTED_PAYLOAD = (
+    '{"type":"result","subtype":"error_max_budget_usd","is_error":true,'
+    '"terminal_reason":"budget_exhausted","total_cost_usd":0.0779,'
+    '"errors":["Reached maximum budget ($0.02)"],'
+    '"usage":{"input_tokens":0,"output_tokens":0,"iterations":[]},'
+    '"modelUsage":{"claude-opus-5[1m]":{"inputTokens":2,"outputTokens":964,'
+    '"cacheReadInputTokens":18774,"cacheCreationInputTokens":4380}}}'
+)
+
+
+def _fake_claude(tmp_path, name, body) -> Path:
+    script = tmp_path / name
+    script.write_text(f"#!/bin/bash\n{body}\n")
+    script.chmod(0o755)
+    return script
+
+
+def test_the_cap_is_passed_to_the_cli(tmp_path, monkeypatch):
+    """The runner must actually ask for it; an unset cap caps nothing."""
+    seen = tmp_path / "argv"
+    script = _fake_claude(
+        tmp_path, "echo-claude",
+        f'printf "%s\\n" "$@" > {seen}\necho \'{{"result":"ok"}}\'')
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    agent.invoke(tmp_path, "prompt", timeout_seconds=30, max_cost_usd=3.7975)
+
+    argv = seen.read_text().splitlines()
+    assert "--max-budget-usd" in argv, argv
+    assert argv[argv.index("--max-budget-usd") + 1] == "3.797500"
+
+
+def test_no_cap_is_passed_when_none_is_given(tmp_path, monkeypatch):
+    seen = tmp_path / "argv"
+    script = _fake_claude(
+        tmp_path, "echo-claude",
+        f'printf "%s\\n" "$@" > {seen}\necho \'{{"result":"ok"}}\'')
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    agent.invoke(tmp_path, "prompt", timeout_seconds=30)
+
+    assert "--max-budget-usd" not in seen.read_text().splitlines()
+
+
+def test_budget_exhaustion_is_read_from_the_payload(tmp_path, monkeypatch):
+    script = _fake_claude(tmp_path, "broke-claude",
+                          f"echo '{BUDGET_EXHAUSTED_PAYLOAD}'\nexit 1")
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    result = agent.invoke(tmp_path, "prompt", timeout_seconds=30,
+                          max_cost_usd=0.02)
+
+    assert result.budget_exhausted
+    assert not result.ok, "a run stopped for spending its budget is not ok"
+    assert not result.timed_out, "the wall clock is a different failure"
+    assert result.cost_usd == 0.0779, "the true figure must survive"
+
+
+def test_a_clean_run_is_not_budget_exhausted(tmp_path, monkeypatch):
+    script = _fake_claude(
+        tmp_path, "fine-claude",
+        'echo \'{"result":"done","total_cost_usd":0.01,"subtype":"success",'
+        '"terminal_reason":"completed"}\'')
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    result = agent.invoke(tmp_path, "prompt", timeout_seconds=30,
+                          max_cost_usd=5.0)
+
+    assert not result.budget_exhausted
+    assert result.ok
+
+
+def test_children_are_reaped_when_the_agent_exits_on_its_own(tmp_path,
+                                                             monkeypatch):
+    """Exiting is not stopping if a tool child is still spending.
+
+    The wall-clock path already guaranteed this. Budget exhaustion is the CLI
+    ending its own run, which never goes near that path, so the group is
+    reaped after every run rather than only after a kill.
+    """
+    marker = tmp_path / "child.pid"
+    script = _fake_claude(
+        tmp_path, "leaky-claude",
+        f"sleep 3600 &\necho $! > {marker}\n"
+        f"echo '{BUDGET_EXHAUSTED_PAYLOAD}'\nexit 1")
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    result = agent.invoke(tmp_path, "prompt", timeout_seconds=30,
+                          max_cost_usd=0.02)
+
+    assert result.budget_exhausted
+    assert marker.exists(), "the fake agent never started its child"
+    child_pid = int(marker.read_text().strip())
+    assert not alive(child_pid), (
+        f"child {child_pid} outlived the agent with the budget spent")
+
+
+def test_the_runner_does_not_signal_its_own_group():
+    """The guard that stops a bad pgid taking the whole tick down."""
+    assert agent._own_group(os.getpgid(0))
+    agent._reap_group(os.getpgid(0))   # must be a no-op, not suicide
