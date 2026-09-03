@@ -196,6 +196,7 @@ def record_verdict(admin, observation_id: int, verdict: str,
 def insert_proposal(conn, *, cycle_id: uuid.UUID | None = None,
                     kind: str = "OBSERVATION", area: str = PRODUCT,
                     finding_key: str = "test:1", title: str = "a title",
+                    product: str = PRODUCT,
                     body: str = "a body", objective_ref: str | None = "dd-trustworthy",
                     reversibility: str = "TRIVIAL", confidence: str = "1.0",
                     evidence: int = 1, created_at: datetime | None = None) -> int:
@@ -205,13 +206,15 @@ def insert_proposal(conn, *, cycle_id: uuid.UUID | None = None,
         row = conn.execute(
             """
             INSERT INTO proposals
-                (cycle_id, kind, area, finding_key, title, body, objective_ref,
-                 reversibility, confidence, created_at)
-            VALUES (%(c)s, %(kind)s, %(area)s, %(key)s, %(title)s, %(body)s,
-                    %(obj)s, %(rev)s, %(conf)s, coalesce(%(at)s, now()))
+                (cycle_id, kind, product, area, finding_key, title, body,
+                 objective_ref, reversibility, confidence, created_at)
+            VALUES (%(c)s, %(kind)s, %(product)s, %(area)s, %(key)s, %(title)s,
+                    %(body)s, %(obj)s, %(rev)s, %(conf)s,
+                    coalesce(%(at)s, now()))
             RETURNING id
             """,
-            {"c": cycle_id, "kind": kind, "area": area, "key": finding_key,
+            {"c": cycle_id, "kind": kind, "product": product, "area": area,
+             "key": finding_key,
              "title": title, "body": body, "obj": objective_ref,
              "rev": reversibility, "conf": confidence, "at": created_at}).fetchone()
         proposal_id = row["id"] if isinstance(row, dict) else row[0]

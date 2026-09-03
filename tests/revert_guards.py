@@ -119,6 +119,30 @@ CASES = [
      '        if False:',
      "tests/test_reverify.py::test_a_conflicting_merge_is_reported_as_one"),
 
+    # ---- the decision log's half of review.py ---------------------------
+    ("a verdict needs a reason in words, not only a code",
+     "review.py",
+     '    if not (why or "").strip():',
+     '    if False:',
+     "tests/test_review.py::TestEveryVerdictOpensADecision"
+     "::test_a_verdict_with_no_sentence_is_refused_before_the_database"),
+
+    # The verdict and its log entry are one write or neither. Reverted, the
+    # first INSERT survives a failure in the second and a caller that swallows
+    # the error commits a verdict with no record of why it was reached.
+    ("the verdict and the decision log land together",
+     "review.py",
+     "    with conn.transaction():\n        decision = conn.execute(",
+     "    if True:\n        decision = conn.execute(",
+     "tests/test_review.py::TestBothOrNeither"
+     "::test_a_failed_log_write_takes_the_verdict_with_it"),
+
+    ("a skip records nothing",
+     "review.py",
+     '        if verdict == "SKIP":',
+     "        if False:",
+     "tests/test_review.py::TestSkipLogsNothing::test_a_skip_records_neither"),
+
     ("the reader is not secretly the writer",
      "console/config.py",
      'return base_config.require("FLEET_CONSOLE_READER_DSN")',

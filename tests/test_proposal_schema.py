@@ -17,10 +17,10 @@ from support_proposals import insert_proposal
 CYCLE = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 BARE_PROPOSAL = """
-INSERT INTO proposals (cycle_id, kind, area, finding_key, title, body,
+INSERT INTO proposals (cycle_id, kind, product, area, finding_key, title, body,
                        objective_ref, reversibility, confidence)
-VALUES (%(c)s, 'OBSERVATION', 'deadly_digital', %(key)s, 't', 'b',
-        'dd-trustworthy', 'TRIVIAL', 1.0)
+VALUES (%(c)s, 'OBSERVATION', 'deadly_digital', 'deadly_digital', %(key)s,
+        't', 'b', 'dd-trustworthy', 'TRIVIAL', 1.0)
 RETURNING id
 """
 
@@ -107,11 +107,12 @@ def test_an_observation_may_not_carry_an_effort_estimate(proposer):
         with proposer.transaction():
             proposer.execute(
                 """
-                INSERT INTO proposals (cycle_id, kind, area, finding_key, title,
-                                       body, objective_ref, reversibility,
-                                       confidence, est_effort, est_impact)
-                VALUES (%s, 'OBSERVATION', 'x', 'est', 't', 'b',
-                        'dd-trustworthy', 'TRIVIAL', 1.0, 'HOURS', 'HIGH')
+                INSERT INTO proposals (cycle_id, kind, product, area,
+                                       finding_key, title, body, objective_ref,
+                                       reversibility, confidence, est_effort,
+                                       est_impact)
+                VALUES (%s, 'OBSERVATION', 'deadly_digital', 'x', 'est', 't',
+                        'b', 'dd-trustworthy', 'TRIVIAL', 1.0, 'HOURS', 'HIGH')
                 """, (CYCLE,))
 
 

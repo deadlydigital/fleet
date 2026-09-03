@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}decisions{% endblock %}
+{% block nav_dec %}on{% endblock %}
+{% block body %}
+<h1>Decisions</h1>
+
+{# The claim this page makes about itself, stated where it is checkable. #}
+<div class="note">
+  <strong>Every outcome column here is recomputed, not recorded.</strong>
+  <p><code>decision_log</code> holds what was decided and why. It has no outcome
+  column at all — the task state, the cost, the attempts and the issue state below
+  come from the <code>decision_outcomes</code> view, which reads the tasks, runs and
+  issues each decision cited at the moment you load the page. There is no write
+  route on this page and nothing here can be set by hand.</p>
+  <p class="dim">Recording one is <code>fleet decision record --decision … --reason …</code>.
+  It stays in the shell on purpose: the reason is the part of this log that is worth
+  keeping, and a box on a web page is where a reason turns into “yes”.</p>
+</div>
+
+{% if totals %}
+<div class="grid">
+  {% for t in totals %}
+  <div class="panel">
+    <div class="big">{{ t.n }}</div>
+    <div class="dim">{{ t.decision }}</div>
+    {% if t.backfilled %}<div class="dim">{{ t.backfilled }} reconstructed</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if products|length > 1 %}
+<div class="filters" style="margin-top:.8rem">
+  <a href="/decisions" class="{{ 'on' if not active }}">all</a>
+  {% for p in products %}
+  <a href="/decisions?product={{ p.product }}"
+     class="{{ 'on' if active == p.product }}">{{ p.product }} ({{ p.n }})</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if not decisions %}
+  <p class="empty">Nothing recorded yet.</p>
+{% else %}
+<table>
+<tr><th>id</th><th>decided</th><th>decision</th><th>product</th><th>subject</th>
+    <th>reason</th><th>task outcome</th><th>issue outcome</th><th>cites</th></tr>
+{% for d in decisions %}
+<tr>
+  <td class="dim">{{ d.id }}</td>
+  <td class="dim">{{ d.decided_at.strftime('%d %b %H:%M') }}<br>
+      <span class="dim mono">{{ d.decided_by }}</span></td>
+  <td><span class="pill {{ 'ok' if d.decision == 'APPROVED' else 'bad' if d.decision == 'REJECTED' else 'warn' }}">{{ d.decision }}</span>
+      {% if d.origin == 'BACKFILLED' %}
+      <br><span class="pill dim" title="reconstructed from the database; no reason was recorded at the time">reconstructed</span>
+      {% endif %}</td>
+  <td class="dim">{{ d.product }}</td>
+  <td>{{ d.subject }}</td>
+  <td class="dim">
+    {% if d.reason == 'UNRECORDED' %}
+      <em>not recorded at the time, and not invented</em>
+    {% else %}{{ d.reason }}{% endif %}
+  </td>
+
+  {# Absent is not the same as bad. A decision that cited no task has no task
+     outcome, which must not render like a task that failed. #}
+  <td>
+    {% if d.task_outcome is none %}<span class="dim">—</span>
+    {% else %}
+      <span class="pill {{ 'ok' if d.task_outcome == 'DELIVERED' else 'bad' if d.task_outcome == 'NOT_DELIVERED' else 'warn' }}">{{ d.task_outcome }}</span>
+      <div class="dim mono">£{{ '%.2f'|format(d.total_cost_gbp|float) }}
+        over {{ d.runs_total }} run{{ '' if d.runs_total == 1 else 's' }}</div>
+      <div class="dim mono">
+        {% if d.attempts_to_green %}{{ d.attempts_to_green }} attempt{{ '' if d.attempts_to_green == 1 else 's' }} to green
+        {% else %}no green, so no count{% endif %}</div>
+    {% endif %}
+  </td>
+
+  {# REOPENED is red even though the issue may read RESOLVED right now. The
+     decision did not hold; the later fix belongs to a later decision. #}
+  <td>
+    {% if d.issue_outcome is none %}<span class="dim">—</span>
+    {% else %}
+      <span class="pill {{ 'ok' if d.issue_outcome == 'RESOLVED_HELD' else 'bad' if d.issue_outcome == 'REOPENED' else 'warn' }}">{{ d.issue_outcome }}</span>
+      {% if d.issue_outcome == 'REOPENED' %}
+      <div class="dim">now {{ d.issue_status }}, but it came back after this decision</div>
+      {% endif %}
+    {% endif %}
+  </td>
+
+  <td class="dim mono">
+    {% if d.proposal_id %}proposal {{ d.proposal_id }}<br>{% endif %}
+    {% if d.issue_id %}issue {{ d.issue_id }}<br>{% endif %}
+    {% if d.task_id %}<a class="t" href="/tasks/{{ d.task_id }}">task {{ d.task_id }}</a><br>{% endif %}
+    {% if not (d.proposal_id or d.issue_id or d.task_id) %}—{% endif %}
+    {% if d.evidence %}<span class="pill dim">{{ d.evidence|length }} evidence</span>{% endif %}
+  </td>
+</tr>
+{% if d.evidence %}
+<tr><td></td><td colspan="8"><pre>{{ d.evidence|pretty }}</pre></td></tr>
+{% endif %}
+{% endfor %}
+</table>
+{% endif %}
+{% endblock %}

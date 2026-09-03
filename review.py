@@ -3,13 +3,34 @@
 
     python review.py                     list undecided proposals with evidence
     python review.py review              decide each in turn, timing each one
-    python review.py decide --proposal 7 --verdict REJECT --reason ALREADY_KNOWN
+    python review.py decide --proposal 7 --verdict REJECT --reason ALREADY_KNOWN \
+                            --why "the fix is a product call, not a bug"
                                          one decision, non-interactively
 
 Connects as fleet_console. It is the only role the database will accept a
 decision from -- the trigger on decisions is the same rule as the one on
 observation_verdicts, and for the same reason: a layer that can record its
 own approval is an agent marking its own work as passing.
+
+EVERY VERDICT ALSO OPENS A DECISION LOG ENTRY, IN THE SAME TRANSACTION
+---------------------------------------------------------------------
+`decisions` is this layer's grade on itself: an enum reason code, countable,
+sized for finding out what the proposer is bad at. `decision_log` is the
+record across everything -- proposals, issues, tasks -- with a free-text
+reason, which is where the sentence goes that no enum was ever going to hold.
+Both, not either: the code is what you count, the sentence is what you read
+in six months.
+
+One transaction. A verdict recorded without its log entry is precisely the
+split the log was built to close, and two statements that can half-succeed
+would reintroduce it on the first connection drop.
+
+EVERY verdict, not only the ones that lead to action. Logging accepts and
+dropping rejects would rebuild the asymmetry the log exists to remove -- a
+rejected proposal with a reason is worth more than an approved one, because
+approval leaves a branch behind and rejection leaves nothing.
+
+SKIP logs nothing. Skipping is not deciding.
 
 Every decision carries the seconds it took. The number is not decoration:
 this layer costs human attention, and the only way to find out whether it
@@ -36,8 +57,15 @@ REASON_CODES = ("ALREADY_KNOWN", "WRONG_PRIORITY", "TOO_EXPENSIVE",
                 "DISAGREE_WITH_PREMISE")
 VERDICT_KEYS = {"a": "ACCEPT", "r": "REJECT", "d": "DEFER_30D"}
 
+#: The proposal verdict vocabulary, mapped onto the decision log's. They are
+#: deliberately different vocabularies -- this layer defers for a fixed 30
+#: days, and the log has no opinion about how long -- so the mapping is stated
+#: rather than assumed to be the identity.
+LOG_DECISION = {"ACCEPT": "APPROVED", "REJECT": "REJECTED",
+                "DEFER_30D": "DEFERRED"}
+
 UNDECIDED_SQL = """
-SELECT p.id, p.cycle_id, p.kind, p.area, p.finding_key, p.title, p.body,
+SELECT p.id, p.cycle_id, p.kind, p.product, p.area, p.finding_key, p.title, p.body,
        p.objective_ref, p.est_effort, p.est_impact, p.reversibility,
        p.confidence, p.created_at
   FROM proposals p
@@ -78,7 +106,8 @@ def render(proposal: dict[str, Any]) -> str:
     lines += proposal["body"].splitlines()
     lines += [
         "-" * 78,
-        f"area {proposal['area']}   confidence {proposal['confidence']}   "
+        f"product {proposal['product']}   area {proposal['area']}   "
+        f"confidence {proposal['confidence']}   "
         f"reversibility {proposal['reversibility']}",
         f"effort {proposal['est_effort'] or '-'}   "
         f"impact {proposal['est_impact'] or '-'}   "
@@ -103,24 +132,65 @@ def render(proposal: dict[str, Any]) -> str:
 
 
 def record(conn: psycopg.Connection, proposal_id: int, verdict: str,
-           reason_code: str | None, seconds: float) -> int:
+           reason_code: str | None, seconds: float,
+           why: str | None = None) -> tuple[int, int]:
+    """Record the verdict and open the decision log entry. Returns both ids.
+
+    `why` is the free-text reason the log requires on every row. It is not
+    optional in the database and it is not optional here: falling back to the
+    enum code would put ALREADY_KNOWN in a field whose whole purpose is to hold
+    what the code could not.
+    """
     if verdict not in VERDICTS:
         raise ValueError(f"{verdict} is not one of {', '.join(VERDICTS)}")
     if verdict != "ACCEPT" and reason_code is None:
         raise ValueError(f"{verdict} needs a reason code")
     if reason_code is not None and reason_code not in REASON_CODES:
         raise ValueError(f"{reason_code} is not one of {', '.join(REASON_CODES)}")
+    if not (why or "").strip():
+        raise ValueError("a decision needs a reason in words, not only a code")
 
-    row = conn.execute(
-        """
-        INSERT INTO decisions (proposal_id, verdict, reason_code, decision_seconds)
-        VALUES (%(pid)s, %(verdict)s, %(reason)s, %(seconds)s)
-        RETURNING id
-        """,
-        {"pid": proposal_id, "verdict": verdict, "reason": reason_code,
-         "seconds": round(seconds, 3)}).fetchone()
+    product = conn.execute(
+        "SELECT product FROM proposals WHERE id = %s", (proposal_id,)
+    ).fetchone()
+    if product is None:
+        raise ValueError(f"no proposal {proposal_id}")
+
+    # BOTH OR NEITHER. `conn.transaction()` rolls back the verdict if the log
+    # entry fails and vice versa; committing them separately is how a verdict
+    # ends up with no record of why it was reached.
+    #
+    # The explicit commit afterwards is not redundant. psycopg opens an
+    # implicit transaction on the first statement -- the SELECT above -- so
+    # `conn.transaction()` here is a SAVEPOINT inside it rather than a
+    # transaction of its own, and leaving the block releases the savepoint
+    # without committing anything. Both rows were written and neither was
+    # durable; the tests read back nothing and said so.
+    with conn.transaction():
+        decision = conn.execute(
+            """
+            INSERT INTO decisions (proposal_id, verdict, reason_code,
+                                   decision_seconds)
+            VALUES (%(pid)s, %(verdict)s, %(reason)s, %(seconds)s)
+            RETURNING id
+            """,
+            {"pid": proposal_id, "verdict": verdict, "reason": reason_code,
+             "seconds": round(seconds, 3)}).fetchone()
+
+        # subject and evidence are left to the capture trigger, which takes
+        # them from the proposal and its evidence rows. Nothing is retyped here
+        # and nothing can drift from what was actually proposed.
+        logged = conn.execute(
+            """
+            INSERT INTO decision_log (product, proposal_id, decision, reason)
+            VALUES (%(product)s, %(pid)s, %(decision)s, %(why)s)
+            RETURNING id
+            """,
+            {"product": product["product"], "pid": proposal_id,
+             "decision": LOG_DECISION[verdict], "why": why.strip()}).fetchone()
+
     conn.commit()
-    return row["id"]
+    return decision["id"], logged["id"]
 
 
 # ---- interactive ----------------------------------------------------------
@@ -141,6 +211,24 @@ def prompt_verdict() -> tuple[str, str | None] | None:
         if verdict == "ACCEPT":
             return (verdict, None)
         return (verdict, prompt_reason())
+
+
+def prompt_why() -> str | None:
+    """The sentence. Required, and the loop will not move on without one.
+
+    Deliberately after the verdict rather than before: the reason is easier to
+    write once the choice is made, and asking first turns a decision into an
+    essay prompt. Empty input re-asks rather than defaulting -- a log whose
+    reason field can be skipped is the log this replaced.
+    """
+    while True:
+        try:
+            answer = input("why? (a sentence, for the decision log) > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if answer:
+            return answer
+        print("  the log needs a reason. It is the part worth keeping.")
 
 
 def prompt_reason() -> str:
@@ -176,11 +264,23 @@ def review(conn: psycopg.Connection, only: int | None = None) -> int:
             return decided
         verdict, reason = answer
         if verdict == "SKIP":
+            # Nothing is logged. Skipping is not deciding.
             continue
-        decision_id = record(conn, proposal["id"], verdict, reason, seconds)
+
+        # The clock has already stopped. The sentence is written after the
+        # verdict, so the seconds measure the judgement rather than the typing.
+        why = prompt_why()
+        if why is None:
+            print(f"stopped without recording proposal {proposal['id']}. "
+                  f"{decided} decided, {len(proposals) - decided} left.")
+            return decided
+
+        decision_id, log_id = record(conn, proposal["id"], verdict, reason,
+                                     seconds, why)
         decided += 1
         print(f"  decision {decision_id}: {verdict}"
-              f"{' / ' + reason if reason else ''} in {seconds:.1f}s")
+              f"{' / ' + reason if reason else ''} in {seconds:.1f}s"
+              f"  (decision log {log_id})")
 
     print(f"\n{decided} decided.")
     return decided
@@ -205,11 +305,12 @@ def cmd_review(conn: psycopg.Connection, args: argparse.Namespace) -> int:
 
 
 def cmd_decide(conn: psycopg.Connection, args: argparse.Namespace) -> int:
-    decision_id = record(conn, args.proposal, args.verdict, args.reason,
-                         args.seconds)
+    decision_id, log_id = record(conn, args.proposal, args.verdict, args.reason,
+                                 args.seconds, args.why)
     print(f"decision {decision_id}: proposal {args.proposal} {args.verdict}"
           f"{' / ' + args.reason if args.reason else ''} "
           f"in {args.seconds:.1f}s")
+    print(f"decision log {log_id}: {LOG_DECISION[args.verdict]} — {args.why}")
     return 0
 
 
@@ -230,6 +331,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     decider.add_argument("--proposal", type=int, required=True)
     decider.add_argument("--verdict", required=True, choices=VERDICTS)
     decider.add_argument("--reason", default=None, choices=REASON_CODES)
+    decider.add_argument("--why", required=True,
+                         help="the reason in words, for the decision log. "
+                              "Required on every verdict including rejections "
+                              "and deferrals -- the enum is what gets counted, "
+                              "this is what gets read")
     decider.add_argument("--seconds", type=float, default=0.0,
                          help="human seconds spent; nothing measures this for "
                               "you here, so an unsupplied value is recorded "

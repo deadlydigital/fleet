@@ -242,7 +242,8 @@ def test_the_database_would_refuse_a_sixth_even_if_the_cycle_tried(
     healthy(admin)
     now = admin.execute("SELECT now() AS t").fetchone()["t"]
     findings = [
-        Finding(finding_type="t", finding_key=f"k{n}", area="deadly_digital",
+        Finding(finding_type="t", finding_key=f"k{n}",
+                product="deadly_digital", area="deadly_digital",
                 title="t", body="b", objective_ref="dd-trustworthy",
                 evidence=(Evidence(adapter="detectors", query_key="open_issues",
                                    value={"n": n}, fetched_at=now,

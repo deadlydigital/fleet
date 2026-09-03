@@ -1,4 +1,4 @@
-"""The fleet console. Three pages, read-only, no writes of any kind.
+"""The fleet console. Four pages, read-only, no writes of any kind.
 
 There is no POST route in this file and no form in any template. That is the
 V1 boundary and it is worth stating as code rather than as intent: the
@@ -179,6 +179,29 @@ def proposals(request: Request):
         evidence=queries.proposal_evidence(),
         cycles=queries.cycles(),
     )
+
+
+# ---------------------------------------------------------------- page 4
+
+@app.get("/decisions", response_class=HTMLResponse)
+def decisions(request: Request, product: str | None = None):
+    """The decision log, read-only, and deliberately with no form on it.
+
+    Recording a decision is a shell command. It stays there because the log's
+    value is the reason field, and a textarea on a web page is where a reason
+    becomes "yes" -- whereas `fleet decision record --reason` makes the
+    sentence the thing you are typing.
+
+    Every outcome rendered here comes from `decision_outcomes`. There is no
+    column behind any of it.
+    """
+    if product in ("", "all", "ALL"):
+        product = None
+    return render(request, "decisions.html",
+                  decisions=queries.decisions(product),
+                  products=queries.decision_products(),
+                  totals=queries.decision_totals(),
+                  active=product)
 
 
 # ---------------------------------------------------------------- decisions

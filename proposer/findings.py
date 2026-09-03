@@ -71,6 +71,13 @@ class Evidence:
 class Finding:
     finding_type: str
     finding_key: str
+    # WHAT THIS IS ABOUT, and it is not `area`. `area` was doing two jobs:
+    # three producers set it to the product and two to the detector key, so
+    # it could not be grouped on. `product` is one vocabulary -- the same one
+    # `issues.product`, `detector_registry.product` and `decision_log.product`
+    # use -- and a proposal that cannot name one is incomplete rather than
+    # under-specified, which is why it has no default and no NULL.
+    product: str
     area: str
     title: str
     body: str
@@ -86,7 +93,7 @@ class Finding:
     def as_risk(self, why: str) -> "Finding":
         """Demote to a risk. A risk names no objective, by definition."""
         return Finding(finding_type=self.finding_type, finding_key=self.finding_key,
-                       area=self.area, title=self.title,
+                       product=self.product, area=self.area, title=self.title,
                        body=f"{self.body}\n\nRaised as a risk: {why}",
                        objective_ref=None, evidence=self.evidence,
                        kind=KIND_RISK, confidence=self.confidence,
@@ -131,6 +138,45 @@ def _objective_for(cycle_config: dict[str, Any], finding_type: str,
     if subtype is None:
         return None
     return mapping.get(subtype)
+
+
+#: The product a finding about THIS LAYER names. `objective_no_activity` is a
+#: statement about Fleet's own coverage, not about anything Fleet monitors, and
+#: `decision_log` already files Fleet's own work under this name. When
+#: objectives gain a product of their own, this finding should take the
+#: objective's rather than the constant.
+FLEET_PRODUCT = "fleet"
+
+
+def _detector_products(out: AdapterOutput) -> dict[str, set[str]]:
+    """detector_key -> the products the registry has it running against.
+
+    A set rather than a value, deliberately. `detector_registry` is keyed
+    (detector_key, issue_key_version, product), so one key running against two
+    products is a shape the schema allows. It has never happened, and the two
+    findings that need this are keyed by detector alone -- so rather than pick
+    one, `_product_for_detector` refuses and the finding is skipped with a
+    reason. Guessing here would file a proposal under a product it is not
+    about, which is the failure `product` was added to prevent.
+    """
+    mapping: dict[str, set[str]] = {}
+    for row in out[DETECTOR_HEALTH].rows:
+        mapping.setdefault(row["detector_key"], set()).add(row["product"])
+    return mapping
+
+
+def _product_for_detector(products: dict[str, set[str]], detector_key: str,
+                          finding_type: str, run: FindingRun) -> str | None:
+    found = products.get(detector_key) or set()
+    if len(found) == 1:
+        return next(iter(found))
+    detail = ("no product in detector_health" if not found else
+              "more than one product (" + ", ".join(sorted(found)) + ")")
+    run.skipped.append(
+        (finding_type,
+         f"{detector_key} maps to {detail}, so this finding cannot say what "
+         f"it is about"))
+    return None
 
 
 def _usable(run: FindingRun, finding_type: str, reading: Reading) -> bool:
@@ -178,6 +224,7 @@ def issue_open_too_long(out: AdapterOutput, cycle_config: dict[str, Any],
         run.findings.append(Finding(
             finding_type=ISSUE_OPEN_TOO_LONG,
             finding_key=f"{ISSUE_OPEN_TOO_LONG}:{row['fingerprint']}",
+            product=row["product"],
             area=row["product"],
             title=(f"{row['issue_type']} on {row['subject_type']} "
                    f"{row['subject_id']} has been open {_days(row['age_seconds'])}"),
@@ -254,6 +301,7 @@ def detector_no_successful_run(out: AdapterOutput, cycle_config: dict[str, Any],
         run.findings.append(Finding(
             finding_type=DETECTOR_NO_SUCCESSFUL_RUN,
             finding_key=f"{DETECTOR_NO_SUCCESSFUL_RUN}:{row['detector_key']}:{variant}",
+            product=row["product"],
             area=row["product"],
             title=title,
             body=body,
@@ -274,6 +322,7 @@ def false_positive_rate_rising(out: AdapterOutput, cycle_config: dict[str, Any],
     if not _usable(run, FALSE_POSITIVE_RATE_RISING, reading):
         return
 
+    products = _detector_products(out)
     settings = cycle_config["findings"][FALSE_POSITIVE_RATE_RISING]
     window = _interval(settings["window"])
     minimum = int(settings["min_verdicts_per_window"])
@@ -302,10 +351,19 @@ def false_positive_rate_rising(out: AdapterOutput, cycle_config: dict[str, Any],
         if recent - prior < increase:
             continue
 
+        # This query is keyed by detector, not by product, so the product is
+        # resolved through the registry rather than invented. Unresolvable
+        # means the finding is dropped with a reason, not filed under a guess.
+        product = _product_for_detector(products, row["detector_key"],
+                                        FALSE_POSITIVE_RATE_RISING, run)
+        if product is None:
+            continue
+
         run.findings.append(Finding(
             finding_type=FALSE_POSITIVE_RATE_RISING,
             finding_key=(f"{FALSE_POSITIVE_RATE_RISING}:{row['detector_key']}:"
                          f"{row['observation_type']}"),
+            product=product,
             area=row["detector_key"],
             title=(f"False-positive rate on {row['detector_key']}/"
                    f"{row['observation_type']} rose from {prior:.0%} to "
@@ -338,6 +396,7 @@ def untriaged_observations(out: AdapterOutput, cycle_config: dict[str, Any],
     if not _usable(run, UNTRIAGED, reading):
         return
 
+    products = _detector_products(out)
     settings = cycle_config["findings"][UNTRIAGED]
     max_age = _interval(settings["max_age"])
     min_count = int(settings["min_count"])
@@ -349,10 +408,16 @@ def untriaged_observations(out: AdapterOutput, cycle_config: dict[str, Any],
         if count < min_count or oldest <= max_age.total_seconds():
             continue
 
+        product = _product_for_detector(products, row["detector_key"],
+                                        UNTRIAGED, run)
+        if product is None:
+            continue
+
         run.findings.append(Finding(
             finding_type=UNTRIAGED,
             finding_key=(f"{UNTRIAGED}:{row['detector_key']}:"
                          f"{row['observation_type']}"),
+            product=product,
             area=row["detector_key"],
             title=(f"{count} untriaged {row['observation_type']} observations, "
                    f"oldest {_days(oldest)}"),
@@ -399,6 +464,7 @@ def coverage_gap(out: AdapterOutput, cycle_config: dict[str, Any],
         run.findings.append(Finding(
             finding_type=COVERAGE_GAP,
             finding_key=f"{COVERAGE_GAP}:{row['fingerprint']}:{reason}",
+            product=row["product"],
             area=row["product"],
             title=(f"{row['issue_type']} on {row['subject_type']} "
                    f"{row['subject_id']} cannot resolve: {reason}"),
@@ -489,6 +555,7 @@ def objective_no_activity(history: ProposalHistory, objectives: Objectives,
         run.findings.append(Finding(
             finding_type=OBJECTIVE_NO_ACTIVITY,
             finding_key=f"{OBJECTIVE_NO_ACTIVITY}:{objective.id}",
+            product=FLEET_PRODUCT,
             area="fleet",
             title=(f"Objective {objective.id} (weight {objective.weight}) has "
                    f"had no proposal for {quiet}"),

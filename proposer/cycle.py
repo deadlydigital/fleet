@@ -192,13 +192,15 @@ def write(proposals: Sequence[Finding], cycle_id: uuid.UUID,
                 row = conn.execute(
                     """
                     INSERT INTO proposals
-                        (cycle_id, kind, area, finding_key, title, body,
-                         objective_ref, reversibility, confidence)
-                    VALUES (%(cycle)s, %(kind)s, %(area)s, %(key)s, %(title)s,
-                            %(body)s, %(objective)s, %(rev)s, %(confidence)s)
+                        (cycle_id, kind, product, area, finding_key, title,
+                         body, objective_ref, reversibility, confidence)
+                    VALUES (%(cycle)s, %(kind)s, %(product)s, %(area)s,
+                            %(key)s, %(title)s, %(body)s, %(objective)s,
+                            %(rev)s, %(confidence)s)
                     RETURNING id
                     """,
                     {"cycle": cycle_id, "kind": finding.kind,
+                     "product": finding.product,
                      "area": finding.area, "key": finding.finding_key,
                      "title": finding.title, "body": finding.body,
                      "objective": finding.objective_ref,

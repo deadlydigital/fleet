@@ -280,6 +280,36 @@ SELECT cycle_id, min(created_at) AS started_at, count(*) AS proposals
 """
 
 
+# ---------------------------------------------------------------- page 4
+
+# EVERY OUTCOME COLUMN HERE IS A VIEW COLUMN, not a stored one. `decision_log`
+# has no place to keep one; `decision_outcomes` recomputes task state, cost,
+# attempts and issue state from the rows the decision cited, on every read. So
+# this page cannot show a stale outcome, and there is no write route that could
+# set one -- which is why this page is a GET and nothing else.
+DECISIONS = """
+SELECT id, product, subject, decision, reason, decided_by, decided_at,
+       origin, confidence, evidence,
+       proposal_id, issue_id, task_id,
+       task_status, task_outcome, total_cost_gbp, runs_total,
+       attempts_to_green, issue_status, issue_outcome,
+       reopened_since_decision, resolved_since_decision
+  FROM decision_outcomes
+ WHERE (%(product)s::text IS NULL OR product = %(product)s)
+ ORDER BY decided_at DESC, id DESC
+"""
+
+DECISION_PRODUCTS = """
+SELECT product, count(*) AS n FROM decision_log GROUP BY product ORDER BY 1
+"""
+
+DECISION_TOTALS = """
+SELECT decision::text AS decision, count(*) AS n,
+       count(*) FILTER (WHERE origin = 'BACKFILLED') AS backfilled
+  FROM decision_log GROUP BY decision ORDER BY 1
+"""
+
+
 def task_list(status: str | None) -> list[dict[str, Any]]:
     return db.rows(TASK_LIST, {"status": status})
 
@@ -349,3 +379,15 @@ def proposal_evidence() -> dict[int, list[dict[str, Any]]]:
 
 def cycles() -> list[dict[str, Any]]:
     return db.rows(CYCLES)
+
+
+def decisions(product: str | None = None) -> list[dict[str, Any]]:
+    return db.rows(DECISIONS, {"product": product})
+
+
+def decision_products() -> list[dict[str, Any]]:
+    return db.rows(DECISION_PRODUCTS)
+
+
+def decision_totals() -> list[dict[str, Any]]:
+    return db.rows(DECISION_TOTALS)

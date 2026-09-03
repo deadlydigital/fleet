@@ -549,3 +549,257 @@ The runner's tests use a real git repository, real worktrees and the real
 four identities, with the agent faked -- deliberately hostile in several of
 them. An agent that edits the suite and reports that it did not is the case
 the runner exists for, and it is easier to arrange than to wait for.
+
+---
+
+# The decision log, V1
+
+Track 4, if it is a track at all: it is one table, one view, four CLI commands
+and one page. Fleet already recorded proposals, verdicts, tasks, runs and
+costs. What it never recorded was the middle of that sequence — a proposal was
+raised, **something was decided**, and work happened or did not. `tasks` was
+the closest thing to a record of a choice, and it only holds the ones that were
+approved: every rejection Fleet has ever produced left no trace at all.
+
+    010_decision_log.sql   decision_log, decision_outcomes
+    fleet decision …       record | list | show | backfill
+    console /decisions     read-only, no form
+
+## It is not called `decisions`, because that name is taken and correctly so
+
+002 has a `decisions` table. It is the verdict on **one proposal** from the
+proposal cycle: `UNIQUE (proposal_id)`, an enum reason code sized for counting
+what that layer is bad at, and `decision_seconds` measuring what the layer
+costs in human attention.
+
+`decision_log` is the log across **every** source of a decision — a proposal, an
+issue, a task, or nothing at all — with a free-text reason. Widening 002's table
+to serve both would have meant dropping the UNIQUE that makes "one verdict per
+proposal" true, making `proposal_id` nullable so the FK no longer says the
+cycle's grading is complete, and adding free text beside the enum — at which
+point the enum is optional and stops being countable. Two tables, two jobs.
+
+## The outcome is not in the table, and there is nowhere to put one
+
+Every outcome lives in `decision_outcomes`, a view recomputed on every read:
+
+| field | derived from |
+|---|---|
+| `task_status` / `task_outcome` | `tasks.status` |
+| `total_cost_gbp` / `runs_total` | **every** run of the task, not the latest |
+| `attempts_to_green` | `tasks.attempts`, and **NULL until there is a green** |
+| `issue_status` / `issue_outcome` | `issues` and `issue_occurrences` |
+
+There is no `outcome` column, no `worked_out` boolean, no `cost_actual`. That
+is the enforcement rather than the intention: a column someone can type into
+holds what someone believed when they typed it, and a decision log whose
+outcomes are self-reported is a record of intentions dressed as a record of
+results. `test_writing_an_outcome_is_a_missing_column_not_a_silent_accept` is
+that property, and assertion J3 checks it on the deployed database.
+
+**A reopen outranks the current status.** An issue that was resolved, came
+back, and was resolved again reads `REOPENED`, not `RESOLVED_HELD`. Reading
+`issues.status` would report a decision that worked; it did not work, and the
+second fix belongs to whatever decision produced it. `issue_occurrences` is the
+source because it carries timestamps — `issues.reopen_count` is a counter and
+cannot say whether the reopen was before this decision or after it.
+
+**Attempts-to-green is NULL for anything that is not green.** A number there
+for a task still in flight, or one abandoned, is attempts-so-far wearing the
+name of a result.
+
+**Cost is every run.** Task 5 took four runs at £5.00, £4.80, £5.57 and £4.58.
+The latest is £4.58 and the answer is £19.95; the console's task list made
+exactly this mistake before `spent_all_runs` existed, so the test uses those
+figures.
+
+## The reason is NOT NULL on every row, and the sentinel is reserved
+
+Including rejections and deferrals. This is the point of the table: approval is
+recoverable from the work that followed, and rejection leaves nothing behind at
+all, so the rejection with a reason is the more valuable row.
+
+Free text rather than 002's enum, because the reason a thing is rejected is
+usually the part that did not fit a vocabulary chosen in advance — a forced
+enum turns it into `WRONG_PRIORITY` plus a lost sentence.
+
+Two constraints, and both are needed. `NOT NULL` alone accepts a space.
+`UNRECORDED` — which the backfill uses — is refused on any row whose origin is
+not `BACKFILLED`, because otherwise it becomes the way to satisfy the NOT NULL
+and the constraint is decorative.
+
+## Backfilled rows say so, on two axes
+
+`origin` is `RECORDED` or `BACKFILLED`; `confidence` is `STATED` or `INFERRED`.
+Two columns rather than one because the implication runs one way only: a
+backfilled row can never be `STATED`, but a row recorded live may still be
+`INFERRED` — a decision written up the following week from notes. A check
+constraint encodes that asymmetry.
+
+`fleet decision backfill` writes one decision per existing task, dated
+`tasks.created_at` — **the moment the work was chosen, not the moment it
+merged**, because the merge is an outcome and the view derives it. Nothing is
+invented: `reason` and `decided_by` are the sentinel, `evidence` is empty
+rather than filled with something synthesised to avoid looking empty, and a
+repo with no product mapping stops the command instead of defaulting. It is
+idempotent, and a dry run is the default.
+
+## Who may write it
+
+The same rule as `decisions` and `observation_verdicts`: `fleet_console` and
+nothing else. `fleet_proposer` and `fleet_task_runner` are absent from the
+trigger's list and hold no grant — both are things a decision is made **about**.
+`fleet_detector_reader` cannot read the log for the reason 004 gave the console
+its own read identity: the layer being graded does not see the grade.
+
+The reversion check found this pair was not actually proven. The runner is
+refused by two mechanisms — the missing grant and the trigger — so a test
+accepting either exception passes with the trigger disabled.
+`test_the_trigger_refuses_the_runner_even_when_it_holds_the_grant` grants the
+runner INSERT on a throwaway database first, leaving only the trigger.
+
+## Tests
+
+    .venv/bin/python -m pytest tests/test_decision_log.py \
+                              tests/test_decision_cli.py \
+                              tests/test_console_decision_log.py -q
+    .venv/bin/python tests/revert_schema_guards.py
+
+The second is the sibling of `revert_guards.py` for SQL guards: it edits
+`010_decision_log.sql`, gets the template database rebuilt from it, and
+confirms the matching test fails. Ten guards, all proven. `security_invoker` on
+the view is deliberately **not** in it — removing it breaks no behavioural test,
+because both console roles hold the base grants either way, so it is checked in
+`010_decision_log_assertions.sql` (J5) instead. A reversion case that pretended
+to cover it would be the failure the script exists to find.
+
+## A branch drift this uncovered, and closed
+
+`decision_outcomes` is `security_invoker`, so `fleet_console` reads `issues` and
+`issue_occurrences` through its own grants. It held them on the deployed
+database and **not in this branch's migration files**: commits `712195d` and
+`a99f17c` added `GRANT SELECT ON observations, issues TO fleet_console,
+fleet_evaluator` to `001_v1_core.sql` on `master`, and `track-2-foundation` —
+which carries 002 through 011, the console and the runner — had never been
+merged with it. Production had the grant because the migration identity owns the
+tables; a database built from these files did not, and the suite failed on
+exactly that.
+
+**Merged in `168e8bb`**, not papered over. `master` was four commits ahead: the
+two grant commits, and two documentation ones. The only file conflict was
+`tests/conftest.py`, where both branches had added fixtures — resolved by
+keeping both, so `fleet_test_evaluator` and the four track-3 identities now
+coexist.
+
+010 still restates the two grants it depends on, narrowed to the tables its view
+reads. A file should name what it depends on rather than inherit it silently
+from a line two migrations away that has already gone missing once.
+
+**`tools/schema-drift-check.sh` is what keeps it closed.** It builds a database
+from 001–011 on the local cluster, fingerprints it and production at the catalog
+level, and diffs. Run after this work: **790 objects each, no structural
+drift.**
+
+`pg_dump` is not usable for this — the servers are different major versions
+(RDS 15.17, this box 16.x) with different owners and login roles, so every
+object would differ on `OWNER TO` alone. The fingerprint compares catalog rows
+instead and excludes ownership and login roles deliberately: those are
+environment, not schema. It emits the server major version first, and treats a
+difference confined to view-body hashes as not-comparable when the majors differ
+— `pg_get_viewdef` qualifies CTE columns with the alias on 16 and not on 15, so
+`observation_coverage` hashes differently while being the same view. View output
+*shape* is still compared either way, through `information_schema.columns`.
+
+Writing it caught a hole in its own first draft: the enum query said `GROUP BY 1`
+over an expression containing an aggregate, so it errored on **both** sides and
+the types were silently never compared. Six objects appeared the moment it was
+fixed.
+
+## `product` on proposals, and the `review.py` wiring
+
+`proposals.product` is migration **011**. `area` was doing two jobs — three
+producers set it to the product, two to the detector key, one to the literal
+`fleet` — so it could not be grouped on, and `decision_log.product` had nothing
+to take a value from when a decision cited a proposal.
+
+**NOT NULL, not nullable-and-usually-set.** A proposal that cannot say what it
+is about is incomplete rather than under-specified. Prompting for it at review
+time pushes the gap onto the reviewer every morning; inferring it from the
+evidence is a guess wearing a derivation's clothes.
+
+**`area` is kept and not repurposed.** Two of its spellings are detector keys,
+which are useful and are not products. Renaming the column would have made the
+historical rows lie about which of the two things they held.
+
+All six producers now set it:
+
+| producer | source |
+|---|---|
+| `issue_open_too_long`, `detector_no_successful_run`, `coverage_gap` | the row's own `product` |
+| `false_positive_rate_rising`, `untriaged_observations` | resolved through `detector_health` |
+| `objective_no_activity` | `FLEET_PRODUCT` — it is a statement about this layer |
+
+The middle pair are keyed by detector, not by product, so `_detector_products`
+builds `detector_key -> set(product)` from the registry and
+`_product_for_detector` **refuses a key that maps to none or to more than one**,
+skipping the finding with a reason. `detector_registry` is keyed
+`(detector_key, issue_key_version, product)`, so two products under one key is a
+shape the schema allows; picking one would file a proposal under a product it is
+not about, which is the failure `product` was added to prevent.
+
+The backfill in 011 invents nothing: it takes the only product `issues` has ever
+recorded, and **raises** if that is not exactly one. A default would file the
+existing row under a product nobody chose.
+
+**It half-applied on the first attempt, and the reason is worth keeping.**
+`proposals` is append-only — 002 puts `reject_mutation()` on UPDATE, with no
+fleet_admin escape — so the backfill was refused with `UPDATE on proposals
+denied for listmonk`, leaving the column added and nothing else. The local
+rehearsal had passed because that database held **no proposals**, so the UPDATE
+never ran. *A migration whose backfill is only exercised when there is nothing
+to backfill has not been exercised.* The rehearsal now seeds a proposal first,
+in one transaction, because the evidence constraint is deferred to COMMIT and
+psql's autocommit had silently thrown the seed away too.
+
+011 is now wrapped in `BEGIN`/`COMMIT`, idempotent (`ADD COLUMN IF NOT EXISTS`,
+guarded constraint and index), and disables `proposals_immutable` for the
+backfill and re-enables it in the same transaction — so a failure anywhere rolls
+the disable back and cannot leave the table writable. `ALTER TABLE ... DISABLE
+TRIGGER` is the right instrument because the capability is already scoped: only
+the table owner can do it, and the owner is the migration identity. Verified
+afterwards on production that an UPDATE is refused again.
+
+### Every verdict now opens a decision log entry
+
+`review.py record()` writes both, and `--why` is required on `decide` as well as
+in the interactive loop.
+
+* **One transaction.** A verdict recorded without its log entry is precisely the
+  split this work closes. The explicit `conn.commit()` afterwards is not
+  redundant and the tests proved it: psycopg opens an implicit transaction on
+  the first statement, so `conn.transaction()` was a SAVEPOINT inside it, and
+  leaving the block released the savepoint without committing. Both rows were
+  written and neither was durable.
+* **Every verdict, including rejections and deferrals.** "When a verdict leads
+  to action" taken literally logs approvals and drops rejections, rebuilding the
+  asymmetry the log removes.
+* **The enum and the sentence, both.** `reason_code` stays on `decisions` for
+  counting; `--why` is what gets read in six months. Falling back to the code
+  would put `ALREADY_KNOWN` in the field whose purpose is to hold what the code
+  could not, so an empty `--why` is refused rather than defaulted.
+* **`SKIP` logs nothing.** Skipping is not deciding, and it never reaches the
+  reason prompt — a test patches `prompt_why` to fail if it does.
+* **Subject, evidence and product are captured, not retyped.** The trigger takes
+  the first two from the proposal; the product comes off the proposal row.
+
+Three cases in `tests/revert_guards.py` cover this half, all proven.
+
+## Also fixed here: `fleet task list` counted runs, not tasks
+
+It printed 10 rows for 7 tasks and a summary reading `MERGED 8 ABANDONED 2`,
+because a plain `LEFT JOIN runs` returns one row per RUN — task 5 has four. The
+console hit the same thing and fixed it with a LATERAL; the CLI kept the join.
+It now uses the same LATERAL, shows a `runs` column, and sums **every** run's
+cost rather than the latest, which is the same understatement
+`decision_outcomes` refuses.
+

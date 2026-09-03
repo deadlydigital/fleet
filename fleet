@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""The task queue, from the outside.
+"""The task queue and the decision log, from the outside.
 
     fleet task add --title "Refund reporting" --spec specs/refunds.md \
                    --objective dd-feature-parity --max-cost 3.00
     fleet task list [--status QUEUED] [--queue default]
     fleet task status 7
+
+    fleet decision record --decision REJECTED --reason "..." --issue 1
+    fleet decision list [--product P] [--issue N] [--decision REJECTED]
+    fleet decision show 3
+    fleet decision backfill [--execute]
+
+`decision` records what was chosen and why, and reads back what happened. The
+outcome columns it prints do not exist on `decision_log` -- they come from the
+`decision_outcomes` view, recomputed from the tasks, runs and issues the
+decision cited. There is no flag to set one, here or anywhere.
 
 Connects as fleet_console, which is the only identity that may write the
 queue. The runner cannot: there is no INSERT grant on tasks for
@@ -32,6 +42,22 @@ from runner import config
 
 STATUS_ORDER = ("QUEUED", "RUNNING", "READY_FOR_REVIEW", "REWORK",
                 "FAILED", "REJECTED", "MERGED", "ABANDONED")
+
+DECISIONS = ("APPROVED", "REJECTED", "DEFERRED")
+
+#: Reserved to the backfill by a check constraint. Named here so the CLI can
+#: refuse it with a sentence rather than surface a constraint violation.
+UNRECORDED = "UNRECORDED"
+
+#: repo -> product, for the backfill. Explicit and small rather than derived:
+#: a task names a repository, a decision names a product, and the two happen to
+#: correspond today. An unmapped repo stops the backfill instead of defaulting,
+#: because a silently-defaulted product is a row filed under a product nobody
+#: chose.
+REPO_PRODUCT = {
+    "deadly-digital-platform": "deadly_digital",
+    "fleet": "fleet",
+}
 
 
 def connect():
@@ -108,12 +134,24 @@ def cmd_list(args: argparse.Namespace) -> int:
     with connect() as conn:
         rows = conn.execute(
             f"""
+            -- ONE ROW PER TASK. A plain LEFT JOIN to `runs` returns one row
+            -- per RUN, so task 5 -- four runs -- printed four times and the
+            -- summary counted 10 tasks where there are 7. The console hit the
+            -- same thing and fixed it with this lateral; the CLI kept the join.
+            --
+            -- `spent` is every run, not the latest. With the latest alone a
+            -- task that took four attempts read £4.58 against a real £19.95,
+            -- which is the same understatement `decision_outcomes` refuses.
             SELECT t.id, t.status, t.queue, t.priority, t.title, t.repo,
                    t.branch_name, t.attempts, t.max_attempts, t.max_cost_gbp,
                    t.objective_ref, t.created_at,
-                   r.committed_gbp
+                   agg.committed_gbp, agg.runs_total
               FROM tasks t
-              LEFT JOIN runs r ON r.task_id = t.id
+              LEFT JOIN LATERAL (
+                  SELECT count(*) AS runs_total,
+                         sum(committed_gbp) AS committed_gbp
+                    FROM runs WHERE task_id = t.id
+              ) agg ON true
               {clause}
              ORDER BY array_position(%(order)s::text[], t.status),
                       t.priority, t.id
@@ -125,13 +163,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("no tasks" + (f" with status {args.status}" if args.status else ""))
         return 0
 
-    print(f"{'id':>4}  {'status':<17} {'pri':>4} {'att':>5} {'£cap':>6} "
-          f"{'£spent':>7}  title")
+    print(f"{'id':>4}  {'status':<17} {'pri':>4} {'att':>5} {'runs':>5} "
+          f"{'£cap':>6} {'£spent':>7}  title")
     for r in rows:
         spent = f"{r['committed_gbp']:.2f}" if r["committed_gbp"] is not None else "-"
         att = f"{r['attempts']}/{r['max_attempts']}"
         print(f"{r['id']:>4}  {r['status']:<17} {r['priority']:>4} {att:>5} "
-              f"{r['max_cost_gbp']:>6.2f} {spent:>7}  {r['title']}")
+              f"{r['runs_total']:>5} {r['max_cost_gbp']:>6.2f} {spent:>7}  "
+              f"{r['title']}")
         if r["branch_name"]:
             print(f"      {r['branch_name']}")
 
@@ -208,6 +247,248 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- decisions ------------------------------------------------------------
+#
+# `record` writes to decision_log. `list` and `show` read decision_outcomes,
+# which is a view: every outcome on the page is recomputed from the task, the
+# runs and the issue the decision cited, at the moment it is asked. Nothing
+# below writes an outcome because there is no column to write one to.
+
+DECISION_LIST = """
+SELECT id, product, subject, decision, reason, decided_by, decided_at,
+       origin, confidence, proposal_id, issue_id, task_id,
+       task_status, task_outcome, total_cost_gbp, runs_total,
+       attempts_to_green, issue_status, issue_outcome
+  FROM decision_outcomes
+ WHERE (%(product)s::text  IS NULL OR product  = %(product)s)
+   AND (%(issue)s::bigint  IS NULL OR issue_id = %(issue)s)
+   AND (%(task)s::bigint   IS NULL OR task_id  = %(task)s)
+   AND (%(proposal)s::bigint IS NULL OR proposal_id = %(proposal)s)
+   AND (%(decision)s::text IS NULL OR decision::text = %(decision)s)
+   AND (%(origin)s::text   IS NULL OR origin   = %(origin)s)
+ ORDER BY decided_at DESC, id DESC
+"""
+
+
+def _outcome_cells(r: dict) -> tuple[str, str]:
+    """The two derived verdicts, as short strings, or an em dash for absent.
+
+    Absent is not the same as bad and must not print like it: a decision that
+    cited no task has no task outcome, which is different from a task that
+    failed.
+    """
+    task = r["task_outcome"] or "—"
+    if r["task_outcome"] and r["total_cost_gbp"] is not None:
+        task = f"{task} £{float(r['total_cost_gbp']):.2f}"
+        if r["attempts_to_green"]:
+            task += f" /{r['attempts_to_green']}"
+    return task, (r["issue_outcome"] or "—")
+
+
+def cmd_decision_record(args: argparse.Namespace) -> int:
+    if args.reason.strip() == UNRECORDED:
+        print(f"{UNRECORDED} is reserved to backfilled rows. A decision "
+              f"recorded now has a reason; write it.", file=sys.stderr)
+        return 2
+
+    with connect() as conn:
+        product = args.product
+        if product is None and args.issue is not None:
+            row = conn.execute("SELECT product FROM issues WHERE id = %s",
+                               (args.issue,)).fetchone()
+            if row is None:
+                print(f"no issue {args.issue}", file=sys.stderr)
+                return 2
+            product = row["product"]
+        if product is None:
+            print("no --product, and none could be taken from a cited issue",
+                  file=sys.stderr)
+            return 2
+
+        # subject and evidence are left NULL/default on purpose: the trigger
+        # takes them from whatever is cited. --subject is for the case where
+        # nothing is.
+        row = conn.execute(
+            """
+            INSERT INTO decision_log (product, subject, proposal_id, issue_id,
+                                      task_id, decision, reason)
+            VALUES (%(product)s, %(subject)s, %(proposal)s, %(issue)s,
+                    %(task)s, %(decision)s, %(reason)s)
+            RETURNING id, subject
+            """,
+            {"product": product, "subject": args.subject,
+             "proposal": args.proposal, "issue": args.issue, "task": args.task,
+             "decision": args.decision, "reason": args.reason}).fetchone()
+        conn.commit()
+        detail = conn.execute(
+            "SELECT * FROM decision_outcomes WHERE id = %s", (row["id"],)
+        ).fetchone()
+
+    print(f"decision {row['id']}: {args.decision} — {row['subject']}")
+    print(f"  product      {product}")
+    cited = [f"{k} {v}" for k, v in (("proposal", args.proposal),
+                                     ("issue", args.issue),
+                                     ("task", args.task)) if v]
+    print(f"  cites        {', '.join(cited) or 'nothing'}")
+    print(f"  reason       {args.reason}")
+    n = len(detail["evidence"] or [])
+    print(f"  evidence     {n} item(s) captured"
+          if n else "  evidence     none cited")
+    task, issue = _outcome_cells(detail)
+    print(f"  outcome      task {task}   issue {issue}   (derived, not stored)")
+    return 0
+
+
+def cmd_decision_list(args: argparse.Namespace) -> int:
+    with connect() as conn:
+        rows = conn.execute(DECISION_LIST, {
+            "product": args.product, "issue": args.issue, "task": args.task,
+            "proposal": args.proposal, "decision": args.decision,
+            "origin": args.origin}).fetchall()
+
+    if not rows:
+        print("no decisions match")
+        return 0
+
+    print(f"{'id':>4}  {'when':<11} {'decision':<9} {'product':<15} "
+          f"{'task outcome':<26} {'issue':<24}  subject")
+    for r in rows:
+        task, issue = _outcome_cells(r)
+        mark = "~" if r["origin"] == "BACKFILLED" else " "
+        print(f"{r['id']:>3}{mark}  {r['decided_at']:%d %b %H:%M} "
+              f"{r['decision']:<9} {r['product']:<15} {task:<26} {issue:<24}  "
+              f"{r['subject'][:44]}")
+        if r["origin"] == "BACKFILLED":
+            print(f"      reconstructed from the task row; reason {r['reason']}")
+
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["decision"]] = counts.get(r["decision"], 0) + 1
+    print("\n" + "  ".join(f"{d} {counts[d]}" for d in DECISIONS if d in counts))
+    backfilled = sum(1 for r in rows if r["origin"] == "BACKFILLED")
+    if backfilled:
+        print(f"~ {backfilled} reconstructed, reason not recorded at the time")
+    return 0
+
+
+def cmd_decision_show(args: argparse.Namespace) -> int:
+    with connect() as conn:
+        d = conn.execute("SELECT * FROM decision_outcomes WHERE id = %s",
+                         (args.decision_id,)).fetchone()
+    if d is None:
+        print(f"no decision {args.decision_id}", file=sys.stderr)
+        return 2
+
+    print(f"decision {d['id']}  {d['decision']}")
+    print(f"  {d['subject']}")
+    print(f"  product      {d['product']}")
+    print(f"  decided      {d['decided_at']:%Y-%m-%d %H:%M} by {d['decided_by']}")
+    print(f"  reason       {d['reason']}")
+    if d["origin"] == "BACKFILLED":
+        print("               ^ reconstructed from the database; no reason was "
+              "recorded at the time and none has been invented")
+    print(f"  provenance   {d['origin']} / {d['confidence']}")
+    cited = [f"{k} {d[c]}" for k, c in (("proposal", "proposal_id"),
+                                        ("issue", "issue_id"),
+                                        ("task", "task_id")) if d[c]]
+    print(f"  cites        {', '.join(cited) or 'nothing'}")
+
+    print("\n  evidence, as it stood when the decision was made")
+    for item in (d["evidence"] or []):
+        print(f"    {json.dumps(item, default=str, sort_keys=True)}")
+    if not d["evidence"]:
+        print("    none cited")
+
+    # Every line below is recomputed by the view. None of it is stored.
+    print("\n  outcome, recomputed now from tasks, runs and issues")
+    if d["task_id"]:
+        print(f"    task {d['task_id']}     {d['task_status']} "
+              f"({d['task_outcome']})")
+        print(f"    cost         £{float(d['total_cost_gbp']):.2f} "
+              f"over {d['runs_total']} run(s)")
+        print(f"    to green     "
+              f"{d['attempts_to_green'] or 'not green, so no answer'}")
+    else:
+        print("    no task cited")
+    if d["issue_id"]:
+        print(f"    issue {d['issue_id']}    {d['issue_status']} "
+              f"({d['issue_outcome']})")
+    else:
+        print("    no issue cited")
+    return 0
+
+
+def cmd_decision_backfill(args: argparse.Namespace) -> int:
+    """One decision per task, reconstructed from what the database holds.
+
+    Every task in `tasks` was a decision to do that work, taken when the row
+    was created. That much is recoverable and is all that is: nothing recorded
+    who queued it or why, so `decided_by` and `reason` are the reserved
+    sentinel rather than a plausible sentence, and every row is marked
+    BACKFILLED / INFERRED.
+
+    `decided_at` is `tasks.created_at` -- the moment the work was chosen, not
+    the moment it was merged. The merge is an OUTCOME, and the view derives it.
+
+    Idempotent: a task that already has a backfilled decision is skipped, so a
+    second run adds nothing.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.repo, t.title, t.created_at, t.objective_ref,
+                   t.status, t.max_cost_gbp
+              FROM tasks t
+             WHERE NOT EXISTS (SELECT 1 FROM decision_log d
+                                WHERE d.task_id = t.id AND d.origin = 'BACKFILLED')
+             ORDER BY t.id
+            """).fetchall()
+
+        unmapped = sorted({r["repo"] for r in rows if r["repo"] not in REPO_PRODUCT})
+        if unmapped:
+            print(f"no product mapping for repo(s): {', '.join(unmapped)}. Add "
+                  f"them to REPO_PRODUCT rather than letting them default.",
+                  file=sys.stderr)
+            return 2
+
+        if not rows:
+            print("nothing to backfill; every task already has one")
+            return 0
+
+        for r in rows:
+            print(f"  task {r['id']:>3}  {REPO_PRODUCT[r['repo']]:<15} "
+                  f"{r['created_at']:%d %b %H:%M}  {r['title'][:52]}")
+
+        if not args.execute:
+            print(f"\n{len(rows)} decisions would be written. Dry run; pass "
+                  f"--execute to write them.")
+            return 0
+
+        written = 0
+        for r in rows:
+            # evidence stays empty. A synthesised evidence object would be an
+            # invention dressed as a citation, and the task_id already points
+            # at everything that was actually recorded.
+            conn.execute(
+                """
+                INSERT INTO decision_log (product, subject, task_id, decision,
+                                          reason, decided_by, decided_at,
+                                          origin, confidence)
+                VALUES (%(product)s, %(subject)s, %(task)s, 'APPROVED',
+                        %(unrecorded)s, %(unrecorded)s, %(at)s,
+                        'BACKFILLED', 'INFERRED')
+                """,
+                {"product": REPO_PRODUCT[r["repo"]], "subject": r["title"],
+                 "task": r["id"], "at": r["created_at"],
+                 "unrecorded": UNRECORDED})
+            written += 1
+        conn.commit()
+
+    print(f"\n{written} decisions backfilled, all marked BACKFILLED/INFERRED "
+          f"with reason {UNRECORDED}.")
+    return 0
+
+
 # ---- entry ----------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -239,6 +520,42 @@ def build_parser() -> argparse.ArgumentParser:
     s = task.add_parser("status", help="one task in full")
     s.add_argument("task_id", type=int)
     s.set_defaults(fn=cmd_status)
+
+    dec = sub.add_parser("decision", help="the decision log").add_subparsers(
+        dest="command", required=True)
+
+    r = dec.add_parser("record", help="record one decision and why")
+    r.add_argument("--decision", required=True, choices=DECISIONS)
+    r.add_argument("--reason", required=True,
+                   help="why. Required on every decision, rejections and "
+                        "deferrals included -- a rejection with no reason is "
+                        "the record this log exists to keep")
+    r.add_argument("--product", help="defaults to a cited issue's product")
+    r.add_argument("--proposal", type=int, help="proposals.id this decides")
+    r.add_argument("--issue", type=int, help="issues.id this cites")
+    r.add_argument("--task", type=int, help="tasks.id this authorised")
+    r.add_argument("--subject", help="one line on what was proposed. Taken "
+                                     "from the cited row when there is one")
+    r.set_defaults(fn=cmd_decision_record)
+
+    dl = dec.add_parser("list", help="decisions with their derived outcomes")
+    dl.add_argument("--product")
+    dl.add_argument("--issue", type=int)
+    dl.add_argument("--task", type=int)
+    dl.add_argument("--proposal", type=int)
+    dl.add_argument("--decision", choices=DECISIONS)
+    dl.add_argument("--origin", choices=("RECORDED", "BACKFILLED"))
+    dl.set_defaults(fn=cmd_decision_list)
+
+    ds = dec.add_parser("show", help="one decision, its evidence and outcome")
+    ds.add_argument("decision_id", type=int)
+    ds.set_defaults(fn=cmd_decision_show)
+
+    db = dec.add_parser("backfill",
+                        help="one decision per existing task, reconstructed")
+    db.add_argument("--execute", action="store_true",
+                    help="write them; without this it is a dry run")
+    db.set_defaults(fn=cmd_decision_backfill)
     return p
 
 

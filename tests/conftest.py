@@ -3,9 +3,8 @@
 Two throwaway databases on a local cluster, rebuilt from templates for every
 test:
 
-  fleet_test   001_v1_core.sql and 002_proposals.sql, unmodified, plus the
-               same registry and routing rows the deployed fleet database
-               carries
+  fleet_test   every migration, 001 through 010, unmodified, plus the same
+               registry and routing rows the deployed fleet database carries
   dd_test      a stand-in for deadly_digital with a hand-counted gap
 
 Tests connect as fleet_test_detector (member of fleet_detector, nothing else)
@@ -92,6 +91,8 @@ def templates() -> None:
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "007_research_floor.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "008_task_reclaim.sql")
     _psql(FLEET_TEMPLATE, PROJECT_ROOT / "009_task_reclaims.sql")
+    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "010_decision_log.sql")
+    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "011_proposal_product.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "tasks_seed.sql")
