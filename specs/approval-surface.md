@@ -43,7 +43,16 @@ batch_id      bigint NOT NULL REFERENCES candidate_batches(id)
 title         text NOT NULL          -- one line, imperative
 rationale     text NOT NULL          -- why this is worth doing, from the finding
 repo          text NOT NULL
-work_type     text NOT NULL          -- must match a contract in contracts/
+
+-- NO work_type. DECIDED 7 Sep 2026: the draft spec chooses it, not the
+-- candidate. A producer reading a findings document does not know whether an
+-- item is a code change or an investigation — that is what the spec-writing
+-- step exists to determine, and requiring it here would make the producer
+-- guess at exactly the thing the next step is for.
+--
+-- Consequence for the check in section 3: it must now also verify that the
+-- work_type the draft spec chose names a contract that exists, because nothing
+-- upstream has established that any more.
 objective_ref text                   -- an id from objectives-2026-Q4.yaml
 
 -- WHERE THE EVIDENCE LIVES, and it is a citation rather than a copy.
@@ -301,9 +310,33 @@ If a timer is ever added while these are absent, the honest description of the
 system is that it has no ceiling at all — the earlier one having been removed
 and the later one not yet built.
 
-**What is NOT a ceiling:** the number of candidates in a batch. Generating
-twenty for review is cheap and reviewing them is the work. The constraint
-belongs at the point where money is spent, which is queueing, not listing.
+5. **Approval batch size: 5, DECIDED 7 Sep 2026.** Cap the batch, not the
+   reason. Four related items can share one honest rationale; twenty unrelated
+   ones cannot, and the reason becomes a paragraph pretending to be one. Set to
+   the same 5 as queue depth, because a batch that cannot be queued is a batch
+   that should not have been approved.
+
+**What is NOT a ceiling:** the number of candidates in a BATCH LISTED for
+review. Generating twenty candidates for consideration is cheap and reviewing
+them is the work; the cap is on how many may be **ticked at once**, which is
+where money is spent.
+
+### 6.2 A consequence of capping approval at the queue depth
+
+Under §3 a tick produces a **draft-spec task**, and an approved draft spec then
+produces a **code task**. Both are rows in `tasks`, so both count against the
+same queue depth of 5.
+
+Ticking five candidates therefore fills the queue, and no code task can be
+queued until some of those spec tasks drain. **That is the correct behaviour
+and worth stating rather than discovering:** it means the system cannot be
+running five specs and five builds at once, and the natural rhythm is a batch of
+specs, then a batch of builds, rather than both at once.
+
+If that proves too tight in practice the lever is raising the depth
+deliberately, with the number re-labelled as measured rather than guessed — not
+exempting one kind of task from the count, which would make the ceiling
+describe something other than what is running.
 
 ---
 
@@ -334,7 +367,7 @@ impossible without it:
 |---|---|
 | `title` | one line, imperative. It is what is ticked. |
 | `rationale` | why this is worth doing. Without it a tick is a guess. |
-| `repo`, `work_type` | `work_type` must name an existing contract in `contracts/`. A candidate whose contract does not exist cannot become a task, and finding that out at queue time wastes the review. |
+| `repo` | which repository the work is in. A producer reading a findings document knows this; it is in the finding. |
 | `evidence` | at least one entry, with the document path **and the sha it was read at**. A candidate that cannot be traced back to the finding it came from is an assertion. |
 | `suggested_paths` | advisory, and the input to §3's path check. May be empty; empty is a claim that the finding named none, not that none exist. |
 | `objective_ref` | an id from `objectives-2026-Q4.yaml`, or explicitly null. Null means "does not serve a stated objective", which is a thing worth being able to see in a list. |
@@ -389,18 +422,11 @@ read-only worktree (§3.1), the batch reason plus per-deviation rows (§4), the
 three dispositions with `NOT_NOW` carried forward (§5), and the ceilings (§6).
 What remains:
 
-1. **`work_type` must match a contract, and there are eight.** Whether the
-   candidate names the contract or the draft spec chooses it is undecided. If
-   the candidate names it, a wrong choice is caught at review; if the spec
-   chooses, the check must verify the choice. §7 currently requires the
-   candidate to name it, which is the conservative reading and may be wrong.
-2. **The batch reason's granularity.** One reason for four related items is
-   honest. One reason for twenty unrelated ones is a paragraph pretending to be
-   a rationale. There may need to be a cap on batch size for the reason to
-   remain meaningful, and I do not know where it is.
-3. **Queue depth of 5 is a guess**, in the way the settle lag and the level-3
-   cap are guesses, and stays labelled as one until something measures it.
-4. **Who writes the first producer, and by hand or not.** §7 says what one must
+1. **Queue depth of 5, and now the approval batch cap of 5, are guesses** — in
+   the way the settle lag and the level-3 cap are guesses. Both stay labelled as
+   such until something measures them. §6.2 says which way to move the first one
+   if it binds.
+2. **Who writes the first producer, and by hand or not.** §7 says what one must
    emit; it does not say that turning the Metorik list into rows by hand with a
    SQL client is a perfectly good first producer. It probably is, and the
    interface exists so that the second one does not have to guess what the
