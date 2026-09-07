@@ -1,0 +1,334 @@
+"""The daily pass: read, claim, render, record.
+
+TWO CONNECTIONS, TWO IDENTITIES, AND THAT IS THE DESIGN
+--------------------------------------------------------
+Reads go through `dd_detector_login`, which holds SELECT and nothing else, on
+`deadly_digital` and `fleet`. The write goes through `fleet_brief_writer_login`,
+which holds INSERT on two tables and can read nothing at all -- not the brief
+tables, not the business.
+
+One identity doing both is the boundary the rest of this system spends effort
+defending, and collapsing it here for the convenience of a single connection
+string would undo `detectors/reconciliation.py`'s read-only guarantee and
+RECONCILIATION-RUNS §4.2 in one step.
+
+A consequence, stated because it is real: the read and the write are not one
+transaction and cannot be. Every claim carries its own `as_of` for that reason.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import psycopg
+
+from . import sources as S
+from .claims import Claim
+from .render import render
+
+log = logging.getLogger(__name__)
+
+FLEET_REPO = "/home/ubuntu/fleet"
+PLATFORM_REPO = "/home/ubuntu/deadly-digital-platform"
+OBJECTIVES = Path(FLEET_REPO) / "objectives-2026-Q4.yaml"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _objectives_version() -> str:
+    try:
+        return hashlib.sha256(OBJECTIVES.read_bytes()).hexdigest()[:16]
+    except Exception:
+        return "unreadable"
+
+
+# ---------------------------------------------------------------------------
+# Standing uncomputed claims — the ones that are true every single day
+# ---------------------------------------------------------------------------
+#
+# These are not failures of the pass. They are the honest state of what is
+# reachable from this host, and they appear in every brief until that changes.
+# Printing them daily is the point: a gap that is only mentioned once is a gap
+# everyone forgets.
+
+def _standing_gaps() -> List[Claim]:
+    return [
+        Claim.uncomputed(
+            "cost.aws.monthly_gbp",
+            "AWS spend against the 200 GBP/month objective",
+            reason=("no AWS credential on this host. `infra_costs` is readable "
+                    "and is NOT a substitute — it is what fleet recorded, not "
+                    "what Amazon charged, and presenting one as the other "
+                    "would be two systems agreeing on a number neither got "
+                    "from the biller")),
+        Claim.uncomputed(
+            "ci.build_status",
+            "whether the build is green",
+            reason=("GitHub Actions is unreadable from this host: `gh` is not "
+                    "installed and the repository is private")),
+        Claim.uncomputed(
+            "dd.daily_metrics",
+            "revenue trend from daily_metrics",
+            reason=("dd_detector_login has SELECT on analytics_<t>.orders only. "
+                    "Order-derived counts appear above and are labelled as "
+                    "such rather than presented as revenue")),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The reads
+# ---------------------------------------------------------------------------
+
+def _business_claims(r: S.Reader) -> List[Claim]:
+    """What the platform looks like. Three tables and orders, per the grants."""
+    out: List[Claim] = []
+
+    tenants = r.probe("deadly_digital:public.tenants",
+                      S.scalar("SELECT count(*) FROM tenants WHERE is_active"))
+    if tenants is not None:
+        out.append(Claim.computed(
+            "dd.tenants.active", f"{tenants} active tenants",
+            source="deadly_digital:public.tenants", as_of=_utcnow(),
+            value_num=tenants, query_key="tenants_active", query_version=1))
+    else:
+        out.append(Claim.uncomputed(
+            "dd.tenants.active", "active tenant count",
+            reason=r.failed("deadly_digital:public.tenants") or "unreadable"))
+
+    for tenant_id in (1, 2):
+        key = f"dd.analytics_{tenant_id}.orders"
+        name = f"deadly_digital:analytics_{tenant_id}.orders"
+        # as_of is MAX(created_at), not now(): the instant the value DESCRIBES.
+        res = r.probe(name, S.row(
+            f"SELECT count(*), max(created_at) FROM analytics_{tenant_id}.orders"))
+        if res is not None and res[0] is not None:
+            count, newest = res
+            out.append(Claim.computed(
+                f"{key}.count",
+                f"analytics_{tenant_id} holds {count} orders "
+                f"(order rows, not revenue)",
+                source=name, as_of=newest or _utcnow(), value_num=count,
+                query_key="orders_count", query_version=1))
+        else:
+            out.append(Claim.uncomputed(
+                f"{key}.count", f"order count for analytics_{tenant_id}",
+                reason=r.failed(name) or "unreadable"))
+    return out
+
+
+def _fleet_claims(r: S.Reader, since: Optional[datetime]) -> List[Claim]:
+    """What fleet did, decided, and is carrying."""
+    out: List[Claim] = []
+    window = since or (_utcnow() - timedelta(days=1))
+
+    probes = [
+        ("fleet:decision_log", "fleet.decisions.total",
+         "decisions recorded", "SELECT count(*) FROM decision_log"),
+        ("fleet:issues", "fleet.issues.open",
+         "open issues", "SELECT count(*) FROM issues WHERE status='OPEN'"),
+        ("fleet:proposals", "fleet.proposals.total",
+         "proposals raised", "SELECT count(*) FROM proposals"),
+        ("fleet:tasks", "fleet.tasks.total",
+         "tasks recorded", "SELECT count(*) FROM tasks"),
+        ("fleet:observations", "fleet.observations.total",
+         "observations recorded", "SELECT count(*) FROM observations"),
+    ]
+    for name, key, label, sql in probes:
+        value = r.probe(name, S.scalar(sql))
+        if value is not None:
+            out.append(Claim.computed(
+                key, f"{value} {label}", source=name, as_of=_utcnow(),
+                value_num=value, query_key=key, query_version=1))
+        else:
+            out.append(Claim.uncomputed(
+                key, label, reason=r.failed(name) or "unreadable"))
+
+    # The one decision_log question worth asking daily, and the reason the
+    # grant was worth making: of what was decided, what has actually happened?
+    name = "fleet:decision_outcomes"
+    res = r.probe(name, S.row(
+        "SELECT count(*) FILTER (WHERE decision='DEFERRED'), count(*) "
+        "FROM decision_outcomes"))
+    if res is not None:
+        deferred, total = res
+        out.append(Claim.computed(
+            "fleet.decisions.deferred",
+            f"{deferred} of {total} recorded decisions are still DEFERRED",
+            source=name, as_of=_utcnow(), value_num=deferred,
+            query_key="decisions_deferred", query_version=1))
+    else:
+        out.append(Claim.uncomputed(
+            "fleet.decisions.deferred", "deferred decisions",
+            reason=r.failed(name) or "unreadable"))
+
+    # Detector activity. A detector that stopped running is invisible in every
+    # other figure, because its absence looks like a quiet day.
+    name = "fleet:detector_runs"
+    res = r.probe(name, S.row(
+        "SELECT count(*), max(started_at) FROM detector_runs "
+        "WHERE started_at > %(since)s", {"since": window}))
+    if res is not None:
+        n, newest = res
+        out.append(Claim.computed(
+            "fleet.detector_runs.recent",
+            f"{n} detector run(s) since the last brief",
+            source=name, as_of=newest or _utcnow(), value_num=n,
+            query_key="detector_runs_recent", query_version=1))
+    else:
+        out.append(Claim.uncomputed(
+            "fleet.detector_runs.recent", "recent detector runs",
+            reason=r.failed(name) or "unreadable"))
+    return out
+
+
+def _git_claims(since: Optional[datetime]) -> List[Claim]:
+    """Engineering time, which the objectives call the binding constraint."""
+    out: List[Claim] = []
+    window = since or (_utcnow() - timedelta(days=1))
+    for label, repo in (("fleet", FLEET_REPO), ("platform", PLATFORM_REPO)):
+        n = S.commits_since(repo, window)
+        at = S.last_commit_at(repo)
+        key = f"git.{label}.commits"
+        if n is None or at is None:
+            out.append(Claim.uncomputed(
+                key, f"commits in the {label} repo",
+                reason=f"git in {repo} did not answer"))
+            continue
+        out.append(Claim.computed(
+            key, f"{n} commit(s) in the {label} repo since the last brief",
+            source=f"git:{label}", as_of=at, value_num=n,
+            query_key="commits_since", query_version=1))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Carrying yesterday forward
+# ---------------------------------------------------------------------------
+
+def _previous_values(conn) -> Dict[str, object]:
+    """The last brief's value per metric_key.
+
+    Read from the STORED rows, never recomputed. A backfilled source would
+    otherwise let today's brief silently restate yesterday's history.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT ON (metric_key) metric_key, value_num "
+        "FROM brief_claims WHERE status='COMPUTED' AND value_num IS NOT NULL "
+        "ORDER BY metric_key, id DESC").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
+             dry_run: bool = False) -> Dict:
+    """One pass. Returns a summary; writes one brief unless `dry_run`.
+
+    THREE CONNECTIONS. `fleet` and `deadly_digital` are separate DATABASES on
+    the same instance, so the business reads and the fleet reads cannot share a
+    connection even though they share an identity — the first version of this
+    pointed both at FLEET_DSN and reported every business figure as
+    "relation does not exist". It did not crash and it did not omit them, which
+    is the discipline working; it was still wrong.
+
+    Both reads are `dd_detector_login`. The write is the other identity.
+    """
+    started = _utcnow()
+    claims: List[Claim] = []
+    results = []
+
+    with psycopg.connect(fleet_dsn, autocommit=False) as rc:
+        rc.read_only = True
+        reader = S.Reader(rc, "dd_detector_login@fleet")
+
+        last = reader.probe("fleet:brief_runs", S.scalar(
+            "SELECT max(generated_at) FROM brief_runs"))
+        previous = reader.probe("fleet:brief_claims",
+                                lambda c: _previous_values(c)) or {}
+        claims += _fleet_claims(reader, last)
+        results += reader.results
+
+    # A failure here must not lose the fleet claims already gathered, which is
+    # why the connection is opened separately rather than nested.
+    try:
+        with psycopg.connect(dd_dsn, autocommit=False) as dc:
+            dc.read_only = True
+            dd_reader = S.Reader(dc, "dd_detector_login@deadly_digital")
+            claims += _business_claims(dd_reader)
+            results += dd_reader.results
+    except Exception as exc:
+        detail = str(exc).strip().split("\n")[0][:200]
+        log.warning("deadly_digital unreachable: %s", detail)
+        results.append(S.SourceResult(
+            "deadly_digital", "dd_detector_login", False, detail=detail))
+        for key, label in (("dd.tenants.active", "active tenant count"),
+                           ("dd.analytics_1.orders.count",
+                            "order count for analytics_1"),
+                           ("dd.analytics_2.orders.count",
+                            "order count for analytics_2")):
+            claims.append(Claim.uncomputed(
+                key, label, reason=f"deadly_digital unreachable: {detail}"))
+
+    claims += _git_claims(last)
+    claims += _standing_gaps()
+
+    claims = [c.with_previous(previous.get(c.metric_key)) for c in claims]
+
+    generated = _utcnow()
+    ok = [r for r in results if r.ok]
+    bad = [r for r in results if not r.ok]
+    markdown = render(claims, generated_at=generated, compares_since=last,
+                      sources_ok=len(ok), sources_failed=len(bad))
+    completed = _utcnow()
+
+    summary = {
+        "claims_total": len(claims),
+        "claims_uncomputed": sum(1 for c in claims if c.status == "UNCOMPUTED"),
+        "sources_ok": len(ok), "sources_failed": len(bad),
+        "markdown": markdown,
+    }
+    if dry_run:
+        return summary
+
+    with psycopg.connect(write_dsn, autocommit=False) as wc:
+        # NOT `RETURNING id`. RETURNING requires SELECT on the returned
+        # column, and the writer deliberately has none — the "writer can read
+        # nothing" property is stricter than it first looks, and the first
+        # version of this failed on exactly that with `permission denied for
+        # table brief_runs` on an INSERT the role was allowed to make.
+        #
+        # `currval` needs only USAGE/SELECT on the SEQUENCE, which the writer
+        # has, and is session-local: it returns the value this connection just
+        # generated, never another writer's.
+        wc.execute(
+            "INSERT INTO brief_runs (generated_at, compares_since, code_version,"
+            " objectives_version, sources_reachable, sources_unreachable,"
+            " claims_total, claims_uncomputed, rendered_markdown, started_at,"
+            " completed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (generated, last, S.head_sha(FLEET_REPO) or "unknown",
+             _objectives_version(),
+             json.dumps([r.as_dict() for r in ok]),
+             json.dumps([r.as_dict() for r in bad]),
+             summary["claims_total"], summary["claims_uncomputed"],
+             markdown, started, completed))
+        run_id = wc.execute("SELECT currval('brief_runs_id_seq')").fetchone()[0]
+
+        for c in claims:
+            wc.execute(
+                "INSERT INTO brief_claims (run_id, section, metric_key,"
+                " statement, source, as_of, value_num, value_text,"
+                " previous_num, delta_num, query_key, query_version, status,"
+                " uncomputed_reason) VALUES"
+                " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (run_id, c.section, c.metric_key, c.statement, c.source,
+                 c.as_of, c.value_num, c.value_text, c.previous_num,
+                 c.delta_num, c.query_key, c.query_version, c.status,
+                 c.uncomputed_reason))
+        wc.commit()
+
+    summary["run_id"] = run_id
+    return summary

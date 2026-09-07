@@ -323,7 +323,36 @@ the most pleasant to read.
 
 ---
 
-## 7. Open questions
+## 7. Decisions taken, 7 Sep 2026
+
+1. **The six grants are applied.** `012_daily_brief.sql`, named individually
+   rather than schema-wide — a blanket grant hands the reader every table added
+   later without anyone deciding to. Reading `decision_log` was the point: a
+   brief that cannot see what was decided cannot say whether it happened.
+2. **A separate write identity.** `fleet_brief_writer` / `fleet_brief_writer_login`
+   holds INSERT on the two brief tables and **SELECT on nothing** — not the
+   briefs, not the business. `dd_detector_login` gained SELECT and no write
+   anywhere.
+3. **No `LOOKS_WRONG` claims.** The section exists in the schema so judgement is
+   not a migration later, and is emitted empty with the reason in the brief
+   itself. Description only until there is something to judge against.
+4. **AWS stays a standing uncomputed claim.** `infra_costs` is granted and is
+   explicitly not a substitute for the bill.
+
+### Consequences found while building
+
+- **`INSERT ... RETURNING` requires SELECT on the returned column.** "The writer
+  can read nothing" is stricter than it looks, and the first version failed with
+  `permission denied for table brief_runs` on an INSERT the role was allowed to
+  make. Resolved with `currval` on the sequence rather than by granting a
+  read-back, so the property survives intact.
+- **`fleet` and `deadly_digital` are separate databases**, so the business reads
+  and the fleet reads need separate connections under the same identity. The
+  first version pointed both at `FLEET_DSN` and reported every business figure
+  as `relation does not exist` — it did not crash and did not omit them, which
+  is the discipline working, but it was still wrong.
+
+## 8. Still open
 
 1. **Cadence and trigger.** Daily is stated; the time and whether it is systemd
    or the existing cycle runner is not decided.
