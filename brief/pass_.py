@@ -28,6 +28,7 @@ import psycopg
 
 from . import sources as S
 from .claims import Claim
+from .todo import read_todo
 from .render import render
 
 log = logging.getLogger(__name__)
@@ -207,6 +208,48 @@ def _git_claims(since: Optional[datetime]) -> List[Claim]:
     return out
 
 
+def _todo_claims() -> List[Claim]:
+    """docs/TODO.md, the real issue tracker, with its gaps named.
+
+    Two claims and one refusal. The refusal is the interesting one: over half
+    the entries carry no `**Status:**` line, and this reports that count rather
+    than treating "no status" as OPEN or dropping them from the total.
+    """
+    out: List[Claim] = []
+    r = read_todo(f"{PLATFORM_REPO}/docs/TODO.md")
+
+    if r.error or r.as_of is None:
+        return [Claim.uncomputed("todo.entries", "the TODO.md issue tracker",
+                                 reason=r.error or "unreadable")]
+
+    out.append(Claim.computed(
+        "todo.entries",
+        f"{r.entries} dated entries in docs/TODO.md",
+        source="file:docs/TODO.md", as_of=r.as_of, value_num=r.entries,
+        query_key="todo_entries", query_version=1))
+
+    out.append(Claim.computed(
+        "todo.open",
+        f"{r.open_entries} of them are marked OPEN "
+        f"({sum(r.by_status.values())} declare a status this parser knows)",
+        source="file:docs/TODO.md", as_of=r.as_of, value_num=r.open_entries,
+        query_key="todo_open", query_version=1))
+
+    if r.uncounted:
+        sample = ", ".join(r.entries_without_status[:5])
+        more = "" if len(r.entries_without_status) <= 5 else ", ..."
+        out.append(Claim.uncomputed(
+            "todo.uncounted",
+            f"the status of {r.uncounted} TODO.md entries",
+            reason=(f"{len(r.entries_without_status)} entries carry no "
+                    f"**Status:** line ({sample}{more}) and "
+                    f"{len(r.unrecognised_statuses)} declare a status this "
+                    "parser does not recognise. Not inferred from position or "
+                    "from nearby text — an entry with no stated status is "
+                    "uncounted, not OPEN")))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Carrying yesterday forward
 # ---------------------------------------------------------------------------
@@ -274,6 +317,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
                 key, label, reason=f"deadly_digital unreachable: {detail}"))
 
     claims += _git_claims(last)
+    claims += _todo_claims()
     claims += _standing_gaps()
 
     claims = [c.with_previous(previous.get(c.metric_key)) for c in claims]

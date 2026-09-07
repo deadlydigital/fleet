@@ -1,0 +1,26 @@
+[Unit]
+Description=Fleet daily brief, once a day
+Documentation=file:/home/ubuntu/fleet/specs/daily-brief.md
+
+[Timer]
+Unit=fleet-brief.service
+# 07:45, and the fifteen minutes after the proposer are the whole reason.
+#
+#   :20  dd_analytics_reconciliation runs, hourly
+#   07:30 fleet-proposer-cycle, TimeoutStartSec=300
+#   07:45 this
+#
+# So the brief reads a cycle that has finished rather than one in flight, and
+# reconciliation evidence that is 25 minutes old rather than nearly an hour.
+# Running at 07:30 alongside the proposer would read the previous day's cycle
+# and report it as today's, which is the stale-number failure the whole design
+# is about — and it would be invisible, because the figure would look current.
+OnCalendar=*-*-* 07:45:00
+AccuracySec=1m
+RandomizedDelaySec=0
+# Catches up after a reboot. A missed brief is a missing day in a series meant
+# to be compared, and the gap is worse than a late entry.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

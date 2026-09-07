@@ -1,0 +1,30 @@
+[Unit]
+Description=Fleet daily brief
+Documentation=file:/home/ubuntu/fleet/specs/daily-brief.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_brief.py
+# A pass that could not reach a source still writes a brief — the unreachable
+# sources become UNCOMPUTED claims and the run row records which answered. That
+# is a result, not a failure, and systemd should not paint it red: a red unit
+# for "the business database was down" would be a second alert about a thing the
+# brief already says in the one place someone will read it.
+#
+# Exit 2 is reserved for "no write identity configured", which IS a failure —
+# the brief cannot be recorded and nothing accumulates.
+SuccessExitStatus=0
+TimeoutStartSec=600
+SyslogIdentifier=fleet-brief
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
