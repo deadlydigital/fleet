@@ -226,29 +226,35 @@ CREATE TRIGGER brief_claims_immutable BEFORE UPDATE OR DELETE ON brief_claims
 -- statement about what it can see and becomes a statement about when it was
 -- created.
 --
--- All SELECT. `dd_detector_login` gains no write anywhere.
+-- All SELECT. The reader gains no write anywhere.
+--
+-- GRANTED TO `fleet_detector`, THE GROUP ROLE, NOT TO `dd_detector_login`.
+-- The login role is a member of it and inherits these; the login role also
+-- exists only on the deployed database, so granting to it directly made this
+-- file unappliable to the test template and the suite silently built a schema
+-- two migrations behind. 001 creates the group roles for exactly this reason.
 
 -- Decisions, and whether they happened. Reading decision_log is the point: a
 -- brief that cannot see what was decided cannot tell anyone whether it was
 -- done. decision_outcomes is a security_invoker view, so the reader needs
 -- SELECT on what it reads through -- tasks, runs, issues, issue_occurrences --
 -- and issues/issue_occurrences it already had.
-GRANT SELECT ON decision_log      TO dd_detector_login;
-GRANT SELECT ON decision_outcomes TO dd_detector_login;
+GRANT SELECT ON decision_log      TO fleet_detector;
+GRANT SELECT ON decision_outcomes TO fleet_detector;
 
 -- What fleet executed, and what it cost in attempts.
-GRANT SELECT ON tasks     TO dd_detector_login;
-GRANT SELECT ON runs      TO dd_detector_login;
-GRANT SELECT ON run_steps TO dd_detector_login;
+GRANT SELECT ON tasks     TO fleet_detector;
+GRANT SELECT ON runs      TO fleet_detector;
+GRANT SELECT ON run_steps TO fleet_detector;
 
 -- Spend. NOT the AWS bill -- see the note in section 5.
-GRANT SELECT ON model_calls TO dd_detector_login;
-GRANT SELECT ON infra_costs TO dd_detector_login;
+GRANT SELECT ON model_calls TO fleet_detector;
+GRANT SELECT ON infra_costs TO fleet_detector;
 
 -- What the proposer said, so "it proposed nothing" is a fact the brief read
 -- rather than an assumption it inherited.
-GRANT SELECT ON proposals         TO dd_detector_login;
-GRANT SELECT ON proposal_evidence TO dd_detector_login;
+GRANT SELECT ON proposals         TO fleet_detector;
+GRANT SELECT ON proposal_evidence TO fleet_detector;
 
 -- The writer writes and reads nothing. No SELECT, deliberately: a brief writer
 -- that could read briefs could be written to compare itself against yesterday,
@@ -259,7 +265,7 @@ GRANT USAGE, SELECT ON SEQUENCE brief_claims_id_seq TO fleet_brief_writer;
 
 -- Reading briefs back is the reader's job, and the detector's, since the brief
 -- needs yesterday's values to carry forward as previous_num.
-GRANT SELECT ON brief_runs, brief_claims TO dd_detector_login;
+GRANT SELECT ON brief_runs, brief_claims TO fleet_detector;
 GRANT SELECT ON brief_runs, brief_claims TO fleet_console, fleet_console_reader;
 
 -- Retention, on the same terms as observations, proposals and decision_log.

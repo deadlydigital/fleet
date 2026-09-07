@@ -82,17 +82,35 @@ def templates() -> None:
     _admin(f'DROP DATABASE IF EXISTS "{FLEET_DB}" WITH (FORCE)')
     _admin(f'DROP DATABASE IF EXISTS "{FLEET_TEMPLATE}" WITH (FORCE)')
     _admin(f'CREATE DATABASE "{FLEET_TEMPLATE}"')
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "001_v1_core.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "002_proposals.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "003_tasks.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "004_console_reader.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "005_console_decisions.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "006_verdict_coverage.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "007_research_floor.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "008_task_reclaim.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "009_task_reclaims.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "010_decision_log.sql")
-    _psql(FLEET_TEMPLATE, PROJECT_ROOT / "011_proposal_product.sql")
+    # DERIVED, NOT TYPED. This was a hand-maintained list of eleven filenames
+    # and it had gone stale: 012 (the daily brief) and 013 (the approval
+    # surface) were both applied to the deployed database and neither was here,
+    # so the suite was building a template two migrations behind and passing
+    # against a schema that no longer existed anywhere else.
+    #
+    # A green suite that never loaded the migration proves nothing about it,
+    # and the failure is silent in the direction nobody checks — the tests go
+    # green, so the missing file reads as "nothing to do".
+    #
+    # Same defect as the executed-step tally in test_migrations.py and the
+    # analytics EXPECTED_TABLE_COUNT, both of which drifted the same way for
+    # the same reason. Globbed and sorted so a new migration is picked up by
+    # existing, not by remembering.
+    #
+    # `_assertions.sql` and `_fixtures.sql` are excluded deliberately:
+    # assertions are run against a built schema by the operator, and 001's
+    # fixtures are applied below with the other seeds.
+    migrations = sorted(
+        p for p in PROJECT_ROOT.glob("[0-9][0-9][0-9]_*.sql")
+        if not p.name.endswith(("_assertions.sql", "_fixtures.sql"))
+    )
+    if not migrations:
+        raise RuntimeError(
+            "no migrations found to build the fleet template; the glob or the "
+            "project root is wrong, and an empty template would make every "
+            "test fail for a reason that has nothing to do with the test")
+    for m in migrations:
+        _psql(FLEET_TEMPLATE, m)
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "tasks_seed.sql")
