@@ -26,7 +26,8 @@ command — which is a control nobody chose and which disappears the moment
 someone adds a timer.
 
 Both mean this spec has to say what the ceiling is explicitly, because the
-ceiling today is an accident.
+ceiling today is an accident. **§6.1 makes the ordering a requirement: the
+ceilings must exist before a timer does, not after.**
 
 ---
 
@@ -104,7 +105,7 @@ them**. Section 4 says what is typed instead.
 
 ---
 
-## 3. What a ticked row produces — the argument
+## 3. What a ticked row produces — DECIDED: option B
 
 Three options. The middle one, and the reason is your own evidence.
 
@@ -112,7 +113,7 @@ Three options. The middle one, and the reason is your own evidence.
 |---|---|---|
 | **A** | queues the code task directly, spec generated inline | Two hand-written specs contained factual errors about file paths. A generated one is not better-informed than a hand-written one; it is faster at being wrong. Five branches against wrong paths is the observed cost. |
 | **C** | produces nothing; you write the spec by hand as now | This is the bottleneck the task exists to close. |
-| **B** | **queues a research task that writes a DRAFT SPEC, which you review through the accept/reject flow that already exists** | **Recommended.** |
+| **B** | **queues a research task that writes a DRAFT SPEC, which you review through the accept/reject flow that already exists** | **DECIDED 7 Sep 2026.** The path check is the reason: the error class hit twice is machine-checkable, so it becomes something a task cannot pass with rather than something a reviewer must catch. Two review cycles is the accepted price. |
 
 ### Why B, concretely
 
@@ -148,6 +149,50 @@ Two review cycles per item instead of one, and a day's latency between ticking
 and building. **If that is too slow, the honest lever is batching the reviews —
 ten draft specs reviewed in one sitting — not removing the gate.** Option A's
 speed comes entirely from not checking the thing that was wrong both times.
+
+### 3.1 DECIDED — the spec-writer gets a read-only worktree
+
+**This is a deliberate change to `contracts/research.yaml`'s central property,
+and it is worth naming as one rather than letting it arrive as a config
+difference.**
+
+The research contract gives the agent no shell, no credential and no database
+reach, and assembles an evidence pack *before* the agent starts. That design
+buys three things: the agent cannot act, cannot leak, and cannot follow a hunch
+into a query nobody wrote. Its cost, stated in the contract itself, is that
+*"when the pack is wrong the task is reworked"*.
+
+For a research document that trade is right. **For a spec it is not**, and the
+reason is the whole argument for option B: a spec-writer that cannot read the
+code it specifies will get paths wrong, which is precisely the failure this
+design exists to prevent. Handing it a pre-assembled pack would mean the pack
+author has to already know which files matter — and if they knew that, they
+could have written the spec.
+
+So the draft-spec contract adds **read access to a worktree of the base
+commit, and nothing else**:
+
+| research contract property | draft-spec contract |
+|---|---|
+| no shell | **unchanged** — no shell |
+| no credential, no database | **unchanged** — none, and `.env` is gitignored so absent from a fresh worktree |
+| one writable file | **unchanged** — the spec, and nothing else |
+| contract frozen once RUNNING | **unchanged** |
+| **evidence pack, repository unseen** | **replaced by a read-only checkout of the base commit** |
+
+**Only the blindness goes.** The agent can read the tree it is writing a spec
+about; it still cannot run anything in it, reach anything outside it, or write
+to it. The blast-radius argument the research contract makes about web access
+holds unchanged here and for the same reason: a file it reads is untrusted
+input that can make the document wrong, and that is what review is for. It
+cannot do anything, because there is still one writable file, no shell and no
+secret.
+
+**What this costs, and it is real.** Reading the tree is how the agent learns
+which paths exist; it is also how a wrong or stale file teaches it something
+untrue. The path check in §3 is what catches the first class. Nothing catches
+the second, and that is what the human review is for — which is why option B
+has two gates and not one.
 
 ---
 
@@ -229,9 +274,32 @@ migration will be raised on the morning something needs longer."*
    is not re-solved.
 4. **One at a time.** The runner does one task per tick and there is no timer,
    so concurrency is one and the batch drains at whatever rate someone runs it.
-   **If a timer is added, that is a separate decision and this ceiling changes
-   character** — it becomes the real throttle rather than an accident. It should
-   be decided deliberately, not inherited.
+
+### 6.1 A STATED DEPENDENCY: the ceilings must exist before a timer does
+
+Today the thing that prevents an overnight batch of five branches against wrong
+paths is **that a person types `run_task.py`**. That is not a control anyone
+chose. It is the absence of a timer, and it holds only until someone adds one.
+
+**The ceilings in this section are what replace it.** They are not defence in
+depth on top of a human in the loop; they are the human in the loop, expressed
+as constraints, for the moment that human stops being in it.
+
+So the ordering is a requirement rather than a preference:
+
+> **Queue depth, the approval-time credit check, and the per-task caps must all
+> be in place and tested BEFORE `fleet-runner.timer` is installed — not
+> afterwards.**
+
+Installing a timer first would create exactly the window this spec was written
+to close, and it would create it silently: nothing would fail, nothing would
+alert, and the first evidence would be five branches in the morning. A timer is
+a one-line unit file and is therefore the easiest thing here to add casually,
+which is why the dependency is written down rather than assumed.
+
+If a timer is ever added while these are absent, the honest description of the
+system is that it has no ceiling at all — the earlier one having been removed
+and the later one not yet built.
 
 **What is NOT a ceiling:** the number of candidates in a batch. Generating
 twenty for review is cheap and reviewing them is the work. The constraint
@@ -239,7 +307,66 @@ belongs at the point where money is spent, which is queueing, not listing.
 
 ---
 
-## 7. What this is not
+## 7. The producer interface — stated, not solved
+
+**Nothing produces candidate rows today.** §5.1 and the Metorik gap list are
+prose in documents, and this spec does not say how they become rows. It is
+deliberately not solved here: turning a findings document into structured rows
+is its own piece of work, and doing it badly inside this spec would bury it.
+
+What is stated is **the interface a producer must emit**, so that whatever
+writes the Metorik list — a person with a SQL client, a research task, or the
+proposer later — has something to write against rather than a shape invented at
+the time.
+
+### The contract a producer must satisfy
+
+A producer emits **one batch and one or more candidates**, in one transaction.
+A batch with no candidates is a producer that ran and found nothing, which is a
+different fact from a producer that did not run — the same distinction
+`brief_runs` makes against `brief_claims`, and it is worth keeping here for the
+same reason.
+
+**Required of every candidate**, and each is required because the review is
+impossible without it:
+
+| field | why the reviewer needs it |
+|---|---|
+| `title` | one line, imperative. It is what is ticked. |
+| `rationale` | why this is worth doing. Without it a tick is a guess. |
+| `repo`, `work_type` | `work_type` must name an existing contract in `contracts/`. A candidate whose contract does not exist cannot become a task, and finding that out at queue time wastes the review. |
+| `evidence` | at least one entry, with the document path **and the sha it was read at**. A candidate that cannot be traced back to the finding it came from is an assertion. |
+| `suggested_paths` | advisory, and the input to §3's path check. May be empty; empty is a claim that the finding named none, not that none exist. |
+| `objective_ref` | an id from `objectives-2026-Q4.yaml`, or explicitly null. Null means "does not serve a stated objective", which is a thing worth being able to see in a list. |
+
+**Not required, and deliberately:** `est_cost_gbp` and `est_diff_lines`. A
+producer that guesses these badly makes the §6 credit ceiling wrong in a way
+nobody would notice. Where they are absent the surface uses the contract's
+`max_cost_gbp` as the estimate — which over-reserves, and over-reserving is the
+safe direction.
+
+### What a producer must NOT do
+
+- **Not set `disposition`.** Every candidate arrives `PENDING`. A producer that
+  could pre-approve would be the autonomy this design refuses.
+- **Not write to `tasks`.** Only the approval surface creates tasks, and only
+  from a ticked row. This is the invariant that makes the surface the single
+  path.
+- **Not deduplicate against previous batches.** A candidate that reappears is a
+  signal (§5), and a producer that silently dropped repeats would erase it. The
+  surface shows the repetition; the producer just emits what it found.
+
+### The one thing a producer inherits from §5
+
+`NOT_NOW` candidates are carried forward **by the surface, not by the
+producer** — the surface copies them into the new batch retaining their original
+`batch_id`. A producer therefore does not need to know what happened to
+anything it emitted before, and should not look. Keeping that asymmetry is what
+lets a producer stay a pure function of a findings document.
+
+---
+
+## 8. What this is not
 
 - **Not spec generation for code.** A draft spec is written by a research task,
   checked mechanically, and reviewed by you before any code task exists.
@@ -255,26 +382,26 @@ belongs at the point where money is spent, which is queueing, not listing.
 
 ---
 
-## 8. What I am unsure about
+## 9. What I am unsure about
 
-1. **Nothing produces candidate rows yet.** §5.1 and the Metorik gap list are
-   prose in documents. Something must turn a findings document into rows —
-   by hand at first, or by a research task whose output is the batch. **This
-   spec assumes the rows exist and does not say where they come from.** That is
-   the largest gap in it.
-2. **`work_type` must match a contract, and there are eight.** Whether the
+Resolved 7 Sep 2026 and recorded above: option B and its path check (§3), the
+read-only worktree (§3.1), the batch reason plus per-deviation rows (§4), the
+three dispositions with `NOT_NOW` carried forward (§5), and the ceilings (§6).
+What remains:
+
+1. **`work_type` must match a contract, and there are eight.** Whether the
    candidate names the contract or the draft spec chooses it is undecided. If
    the candidate names it, a wrong choice is caught at review; if the spec
-   chooses, the check must verify the choice.
-3. **Whether the draft-spec task should read the repository at all.** The
-   research contract gives the agent no shell and no database. A spec-writing
-   task that cannot read the code it specifies will get paths wrong — which is
-   the failure this is preventing. Giving it read access to a worktree is
-   probably necessary and is a change to the research contract's central
-   property. **This needs deciding before anything is built.**
-4. **The batch reason's granularity.** One reason for four related items is
+   chooses, the check must verify the choice. §7 currently requires the
+   candidate to name it, which is the conservative reading and may be wrong.
+2. **The batch reason's granularity.** One reason for four related items is
    honest. One reason for twenty unrelated ones is a paragraph pretending to be
    a rationale. There may need to be a cap on batch size for the reason to
    remain meaningful, and I do not know where it is.
-5. **Queue depth of 5 is a guess**, in the way the settle lag and the level-3
-   cap are guesses, and should be labelled as one until something measures it.
+3. **Queue depth of 5 is a guess**, in the way the settle lag and the level-3
+   cap are guesses, and stays labelled as one until something measures it.
+4. **Who writes the first producer, and by hand or not.** §7 says what one must
+   emit; it does not say that turning the Metorik list into rows by hand with a
+   SQL client is a perfectly good first producer. It probably is, and the
+   interface exists so that the second one does not have to guess what the
+   first assumed.
