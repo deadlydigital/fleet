@@ -40,7 +40,9 @@ def main() -> int:
           f"{result['sources_ok']} sources ok, "
           f"{result['sources_failed']} failed"
           + (f", brief #{result['run_id']}" if "run_id" in result else
-             " (dry run, nothing written)"))
+             " (dry run, nothing written)")
+          + (f", {result['disk_path']}" if result.get("disk_path")
+             else ", NOT written to disk"))
     return 0
 
 

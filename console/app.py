@@ -362,3 +362,23 @@ def reject(request: Request, task_id: int,
         "detail": ["The branch was not touched. It is still in the checkout "
                    "and on the remote if it was pushed."]}
     return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+
+@app.get("/briefs", response_class=HTMLResponse)
+def briefs(request: Request):
+    """The daily briefs, as a SERIES.
+
+    A single brief is a file on disk (`briefs/YYYY-MM-DD.md`) and does not need
+    a web page. This page exists for what a file cannot show: the same metric
+    across days, and whether the number of things the pass could not compute is
+    growing.
+
+    Nothing here is stored as a trend. Every figure is a claim row a pass wrote
+    at the time, with the source and the recency it recorded — the page joins
+    them, it does not recompute them. A trend recomputed today from today's
+    database would restate history the moment a source was backfilled.
+    """
+    return render(request, "briefs.html",
+                  runs=queries.brief_runs(),
+                  series=queries.brief_series(),
+                  latest=queries.brief_latest())

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}briefs{% endblock %}
+{% block nav_brief %}on{% endblock %}
+{% block body %}
+<h1>Daily briefs</h1>
+
+{# The claim this page makes about itself, stated where it is checkable. #}
+<div class="note">
+  <strong>This page shows the series, not today.</strong>
+  <p>A single brief is a file — <code>briefs/YYYY-MM-DD.md</code>, greppable and
+  diffable — and does not need a web page. What a file cannot show is the same
+  metric across days, which is the only reason to keep briefs at all.</p>
+  <p>Every figure below is a claim row a pass wrote at the time, with the source
+  and recency it recorded. <strong>Nothing here is recomputed.</strong> A trend
+  derived from today's database would restate history the moment a source was
+  backfilled.</p>
+  <p class="dim">The brief decides nothing and proposes nothing. There is no
+  <code>LOOKS_WRONG</code> section yet and that is deliberate: judging needs
+  something to judge against, and thresholds derived from history would bless
+  whatever today's numbers happen to be.</p>
+</div>
+
+{% if not runs %}
+<div class="panel"><p>No briefs yet. <code>fleet-brief.timer</code> runs at
+07:45 daily; <code>systemctl start fleet-brief.service</code> to write one now.</p></div>
+{% else %}
+
+<div class="grid">
+  <div class="panel">
+    <div class="big">{{ runs|length }}</div>
+    <div class="dim">briefs recorded</div>
+  </div>
+  <div class="panel">
+    <div class="big">{{ runs[0].claims_computed }}</div>
+    <div class="dim">claims computed, latest</div>
+  </div>
+  {# Deliberately given equal weight to the computed count. On the current
+     grants this cannot honestly be zero, and a reader who never sees it will
+     assume the brief looked everywhere. #}
+  <div class="panel">
+    <div class="big">{{ runs[0].claims_uncomputed }}</div>
+    <div class="dim">could NOT be computed, latest</div>
+  </div>
+  <div class="panel">
+    <div class="big">{{ runs[0].sources_failed }}</div>
+    <div class="dim">sources that did not answer</div>
+  </div>
+</div>
+
+<h2>The series</h2>
+<p class="dim">Newest first, left to right. Metrics the pass could not compute
+are listed at the top — what it cannot see is the part most likely to be
+skipped and most worth knowing.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>metric</th>
+      <th>source</th>
+      {% for r in runs[:14] %}<th>#{{ r.id }}<br><span class="dim">{{ r.generated_at.strftime('%d %b') }}</span></th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for g in series %}
+    <tr>
+      <td>
+        <code>{{ g.metric_key }}</code>
+        {% if g.points[0].status == 'UNCOMPUTED' %}
+          <br><span class="dim">{{ g.points[0].uncomputed_reason|truncate(120) }}</span>
+        {% endif %}
+      </td>
+      <td class="dim">{{ g.source or '—' }}</td>
+      {% for r in runs[:14] %}
+        {# `| first` raises on an empty sequence under StrictUndefined, and an
+           empty sequence is the ordinary case: a metric not claimed in that
+           brief. Materialise the list and test it. #}
+        {% set matches = g.points | selectattr('run_id', 'equalto', r.id) | list %}
+        {% set pt = matches[0] if matches else none %}
+        <td>
+          {% if pt is none %}
+            {# Absent, not zero. A metric that stopped being claimed is a
+               finding; rendering a blank as 0 would erase it. #}
+            <span class="dim" title="not claimed in this brief">·</span>
+          {% elif pt.status == 'UNCOMPUTED' %}
+            <span class="dim" title="{{ pt.uncomputed_reason }}">n/a</span>
+          {% else %}
+            {{ pt.value_num }}
+            {% if pt.delta_num is not none and pt.delta_num != 0 %}
+              <br><span class="dim">{{ '+' if pt.delta_num > 0 else '' }}{{ pt.delta_num }}</span>
+            {% endif %}
+          {% endif %}
+        </td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Passes</h2>
+<table>
+  <thead><tr><th>#</th><th>generated</th><th>compares since</th><th>claims</th>
+    <th>uncomputed</th><th>sources ok</th><th>failed</th><th>code</th><th>took</th></tr></thead>
+  <tbody>
+  {% for r in runs %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>{{ r.generated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="dim">{{ r.compares_since.strftime('%Y-%m-%d %H:%M') if r.compares_since else 'first brief' }}</td>
+      <td>{{ r.claims_total }}</td>
+      <td>{{ r.claims_uncomputed }}</td>
+      <td>{{ r.sources_ok }}</td>
+      <td>{{ r.sources_failed }}</td>
+      <td class="dim"><code>{{ r.code_version }}</code></td>
+      <td class="dim">{{ r.took }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Latest brief, as issued</h2>
+<p class="dim">The copy of record — what a reader saw, stored immutably beside
+the claims it was rendered from.</p>
+<pre>{{ latest.rendered_markdown }}</pre>
+
+{% endif %}
+{% endblock %}

@@ -391,3 +391,82 @@ def decision_products() -> list[dict[str, Any]]:
 
 def decision_totals() -> list[dict[str, Any]]:
     return db.rows(DECISION_TOTALS)
+
+
+# ---------------------------------------------------------------------------
+# Briefs — the SERIES, not one brief
+# ---------------------------------------------------------------------------
+#
+# A single brief is a file; you do not need a web page for it. The page exists
+# for the thing a file cannot show: the same metric across days, and whether
+# the count of things the pass could not compute is going up.
+
+BRIEF_RUNS = """
+    SELECT id, generated_at, compares_since, code_version,
+           claims_total, claims_uncomputed,
+           claims_total - claims_uncomputed AS claims_computed,
+           jsonb_array_length(sources_reachable)   AS sources_ok,
+           jsonb_array_length(sources_unreachable) AS sources_failed,
+           sources_unreachable,
+           completed_at - started_at AS took
+      FROM brief_runs
+     ORDER BY id DESC
+     LIMIT 30
+"""
+
+#: One row per metric per brief, newest brief first. The page pivots this into
+#: a series so a reader sees movement rather than a snapshot.
+BRIEF_SERIES = """
+    SELECT c.metric_key,
+           c.statement,
+           c.status,
+           c.value_num,
+           c.delta_num,
+           c.source,
+           c.as_of,
+           c.uncomputed_reason,
+           r.id           AS run_id,
+           r.generated_at
+      FROM brief_claims c
+      JOIN brief_runs   r ON r.id = c.run_id
+     WHERE r.id IN (SELECT id FROM brief_runs ORDER BY id DESC LIMIT 14)
+     ORDER BY c.metric_key, r.id DESC
+"""
+
+BRIEF_LATEST = """
+    SELECT id, generated_at, rendered_markdown, claims_total, claims_uncomputed
+      FROM brief_runs
+     ORDER BY id DESC
+     LIMIT 1
+"""
+
+
+def brief_runs() -> list[dict[str, Any]]:
+    return db.rows(BRIEF_RUNS)
+
+
+def brief_latest() -> dict[str, Any] | None:
+    return db.one(BRIEF_LATEST)
+
+
+def brief_series() -> list[dict[str, Any]]:
+    """Claims grouped by metric_key, newest first within each.
+
+    Grouped here rather than in the template: a template that groups is a
+    template that can silently drop a row, and the row it drops would be the
+    one that stopped appearing — which is the finding.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in db.rows(BRIEF_SERIES):
+        g = grouped.setdefault(row["metric_key"], {
+            "metric_key": row["metric_key"],
+            "statement": row["statement"],
+            "source": row["source"],
+            "points": [],
+        })
+        g["points"].append(row)
+    # Uncomputed metrics first: what the pass cannot see is the part a reader
+    # is most likely to skip and most needs to know.
+    return sorted(
+        grouped.values(),
+        key=lambda g: (g["points"][0]["status"] != "UNCOMPUTED", g["metric_key"]))

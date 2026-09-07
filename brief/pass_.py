@@ -37,9 +37,39 @@ FLEET_REPO = "/home/ubuntu/fleet"
 PLATFORM_REPO = "/home/ubuntu/deadly-digital-platform"
 OBJECTIVES = Path(FLEET_REPO) / "objectives-2026-Q4.yaml"
 
+#: Briefs on disk, beside the database copy. Not a cache and not a fallback:
+#: the same text, in the form you would actually reach for three weeks later
+#: when something looks off — greppable across days, diffable between them, and
+#: still there if the database is not.
+#:
+#: The database copy stays canonical for comparison, because the claims carry
+#: the structure the file does not.
+BRIEF_DIR = Path(FLEET_REPO) / "briefs"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _write_to_disk(generated: datetime, markdown: str) -> Optional[str]:
+    """Write briefs/YYYY-MM-DD.md. Never raises; a failure is reported, not fatal.
+
+    A brief that reached the database and not the disk is still a brief. Losing
+    the pass over the second copy would trade the record for the convenience.
+
+    Two passes on one day overwrite rather than accumulate: the file is named
+    for the day it describes, and the database holds every pass. A `-2` suffix
+    would put the ordering question on a filename, and the run ids already
+    answer it.
+    """
+    try:
+        BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+        path = BRIEF_DIR / f"{generated.date().isoformat()}.md"
+        path.write_text(markdown, encoding="utf-8")
+        return str(path)
+    except Exception as exc:
+        log.warning("brief not written to disk: %s", exc)
+        return None
 
 
 def _objectives_version() -> str:
@@ -329,7 +359,10 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
                       sources_ok=len(ok), sources_failed=len(bad))
     completed = _utcnow()
 
+    disk_path = _write_to_disk(generated, markdown)
+
     summary = {
+        "disk_path": disk_path,
         "claims_total": len(claims),
         "claims_uncomputed": sum(1 for c in claims if c.status == "UNCOMPUTED"),
         "sources_ok": len(ok), "sources_failed": len(bad),

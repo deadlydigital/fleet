@@ -25,6 +25,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# ProtectHome=read-only would block briefs/YYYY-MM-DD.md, so exactly that one
+# directory is writable and nothing else under /home is. Found by writing the
+# file first and watching the unit fail on it, which is the right order: the
+# hardening is the default and each exception is argued for individually.
+ReadWritePaths=/home/ubuntu/fleet/briefs
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
