@@ -1,0 +1,104 @@
+# The draft-spec contract. A task that writes a SPEC for another task.
+#
+# specs/approval-surface.md §3, decided 7 Sep 2026. A ticked candidate produces
+# one of these, not a code task. The reason is measured rather than assumed:
+# two hand-written specs contained factual errors about file paths, and an
+# overnight batch would have built five branches against wrong ones. That error
+# class is factual claims about the repository, so it is checkable -- and
+# contracts/checks/draft_spec_shape.py is what makes it something a task cannot
+# pass with rather than something a reviewer must catch.
+#
+# WHAT DIFFERS FROM contracts/research.yaml, AND IT IS ONE THING
+#
+# The research contract gives the agent no shell, no credential, no database
+# and NO SIGHT OF THE REPOSITORY -- the runner assembles an evidence pack
+# beforehand. That trade is right for a research document. It is wrong for a
+# spec, and §3.1 says why: a pre-assembled pack requires its author to already
+# know which files matter, and anyone who knew that could have written the spec.
+#
+# So this contract adds a READ-ONLY checkout of the target repository and
+# nothing else. Everything else the research contract buys survives:
+#
+#   no shell            unchanged
+#   no credential       unchanged; .env is gitignored so absent from a worktree
+#   no database         unchanged
+#   one writable file   unchanged -- the spec, and the check refuses any other
+#   frozen contract     unchanged; the database freezes it once RUNNING
+#
+# Only the blindness goes. The agent can read the tree it is writing about; it
+# still cannot run anything in it, reach anything outside it, or write to it.
+#
+# THE COST, STATED. Reading the tree is how the agent learns which paths exist.
+# It is also how a stale or wrong file teaches it something untrue. The check
+# catches the first class and nothing catches the second, which is why this step
+# ends in a human review rather than a merge.
+
+work_type: draft_spec
+repo: fleet
+# Same as research: the fleet repository has no `main`.
+base_branch: track-2-foundation
+contract_version: 1
+
+# ONE FILE. A draft spec is a document; anything else in the diff is something
+# nobody asked for, and the check refuses a diff containing non-markdown.
+# ONE DIRECTORY, AND IT IS NOT `specs/`. The fleet floor protects `specs/**`
+# because "a task that could edit its own spec could edit the instructions it is
+# judged against" -- and a draft-spec task writing into specs/ would be exactly
+# that. So drafts land here and PROMOTING ONE TO specs/ IS A HUMAN ACT, which
+# preserves the floor's reasoning rather than carving an exception out of it.
+#
+# Found by the database refusing the first version of this contract. The floor
+# is enforced by enforce_contract_floor() on task insert, so a contract that
+# does not cover it cannot create a task at all.
+writable_paths:
+  - drafts/**
+
+# Generated from protected_path_floor for repo 'fleet' rather than typed. A
+# typed copy drifts, which is how the conftest migration list came to be two
+# behind, and here a drifted copy means tasks that cannot be created.
+protected_paths:
+  - 001_v1_core_assertions.sql
+  - 001_v1_core_fixtures.sql
+  - 001_v1_core.sql
+  - 002_proposals_assertions.sql
+  - 002_proposals.sql
+  - 003_tasks_assertions.sql
+  - 003_tasks.sql
+  - 004_console_reader_assertions.sql
+  - 004_console_reader.sql
+  - 005_console_decisions_assertions.sql
+  - 005_console_decisions.sql
+  - 006_verdict_coverage_assertions.sql
+  - 006_verdict_coverage.sql
+  - 007_research_floor_assertions.sql
+  - 007_research_floor.sql
+  - console/**
+  - contracts/**
+  - detectors/**
+  - .env
+  - proposer/**
+  - runner/**
+  - specs/**
+  - systemd/**
+  - tests/**
+
+# THE ONE ADDITION. A read-only checkout of the repository the spec is about,
+# linked in after the diff is derived and the boundary judged -- the same
+# mechanism the platform contract uses for node_modules, and for the same
+# reason: the agent must not be able to make it part of the diff.
+#
+# Read-only is enforced by the link target being a checkout the runner owns and
+# the agent's writable set being specs/drafts/** alone. The agent has no shell,
+# so it cannot chmod its way out.
+worktree_links:
+  reference/deadly-digital-platform: /home/ubuntu/deadly-digital-platform
+
+verification:
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/draft_spec_shape.py
+
+# Smaller than research on every axis. A spec is shorter than an investigation,
+# and this step is deliberately cheap because its whole purpose is to make the
+# expensive step (a code task on a wrong path) not happen.
+max_diff_lines: 400
+max_cost_gbp: 2.00
+timeout_seconds: 1800

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}candidates{% endblock %}
+{% block nav_cand %}on{% endblock %}
+{% block body %}
+<h1>Candidates</h1>
+
+<div class="note">
+  <strong>A tick produces a draft spec, not a build.</strong>
+  <p>Each ticked candidate queues a <em>draft-spec</em> task: an agent with a
+  read-only checkout writes a spec, a check verifies every path it names
+  actually exists and that its work type has a contract, and then you review it.
+  Only an approved spec becomes a code task.</p>
+  <p class="dim">Two hand-written specs contained wrong file paths. That class
+  of error is machine-checkable, so it is checked rather than caught.</p>
+</div>
+
+{% if ceilings %}
+<div class="grid">
+  <div class="panel">
+    <div class="big">{{ ceilings.queued_now }} / {{ ceilings.max_queued }}</div>
+    <div class="dim">queue depth used</div>
+  </div>
+  <div class="panel">
+    <div class="big">{{ ceilings.max_batch }}</div>
+    <div class="dim">most you may tick at once</div>
+  </div>
+  <div class="panel">
+    <div class="big">{{ open_candidates|length }}</div>
+    <div class="dim">open candidates</div>
+  </div>
+</div>
+{% if ceilings.queued_now >= ceilings.max_queued %}
+<div class="note"><strong>The queue is full.</strong>
+  <p>Draft-spec tasks and the code tasks they produce share this queue
+  deliberately — a ceiling that exempts what it does not want to count is not a
+  ceiling. Let some drain, or raise the depth in a migration.</p></div>
+{% endif %}
+{% endif %}
+
+{% if not open_candidates %}
+<div class="panel"><p>Nothing to review. Candidates are produced by something
+that reads a findings document; none has run.</p></div>
+{% else %}
+<form method="post" action="/candidates/approve">
+<table>
+  <thead><tr><th>tick</th><th>candidate</th><th>repo</th><th>evidence</th>
+    <th>reject, with a reason</th></tr></thead>
+  <tbody>
+  {% for c in open_candidates %}
+    <tr>
+      <td><input type="checkbox" name="approve" value="{{ c.id }}"></td>
+      <td>
+        <strong>{{ c.title }}</strong>
+        {% if c.disposition == 'NOT_NOW' %}
+          {# Carried, not new. A candidate passed over repeatedly is a finding
+             in itself, so the count is shown rather than the row silently
+             reappearing as though it were fresh. #}
+          <span class="dim">· carried from batch {{ c.batch_id }}</span>
+        {% endif %}
+        <br><span class="dim">{{ c.rationale }}</span>
+        {% if c.suggested_paths %}
+        <br><span class="dim">suggested: {% for p in c.suggested_paths %}<code>{{ p }}</code> {% endfor %}
+        <em>— advisory; the draft spec reads the tree</em></span>
+        {% endif %}
+      </td>
+      <td class="dim">{{ c.repo }}<br>{{ c.objective_ref or '—' }}</td>
+      <td class="dim">
+        {{ c.source_document }}<br><code>{{ c.source_sha[:8] }}</code>
+      </td>
+      <td><input type="text" name="reject_reason_{{ c.id }}" size="28"
+                 placeholder="only if rejecting"></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{# The reason is LAST and on its own, not a box beside each tick. /decisions
+   makes the argument: a textarea beside a row is where a reason becomes "yes".
+   Written against a visible selection, it is a sentence about the selection. #}
+<div class="panel">
+  <p><strong>Why these, and why now?</strong> One reason for the batch. It goes
+  into <code>decision_log</code> verbatim and cannot be edited afterwards.</p>
+  <p class="dim">Anything left un-ticked and un-rejected is kept for the next
+  list, not discarded.</p>
+  <textarea name="reason" rows="3" cols="90"
+            placeholder="e.g. these three are what first onboarding is blocked on; reporting waits until there is a merchant to report to"></textarea>
+  <br><button type="submit">Record decision and queue draft specs</button>
+</div>
+</form>
+{% endif %}
+
+{% if decided %}
+<h2>Already decided</h2>
+<p class="dim">Rejections are kept forever. They are the more informative half:
+what was not built, and why, leaves no other trace.</p>
+<table>
+  <thead><tr><th>candidate</th><th>disposition</th><th>reason</th>
+    <th>spec task</th></tr></thead>
+  <tbody>
+  {% for d in decided %}
+    <tr>
+      <td>{{ d.title }}</td>
+      <td>{{ d.disposition }}</td>
+      <td class="dim">{{ d.disposition_reason or d.batch_reason or '—' }}</td>
+      <td class="dim">{{ d.spec_task_id or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

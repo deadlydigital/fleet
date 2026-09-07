@@ -1,0 +1,232 @@
+"""Turning ticked candidates into queued draft-spec tasks.
+
+ONE TRANSACTION, AND THE ORDER INSIDE IT IS THE DESIGN
+-------------------------------------------------------
+A batch approval is four writes that must not be able to disagree:
+
+    1. the decision_log row, with the batch reason
+    2. the candidates marked APPROVED, each citing that decision
+    3. one draft-spec task per approved candidate
+    4. the candidates marked NOT_NOW or REJECTED
+
+If the tasks were created outside the transaction, a failure between 2 and 3
+would leave candidates approved with nothing queued -- a state nobody tracks and
+nobody would notice, because the page would show it as done.
+
+WHAT THIS DELIBERATELY DOES NOT DO
+-----------------------------------
+It does not create a CODE task. A tick produces a draft spec, which a human
+reviews through the accept/reject flow that already exists. specs/approval-
+surface.md §3: two hand-written specs contained factual errors about file paths,
+and the check in contracts/checks/draft_spec_shape.py is what turns that class
+into something a task cannot pass with.
+
+It also does not choose a work_type. The draft spec chooses it, and the check
+verifies the choice names a real contract -- because `candidates` has no
+work_type column, deliberately.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, List
+
+from . import db
+
+
+class ApprovalRefused(Exception):
+    """The batch was not written. The message is shown to the reviewer."""
+
+
+def _draft_spec_contract() -> Dict[str, Any]:
+    """The stored contract for a draft-spec task.
+
+    Read from contracts/draft-spec.yaml at approval time rather than embedded,
+    so a contract change does not need a code change -- and frozen into the
+    task row, because the database freezes a contract once the task is RUNNING
+    and the agent must not be able to change what was asked.
+    """
+    import yaml
+    from . import config
+    path = config.PROJECT_ROOT / "contracts" / "draft-spec.yaml"
+    data = yaml.safe_load(path.read_text()) or {}
+    return {
+        "work_type": data["work_type"],
+        "writable_paths": data["writable_paths"],
+        "protected_paths": data["protected_paths"],
+        "verification": data["verification"],
+        "worktree_links": data.get("worktree_links", {}),
+        "max_diff_lines": data["max_diff_lines"],
+    }
+
+
+def _spec_md(cand: Dict[str, Any]) -> str:
+    """What the draft-spec task is asked to do.
+
+    The candidate's own rationale and evidence go in verbatim. The agent is told
+    what the check will require, because a check the agent cannot see is a gate
+    it fails by accident rather than a standard it writes to.
+    """
+    ev = json.dumps(cand.get("evidence") or [], indent=2)
+    paths = "\n".join(f"  - `{p}`" for p in (cand.get("suggested_paths") or [])) \
+        or "  _(the finding named none; establish them by reading the tree)_"
+    return f"""# Write a draft spec: {cand['title']}
+
+You are writing a SPEC for a later task, not the change itself. Produce one
+markdown file under `drafts/`.
+
+## The candidate
+
+**{cand['title']}**
+
+{cand['rationale']}
+
+Repository: `{cand['repo']}`
+Objective: `{cand.get('objective_ref') or 'none stated'}`
+
+## Evidence the finding cited
+
+```json
+{ev}
+```
+
+## Paths the finding suggested — advisory, not authoritative
+
+{paths}
+
+A read-only checkout of `{cand['repo']}` is linked at
+`reference/{cand['repo']}`. **Read it.** The suggested paths above came from a
+findings document and may be wrong; the tree is the authority.
+
+## What your spec must contain
+
+A fenced ```fleet-spec block with `work_type`, `repo`, `title` and
+`writable_paths`, followed by prose describing the change.
+
+**You choose the `work_type`**, and it must name a contract that exists in
+`contracts/`. Nothing upstream decided this: a candidate carries no work_type,
+because a producer reading a findings document cannot know whether an item is a
+code change or an investigation. That determination is your job.
+
+## What the check will refuse
+
+`contracts/checks/draft_spec_shape.py` runs on your diff and fails if:
+
+- there is no `fleet-spec` block, or it lacks a required field
+- `work_type` names no contract, or names one contracted for another repo
+- a declared writable path does not resolve in the repo, and neither does its
+  parent directory
+- a declared writable path is protected by the contract you named
+- a path cited in prose resolves nowhere
+- the diff contains anything other than markdown
+
+**The path checks are why this step exists.** Two hand-written specs contained
+wrong file paths and would have sent builds at directories that do not exist.
+Read the tree; do not write paths from memory.
+"""
+
+
+def approve_batch(*, reason: str, approve_ids: List[int],
+                  reject: Dict[int, str], not_now_ids: List[int],
+                  decided_by: str) -> Dict[str, Any]:
+    """Record one batch decision and queue its draft-spec tasks.
+
+    Raises ApprovalRefused with a reviewer-facing message rather than letting a
+    constraint violation reach the page as a 500 -- the ceilings are a designed
+    answer, not an error.
+    """
+    if not reason or not reason.strip():
+        raise ApprovalRefused(
+            "A batch needs a reason, and it is about the SELECTION rather than "
+            "each row. Ten paraphrases of 'yes' would satisfy the NOT NULL "
+            "while emptying the column.")
+
+    # db.writer(), NOT db.connect(). The latter is the read-only session the
+    # render path uses, and pointing this at it would fail at the first INSERT
+    # -- the console keeps the two apart deliberately so a GET handler can
+    # never acquire a credential that writes.
+    with db.writer() as conn, conn.transaction():
+        # db.writer() uses row_factory=dict_row, so every fetchone() here is a
+        # DICT and must be read by name. Unpacking one as a tuple binds the
+        # column names instead of the values, which fails later and elsewhere
+        # as a type error rather than at the line that got it wrong.
+        caps = conn.execute(
+            "SELECT fleet_max_queued_tasks() AS max_queued,"
+            " fleet_max_approval_batch() AS max_batch,"
+            " (SELECT count(*) FROM tasks WHERE status='QUEUED') AS queued_now"
+        ).fetchone()
+        max_queued = caps["max_queued"]
+        max_batch = caps["max_batch"]
+        queued_now = caps["queued_now"]
+
+        if len(approve_ids) > max_batch:
+            raise ApprovalRefused(
+                f"{len(approve_ids)} ticked, and the cap is {max_batch}. The cap "
+                "keeps one batch reason honest: a larger batch needs more than "
+                "one reason, not a bigger cap.")
+        if queued_now + len(approve_ids) > max_queued:
+            raise ApprovalRefused(
+                f"{queued_now} task(s) are already QUEUED and the depth is "
+                f"{max_queued}, so {len(approve_ids)} more cannot be queued. "
+                "Draft-spec tasks and the code tasks they produce share this "
+                "queue deliberately. Let some drain, or raise the depth in a "
+                "migration.")
+
+        contract = _draft_spec_contract()
+        decision_id = None
+
+        if approve_ids:
+            conn.execute(
+                "INSERT INTO decision_log (product, subject, decision, reason,"
+                " decided_by, evidence) VALUES (%s,%s,'APPROVED',%s,%s,%s)",
+                ("fleet",
+                 f"Approve {len(approve_ids)} candidate(s) for draft specs",
+                 reason.strip(), decided_by,
+                 json.dumps([{"kind": "candidate", "id": i} for i in approve_ids])))
+            decision_id = conn.execute(
+                "SELECT currval('decision_log_id_seq') AS id").fetchone()["id"]
+
+        queued = []
+        for cid in approve_ids:
+            c = conn.execute(
+                "SELECT id, title, rationale, repo, objective_ref, evidence,"
+                " suggested_paths FROM candidates WHERE id=%s AND disposition IN"
+                " ('PENDING','NOT_NOW')", (cid,)).fetchone()
+            if c is None:
+                raise ApprovalRefused(
+                    f"candidate {cid} is not open for decision; the page may be "
+                    "stale. Reload and tick again.")
+            conn.execute(
+                "INSERT INTO tasks (title, spec_md, repo, base_branch,"
+                " acceptance_contract, max_cost_gbp, timeout_seconds,"
+                " objective_ref) VALUES (%s,%s,'fleet','track-2-foundation',"
+                " %s,%s,%s,%s)",
+                (f"Draft spec: {c['title']}"[:200], _spec_md(c),
+                 json.dumps(contract), 2.00, 1800, c.get("objective_ref")))
+            task_id = conn.execute(
+                "SELECT currval('tasks_id_seq') AS id").fetchone()["id"]
+            conn.execute(
+                "UPDATE candidates SET disposition='APPROVED',"
+                " approval_decision_id=%s, spec_task_id=%s, decided_at=now()"
+                " WHERE id=%s", (decision_id, task_id, cid))
+            queued.append(task_id)
+
+        for cid, why in reject.items():
+            if not why or not why.strip():
+                raise ApprovalRefused(
+                    f"candidate {cid} was rejected with no reason. Rejections "
+                    "are the informative half; this is the one place a sentence "
+                    "is the point.")
+            conn.execute(
+                "UPDATE candidates SET disposition='REJECTED',"
+                " disposition_reason=%s, decided_at=now() WHERE id=%s",
+                (why.strip(), cid))
+
+        # NOT_NOW is not a rejection and is not discarded. It keeps its original
+        # batch_id so the number of times it has been passed over stays visible.
+        for cid in not_now_ids:
+            conn.execute(
+                "UPDATE candidates SET disposition='NOT_NOW', decided_at=now()"
+                " WHERE id=%s AND disposition='PENDING'", (cid,))
+
+    return {"decision_id": decision_id, "queued_task_ids": queued,
+            "rejected": len(reject), "not_now": len(not_now_ids)}

@@ -20,7 +20,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from console import config, db, decide, gitdiff, merge, queries, reverify
+from console import approve, config, db, decide, gitdiff, merge, queries, reverify
 
 RUNNING_AS: str = ""
 WRITING_AS: str = ""
@@ -382,3 +382,62 @@ def briefs(request: Request):
                   runs=queries.brief_runs(),
                   series=queries.brief_series(),
                   latest=queries.brief_latest())
+
+
+@app.get("/candidates", response_class=HTMLResponse)
+def candidates(request: Request):
+    """The approval surface: tick what you want built.
+
+    A tick produces a DRAFT SPEC task, not a code task. specs/approval-surface.md
+    §3 — two hand-written specs contained factual errors about file paths, and
+    the check on the draft-spec contract is what turns that class into something
+    a task cannot pass with rather than something a reviewer must catch.
+    """
+    return render(request, "candidates.html",
+                  open_candidates=queries.candidates_open(),
+                  decided=queries.candidates_decided(),
+                  ceilings=queries.ceilings())
+
+
+@app.post("/candidates/approve")
+async def approve_candidates(request: Request):
+    """Record one batch decision and queue its draft-spec tasks.
+
+    One transaction, in approve.py. The ceilings are enforced there and in the
+    database beneath it; a refusal is a designed answer and is rendered as one
+    rather than as a 500.
+    """
+    if not same_origin(request):
+        return render(request, "decided.html", status_code=403, task_id=0,
+                      outcome={"ok": False, "headline": "Refused",
+                               "detail": ["This decision did not come from the "
+                                          "console's own page."]})
+    form = await request.form()
+    approve_ids = [int(v) for v in form.getlist("approve")]
+    not_now_ids = [int(v) for v in form.getlist("not_now")]
+    reject = {}
+    for k in form.keys():
+        if k.startswith("reject_reason_"):
+            cid = int(k.rsplit("_", 1)[1])
+            if str(form.get(k) or "").strip():
+                reject[cid] = str(form.get(k))
+
+    try:
+        result = approve.approve_batch(
+            reason=str(form.get("reason") or ""),
+            approve_ids=approve_ids, reject=reject, not_now_ids=not_now_ids,
+            decided_by=str(form.get("decided_by") or "eamonn"))
+    except approve.ApprovalRefused as exc:
+        return render(request, "decided.html", status_code=409, task_id=0,
+                      outcome={"ok": False, "headline": "Not recorded",
+                               "detail": [str(exc)]})
+
+    return render(request, "decided.html", task_id=0, outcome={
+        "ok": True, "headline": "Recorded",
+        "detail": [
+            f"{len(result['queued_task_ids'])} draft-spec task(s) queued: "
+            f"{result['queued_task_ids']}",
+            f"{result['rejected']} rejected, {result['not_now']} left for later.",
+            "Nothing is built yet. Each draft spec is reviewed before a code "
+            "task exists.",
+        ]})

@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Acceptance check for a DRAFT SPEC task.
+
+Run from the root of the worktree. Reads FLEET_CHANGED_FILES, which the runner
+derived from git.
+
+WHY THIS CHECK IS THE REASON THE DRAFT-SPEC STEP EXISTS AT ALL
+
+`specs/approval-surface.md` §3 chose option B -- a tick produces a draft spec
+that a human reviews -- over queueing the code task directly. The evidence was
+that two hand-written specs contained factual errors about FILE PATHS, and an
+overnight batch would have built five branches against wrong ones.
+
+That error class is factual claims about the repository, and it is checkable
+without judgement. So this check is what converts it from something a reviewer
+must catch into something a task cannot pass with.
+
+WHY A DECLARED BLOCK AND NOT PROSE SCRAPING
+
+`research_document_shape.py` records what prose scraping costs, measured rather
+than assumed: applied loosely to `metorik-gap.md` it flagged ten citations and
+all ten were false positives -- URL routes, MIME types, field lists. Narrowed to
+citations with a directory component AND an extension it flagged zero there, but
+then checked 8 of 48 citations and nothing at all in another document.
+
+A spec does not need scraping, because a spec has to declare its paths anyway:
+the task it produces cannot exist without `writable_paths`. So this check reads
+a fenced `fleet-spec` YAML block and checks THAT, which is exact. The prose
+check is kept as a second, narrow pass using the same measured heuristic, for
+paths mentioned in the body but not declared.
+
+WHAT IT ENFORCES
+
+  1. the declared block parses and carries the fields a task needs
+  2. `work_type` NAMES A CONTRACT THAT EXISTS. Nothing upstream establishes
+     this any more: `candidates` deliberately has no work_type column, because
+     a producer reading a findings document would be guessing at what this step
+     exists to determine. So this check owns it.
+  3. every declared writable path resolves in the tree, or its parent directory
+     does -- a spec may legitimately create a new file, but not in a directory
+     that does not exist
+  4. no declared writable path is on `protected_path_floor` for that repo
+  5. the writable paths are inside the repo the spec names
+  6. paths cited in prose, narrowly, resolve
+
+WHAT IT CANNOT ENFORCE, and the asymmetry is why review is still required.
+It cannot tell whether the spec describes work worth doing, whether the
+approach is right, whether the paths it names are the RELEVANT ones, or whether
+a path that resolves today is the one the author meant. A spec that names
+`api/app.py` for work belonging in `analytics/services/` passes every check
+here. That is what a human read is for, and it is a smaller read than checking
+paths by hand -- which is the trade §3 makes.
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+FLEET = Path("/home/ubuntu/fleet")
+CONTRACTS = FLEET / "contracts"
+REPO_ROOT = Path("/home/ubuntu")
+
+BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
+
+#: The same narrowing research_document_shape.py measured: a directory
+#: component AND an extension. Loose matching produced ten false positives out
+#: of ten on the gold-standard document.
+PROSE_PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./-]*/[\w.-]+\.[A-Za-z0-9]{1,5})`")
+
+REQUIRED = ("work_type", "repo", "title", "writable_paths")
+
+
+def fail(msg: str) -> int:
+    print(f"FAIL: {msg}", file=sys.stderr)
+    return 1
+
+
+def load_protected(work_type: str, repo: str) -> list[str]:
+    """The protected paths of the contract this spec's work would run under.
+
+    NOT the union of every contract for the repo, which is what the first
+    version did and which was wrong in a way worth recording: contracts are
+    deliberately narrow and protect each other's territory. The api contract
+    protects `platform/**` precisely because it cannot verify frontend work, so
+    unioning them made every legitimate frontend path look protected and the
+    check refused a correct spec.
+
+    A spec declares its work_type, so it is judged against THAT contract --
+    which is also the contract the resulting task will actually run under, so
+    this asks the question that will be asked later rather than a stricter one
+    nobody enforces.
+    """
+    for y in CONTRACTS.glob("*.yaml"):
+        try:
+            data = yaml.safe_load(y.read_text()) or {}
+        except Exception:
+            continue
+        if data.get("work_type") == work_type and data.get("repo") == repo:
+            return sorted(data.get("protected_paths") or [])
+    return []
+
+
+def glob_matches(path: str, pattern: str) -> bool:
+    """`a/**` covers `a/b/c`. Deliberately simple and deliberately generous:
+    a false positive here refuses a spec, which is recoverable; a false
+    negative lets a spec declare a protected path writable, which is not."""
+    p = pattern.rstrip("*").rstrip("/")
+    return path == pattern or path.startswith(p + "/") or path == p
+
+
+def main() -> int:
+    changed = [c for c in os.environ.get("FLEET_CHANGED_FILES", "").split("\n") if c]
+    specs = [c for c in changed if c.endswith(".md")]
+    if not specs:
+        return fail("no markdown file in the diff; a draft-spec task produces "
+                    "one spec and nothing else")
+    if len(changed) > len(specs):
+        return fail(f"the diff contains non-markdown files {sorted(set(changed) - set(specs))}; "
+                    "a draft spec is a document, and anything else is something "
+                    "nobody asked for")
+
+    for rel in specs:
+        text = Path(rel).read_text(encoding="utf-8", errors="replace")
+
+        m = BLOCK_RE.search(text)
+        if not m:
+            return fail(f"{rel} has no ```fleet-spec block. The spec must "
+                        "declare work_type, repo, title and writable_paths in "
+                        "machine-readable form -- prose cannot be checked, and "
+                        "checking it is the reason this step exists.")
+        try:
+            block = yaml.safe_load(m.group(1)) or {}
+        except Exception as exc:
+            return fail(f"{rel}: the fleet-spec block is not valid YAML ({exc})")
+        if not isinstance(block, dict):
+            return fail(f"{rel}: the fleet-spec block must be a mapping")
+
+        missing = [k for k in REQUIRED if not block.get(k)]
+        if missing:
+            return fail(f"{rel}: the fleet-spec block is missing {missing}. A "
+                        "task cannot be created without them.")
+
+        repo = str(block["repo"])
+        work_type = str(block["work_type"])
+
+        # 2. WORK TYPE NAMES A REAL CONTRACT. This check owns it because the
+        # candidate row deliberately does not carry a work_type.
+        contracts = {}
+        for y in CONTRACTS.glob("*.yaml"):
+            try:
+                d = yaml.safe_load(y.read_text()) or {}
+            except Exception:
+                continue
+            if d.get("work_type"):
+                contracts.setdefault(d["work_type"], []).append((y.name, d.get("repo")))
+        if work_type not in contracts:
+            return fail(f"{rel}: work_type '{work_type}' names no contract in "
+                        f"contracts/. Known: {sorted(contracts)}. Nothing "
+                        "upstream checks this -- a candidate has no work_type, "
+                        "deliberately -- so a wrong one here becomes a task "
+                        "that cannot be created.")
+        repos_for_type = {r for _, r in contracts[work_type] if r}
+        if repos_for_type and repo not in repos_for_type:
+            return fail(f"{rel}: work_type '{work_type}' is contracted for "
+                        f"{sorted(repos_for_type)}, but the spec names repo "
+                        f"'{repo}'.")
+
+        checkout = REPO_ROOT / repo
+        if not checkout.is_dir():
+            return fail(f"{rel}: repo '{repo}' is not a checkout under {REPO_ROOT}")
+
+        writable = [str(p) for p in (block.get("writable_paths") or [])]
+        floor = load_protected(work_type, repo)
+
+        for w in writable:
+            # 4. Not on the floor.
+            for g in floor:
+                if glob_matches(w.rstrip("*").rstrip("/"), g):
+                    return fail(f"{rel}: declares '{w}' writable, but '{g}' is "
+                                "a protected path for this repo. Editing what "
+                                "judges the work is how a task passes anything.")
+            # 5. Inside the repo.
+            if w.startswith("/") or ".." in w:
+                return fail(f"{rel}: writable path '{w}' is not repo-relative")
+
+            # 3. Resolves, or its parent does -- a new file is legitimate, a
+            # new file in a directory nobody has is a wrong path.
+            probe = w.split("*")[0].rstrip("/")
+            target = checkout / probe
+            if target.exists():
+                continue
+            if target.parent.is_dir():
+                continue
+            return fail(f"{rel}: writable path '{w}' does not resolve in {repo} "
+                        f"and neither does its parent directory. THIS IS THE "
+                        "CHECK THAT EXISTS BECAUSE TWO HAND-WRITTEN SPECS GOT "
+                        "PATHS WRONG.")
+
+        # 6. Prose paths, narrowly.
+        cited = {c for c in PROSE_PATH_RE.findall(text)}
+        unresolved = sorted(c for c in cited
+                            if not (checkout / c).exists() and not (FLEET / c).exists())
+        if unresolved:
+            return fail(f"{rel} cites repo paths in prose that resolve in "
+                        f"neither {repo} nor fleet: {unresolved}")
+
+        print(f"ok: {rel} -- work_type '{work_type}' has a contract, "
+              f"{len(writable)} writable path(s) resolve and none is protected, "
+              f"{len(cited)} prose path(s) checked.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

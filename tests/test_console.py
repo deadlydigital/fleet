@@ -129,16 +129,26 @@ def test_the_proposal_layers_reader_still_cannot_see_decisions(dsns):
             conn.execute("SELECT 1 FROM decisions")
 
 
-def test_the_only_write_routes_are_accept_and_reject(client):
-    """Two actions, no more. No rework, no re-run, no deploy, no task creation.
+def test_the_only_write_routes_are_accept_reject_and_approve(client):
+    """Three actions, no more. No rework, no re-run, no deploy.
 
     This is the assertion that stops the next feature becoming a button
-    without somebody deciding it should be.
+    without somebody deciding it should be — and it worked: it failed when
+    `/candidates/approve` was added, which is the point of it.
+
+    TASK CREATION WAS ADDED DELIBERATELY on 7 Sep 2026, and this docstring
+    used to say "no task creation". `specs/approval-surface.md` is the decision:
+    a ticked candidate queues a DRAFT-SPEC task, never a code task, and a human
+    reviews the spec through accept/reject before any code task exists. The
+    ceilings that make it safe are in the database (013), not in this route.
+
+    The list stays exhaustive. A fourth entry needs its own decision.
     """
     from console.app import app
     writes = {r.path for r in app.routes
               if hasattr(r, "methods") and r.methods & {"POST", "PUT", "PATCH", "DELETE"}}
-    assert writes == {"/tasks/{task_id}/accept", "/tasks/{task_id}/reject"}
+    assert writes == {"/tasks/{task_id}/accept", "/tasks/{task_id}/reject",
+                      "/candidates/approve"}
     assert not any("PUT" in r.methods or "DELETE" in r.methods
                    for r in app.routes if hasattr(r, "methods"))
 

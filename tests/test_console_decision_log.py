@@ -28,10 +28,23 @@ def client(dsns, monkeypatch):
         yield c
 
 
-def test_the_page_adds_no_write_route(client):
+def test_the_decisions_page_adds_no_write_route(client):
+    """`/decisions` is read-only and stays so.
+
+    The exhaustive list grew on 7 Sep 2026 when `/candidates/approve` was added
+    deliberately (`specs/approval-surface.md`). What this test is actually about
+    is unchanged and is the second assertion: NO ROUTE UNDER `/decisions`.
+    Recording a decision stays a shell command, because the log's value is the
+    reason field and a textarea on a web page is where a reason becomes "yes".
+
+    The candidates page types its reason for the same argument: one sentence
+    about the selection, written last, against a visible list — not a box beside
+    each row.
+    """
     posts = {r.path for r in client.app.routes
              if "POST" in getattr(r, "methods", set())}
-    assert posts == {"/tasks/{task_id}/accept", "/tasks/{task_id}/reject"}
+    assert posts == {"/tasks/{task_id}/accept", "/tasks/{task_id}/reject",
+                     "/candidates/approve"}
     assert not any(p.startswith("/decisions") for p in posts)
 
 

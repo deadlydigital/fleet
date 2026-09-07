@@ -470,3 +470,56 @@ def brief_series() -> list[dict[str, Any]]:
     return sorted(
         grouped.values(),
         key=lambda g: (g["points"][0]["status"] != "UNCOMPUTED", g["metric_key"]))
+
+
+# ---------------------------------------------------------------------------
+# Candidates — the approval surface
+# ---------------------------------------------------------------------------
+
+CANDIDATES_OPEN = """
+    SELECT c.id, c.batch_id, c.title, c.rationale, c.repo, c.objective_ref,
+           c.evidence, c.suggested_paths, c.est_cost_gbp, c.disposition,
+           b.source_document, b.source_sha, b.generated_at,
+           -- How many times this has been carried without being ticked. A
+           -- candidate carried five times is a finding in itself: either it is
+           -- not worth doing or it is being avoided, and both are worth seeing.
+           (SELECT count(*) FROM candidates o
+             WHERE o.batch_id = c.batch_id AND o.id <= c.id
+               AND o.disposition = 'NOT_NOW') AS times_passed_over
+      FROM candidates c
+      JOIN candidate_batches b ON b.id = c.batch_id
+     WHERE c.disposition IN ('PENDING','NOT_NOW')
+     ORDER BY c.batch_id DESC, c.id
+"""
+
+CANDIDATES_DECIDED = """
+    SELECT c.id, c.title, c.repo, c.disposition, c.disposition_reason,
+           c.decided_at, c.spec_task_id, c.work_task_id,
+           d.reason AS batch_reason
+      FROM candidates c
+      LEFT JOIN decision_log d ON d.id = c.approval_decision_id
+     WHERE c.disposition IN ('APPROVED','REJECTED')
+     ORDER BY c.decided_at DESC NULLS LAST, c.id DESC
+     LIMIT 50
+"""
+
+#: The two ceilings, read from the database rather than restated here. A
+#: console that hard-coded 5 would disagree with the trigger the day the cap
+#: moved, and would disagree silently.
+CEILINGS = """
+    SELECT fleet_max_queued_tasks()   AS max_queued,
+           fleet_max_approval_batch() AS max_batch,
+           (SELECT count(*) FROM tasks WHERE status = 'QUEUED') AS queued_now
+"""
+
+
+def candidates_open() -> list[dict[str, Any]]:
+    return db.rows(CANDIDATES_OPEN)
+
+
+def candidates_decided() -> list[dict[str, Any]]:
+    return db.rows(CANDIDATES_DECIDED)
+
+
+def ceilings() -> dict[str, Any] | None:
+    return db.one(CEILINGS)
