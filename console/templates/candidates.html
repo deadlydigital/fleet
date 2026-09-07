@@ -37,6 +37,20 @@
 {% endif %}
 {% endif %}
 
+{% for b in batches %}
+  {% if b.note %}
+  <div class="note">
+    <strong>Batch {{ b.id }} — {{ b.source_document }}
+      <code>{{ b.source_sha[:8] }}</code></strong>
+    {# The note carries what the producer checked and DROPPED. Rendered here
+       because a batch that silently omits what it rejected loses the same thing
+       a discarded rejection does, and a note only in the database is a note
+       nobody reads. #}
+    <pre style="white-space:pre-wrap">{{ b.note }}</pre>
+  </div>
+  {% endif %}
+{% endfor %}
+
 {% if not open_candidates %}
 <div class="panel"><p>Nothing to review. Candidates are produced by something
 that reads a findings document; none has run.</p></div>

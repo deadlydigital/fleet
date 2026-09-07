@@ -394,6 +394,7 @@ def candidates(request: Request):
     a task cannot pass with rather than something a reviewer must catch.
     """
     return render(request, "candidates.html",
+                  batches=queries.candidate_batches_open(),
                   open_candidates=queries.candidates_open(),
                   decided=queries.candidates_decided(),
                   ceilings=queries.ceilings())

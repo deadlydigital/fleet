@@ -401,6 +401,24 @@ def decision_totals() -> list[dict[str, Any]]:
 # for the thing a file cannot show: the same metric across days, and whether
 # the count of things the pass could not compute is going up.
 
+#: The batch's own note, which records what the producer CHECKED AND DROPPED.
+#: On the page rather than only in the database: a batch that silently omits
+#: what it rejected loses the same thing a discarded rejection does, and a note
+#: nobody sees is a note that was not written.
+CANDIDATE_BATCHES_OPEN = """
+    SELECT DISTINCT b.id, b.source_document, b.source_sha, b.generated_at,
+           b.generated_by, b.note
+      FROM candidate_batches b
+      JOIN candidates c ON c.batch_id = b.id
+     WHERE c.disposition IN ('PENDING','NOT_NOW')
+     ORDER BY b.id DESC
+"""
+
+
+def candidate_batches_open() -> list[dict[str, Any]]:
+    return db.rows(CANDIDATE_BATCHES_OPEN)
+
+
 BRIEF_RUNS = """
     SELECT id, generated_at, compares_since, code_version,
            claims_total, claims_uncomputed,
