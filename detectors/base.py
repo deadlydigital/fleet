@@ -93,6 +93,10 @@ class RunContext:
     attempt_count: int
     _evaluated: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
+    #: label -> why it failed. The ARRAY says which subject; this says what
+    #: went wrong, and without it a PARTIAL run is only diagnosable from the
+    #: process log — which is gone by the time anyone reads the run.
+    _failure_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def subjects_evaluated(self) -> list[str]:
@@ -108,13 +112,26 @@ class RunContext:
         if label not in self._evaluated:
             self._evaluated.append(label)
 
-    def mark_failed(self, label: str) -> None:
+    def mark_failed(self, label: str, reason: str | None = None) -> None:
         # A subject must never appear in both arrays: the coverage predicates
         # read them as a claim about what was actually established.
         if label in self._evaluated:
             self._evaluated.remove(label)
         if label not in self._failed:
             self._failed.append(label)
+        if reason and label not in self._failure_reasons:
+            self._failure_reasons[label] = reason
+
+    def failure_reason(self, label: str) -> str | None:
+        return self._failure_reasons.get(label)
+
+    @property
+    def first_failure_reason(self) -> str | None:
+        for label in self._failed:
+            reason = self._failure_reasons.get(label)
+            if reason:
+                return reason
+        return None
 
 
 class Detector:
@@ -356,14 +373,23 @@ def execute(detector: Detector, fleet: psycopg.Connection,
                     try:
                         detector.evaluate(ctx, subject)
                     except Exception as exc:
-                        ctx.mark_failed(subject.label)
+                        ctx.mark_failed(subject.label,
+                                        f"{type(exc).__name__}: {exc}")
                         log.exception("subject %s failed: %s", subject.label, exc)
                     else:
                         ctx.mark_evaluated(subject.label)
                 if ctx.subjects_failed:
                     status = STATUS_PARTIAL
+                    # The reason is carried, not only the label. A PARTIAL run
+                    # whose error text names the subject and nothing else can
+                    # be diagnosed only from the process log, and the log is
+                    # long gone by the time the brief reports the gap the
+                    # following morning.
                     error = (f"{len(ctx.subjects_failed)} subject(s) failed: "
                              + ",".join(ctx.subjects_failed))
+                    reason = ctx.first_failure_reason
+                    if reason:
+                        error += f" -- {reason[:300]}"
                 else:
                     status = STATUS_OK
         except BaseException as exc:      # includes KeyboardInterrupt/SystemExit

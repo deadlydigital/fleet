@@ -17,17 +17,29 @@ from proposer.detector_adapter import (COVERAGE_GAPS, DETECTOR_HEALTH,
                                        REGISTRY_GEOMETRY,
                                        UNTRIAGED_OBSERVATIONS,
                                        DetectorsAdapter)
-from support_proposals import (HEARTBEAT, RECONCILIATION, arrange_issue,
+from support_proposals import (all_detectors_healthy,
+                               HEARTBEAT, RECONCILIATION, arrange_issue,
                                arrange_observations, arrange_run, arrange_runs,
                                slot_ends)
 
 
 def healthy(admin, *, reconciliation_slots: int = 3,
             heartbeat_slots: int = 3) -> None:
-    """Both detectors running on schedule, which is what makes a reading fresh."""
+    """Every detector running on schedule, which is what makes a reading fresh.
+
+    The two are named because tests here vary their slot counts; the rest come
+    from the registry, because a helper that lists detectors by hand stops
+    meaning "healthy" the day another is registered.
+    """
     arrange_runs(admin, RECONCILIATION,
                  slot_ends(admin, RECONCILIATION, reconciliation_slots))
     arrange_runs(admin, HEARTBEAT, slot_ends(admin, HEARTBEAT, heartbeat_slots))
+    others = [r["detector_key"] for r in admin.execute(
+        "SELECT detector_key FROM detector_registry"
+        " WHERE retired_at IS NULL AND detector_key NOT IN (%s, %s)"
+        " ORDER BY detector_key", (RECONCILIATION, HEARTBEAT)).fetchall()]
+    for key in others:
+        arrange_runs(admin, key, slot_ends(admin, key, 3))
 
 
 def read(reader, cycle_config=None):
@@ -99,6 +111,11 @@ def test_the_bound_is_set_by_the_detector_furthest_past_its_own_budget(
     successes are the same age -- and picking by timestamp would report
     whichever happened to be a minute older.
     """
+    # Every other detector healthy, so the comparison is between the two this
+    # test reasons about. A detector with NO successful run at all is a
+    # different condition — data_missing_reason, not a staleness note — and it
+    # supersedes the answer under test rather than competing with it.
+    all_detectors_healthy(admin, exclude=[RECONCILIATION, HEARTBEAT])
     arrange_runs(admin, RECONCILIATION, slot_ends(admin, RECONCILIATION, 1))
     arrange_runs(admin, HEARTBEAT, slot_ends(admin, HEARTBEAT, 1, skip_newest=12))
     out = read(reader)
@@ -115,7 +132,13 @@ def test_detector_health_stays_readable_when_everything_else_is_stale(
     health = out[DETECTOR_HEALTH]
     assert health.status == adapter_module.CURRENT_BY_CONSTRUCTION
     assert health.usable
-    assert {r["detector_key"] for r in health.rows} == {RECONCILIATION, HEARTBEAT}
+    # Derived from the registry, not typed. A literal set here is a tally
+    # that goes wrong the day a detector is registered — which is exactly
+    # what 015 did.
+    registered = {r["detector_key"] for r in admin.execute(
+        "SELECT detector_key FROM detector_registry WHERE retired_at IS NULL"
+    ).fetchall()}
+    assert {r["detector_key"] for r in health.rows} == registered
     assert all(r["successful_runs"] == 0 for r in health.rows)
 
 

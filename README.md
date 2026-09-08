@@ -1026,3 +1026,125 @@ guards in `revert_guards.py` hold both halves of the rule.
 No migration, no new dependency, no write anywhere, and nothing merges.
 `decision_log` and `decision_outcomes` are read-only here and `010` is
 untouched.
+
+---
+
+# dd_api_errors — the third detector
+
+Sentry has been collecting from `deadly-digital-api` and the worker since the
+DSN was set, and nothing had ever read it. Every error it holds has been
+invisible: `docker logs` shows a handled exception only if something logged it,
+and an unhandled one only until the buffer rolls.
+
+## The DSN cannot read, and that is why this needed a new secret
+
+`SENTRY_DSN` in the app container is an **ingest key**. It authorises sending
+events and nothing else; there is no read path through it. Reading issues needs
+an organisation auth token with `event:read` — a different credential with a
+different lifetime — and it lives in `fleet/.env` with every other fleet
+secret. The app writes to Sentry, fleet reads from it, neither holds the
+other's credential.
+
+    SENTRY_AUTH_TOKEN=…      an org auth token with event:read
+    SENTRY_ORG=…             the org SLUG, not the o… id from the DSN
+    SENTRY_PROJECTS=…        comma-separated project SLUGS
+    SENTRY_API_BASE=…        optional; the org is EU-hosted, so this is
+                             probably https://de.sentry.io/api/0
+
+**The numeric ids in the DSN are not slugs.** `o4510793576611840` and
+`4510793592864848` identify the org and project to the ingest endpoint; the
+issues API wants slugs. And a 404 from the wrong regional base is
+indistinguishable from a missing project, which is why `_http_get` names the
+base it used in that error rather than reporting "not found".
+
+## The one rule, in four places
+
+**A failed read must never become a zero**, because a zero is what the brief
+turns into "no unresolved issues" — a sentence that is worst exactly when it is
+wrong. It is enforced four times rather than intended once:
+
+1. **A project that could not be read is a failed subject**, so `base.py` closes
+   the run PARTIAL and the coverage predicates already know what that means. Not
+   an observation of absence.
+2. **Enumeration refuses to return an empty list.** Zero subjects closes a run
+   OK with nothing in it, which is indistinguishable from a clean project — the
+   most dangerous state available here, and the only failure the harness would
+   record as success. An unconfigured detector is an ERROR, and the heartbeat
+   escalates it.
+3. **The brief reads the RUN, not the newest observation.** This is the one that
+   matters. Yesterday's clean read recorded a real zero; today's token expired.
+   Reporting yesterday's number is reporting a true figure about a moment nobody
+   asked about, and it renders as reassurance.
+4. **`Claim.uncomputed` has no value parameter**, so a refused claim carries no
+   number for any renderer, this one or a later one, to print.
+
+Four states, and one of them prints a number:
+
+| newest scheduled run | claim |
+|---|---|
+| none | UNCOMPUTED — "…has never completed a scheduled run. This is not a report of zero errors" |
+| not OK | UNCOMPUTED, carrying the run's own error text and the failed subject |
+| older than cadence + grace | UNCOMPUTED — not today's answer |
+| OK and fresh | COMPUTED, and a zero here is one the run **established** |
+
+The staleness allowance is `cadence + grace` read from `detector_registry`, so
+the brief and the heartbeat agree about "overdue" by construction rather than
+by two numbers that drift.
+
+## A gap in `base.py`, found by writing this
+
+A PARTIAL run recorded **which** subject failed and not **why** — the error text
+was `"1 subject(s) failed: <label>"` and the cause existed only in the process
+log, which is long gone by the time the brief reports the gap the next morning.
+`RunContext.mark_failed` now takes a reason and `_close_run` appends the first
+one. The ERROR path already did this; only PARTIAL was silent.
+
+## What it cannot tell you
+
+- **Not that an error did not happen.** Sentry drops events on quota exhaustion
+  and on SDK-side network failure. "0 unresolved" is a claim about Sentry.
+- **Not which tenant.** `send_default_pii=False` and no tenant tag is set at any
+  of the six `capture_exception` sites, so an error on HIB's revenue page
+  arrives indistinguishable from any other.
+- **Not whether it mattered.** Volume is not severity — which is why magnitude
+  is the count of issues a person would triage, and event totals ride along as
+  evidence rather than being folded into a score nobody can decompose.
+- **Not more than one page.** At 100 issues the count is reported `capped`, a
+  floor rather than a total.
+
+## The bands are a guess and say so
+
+`015_sentry_detector.sql` routes 1-4 MEDIUM, 5-24 HIGH, 25+ CRITICAL. Nothing
+has ever read this project, so there is no measured distribution to set them
+against; the first week of readings is the evidence. They are deliberately not
+tuned to make the first run look calm.
+
+## Waiting on two things that are one action
+
+The token in `.env`, and `015_sentry_detector.sql` applied so the registry row
+exists. `fleet-sentry.timer` is written and **not installed** until both are
+done — until then the detector cannot close a run OK, and the brief correctly
+reports the gap. Installing early buys a red board and no information.
+
+Tests: `tests/test_sentry_detector.py` (17), `tests/test_sentry_brief.py` (11),
+five reversion guards.
+
+### Two tests that were testing nothing, and how that was found
+
+**The HTTP stub was at the wrong layer.** The first version injected at
+`fetch`, which *replaces* `_http_get` — the method that holds all the
+status-code reasoning and the 404-names-the-base hint. Every assertion about
+those messages was made against code that never ran. Fixed by injecting at
+`urlopen` for those cases and keeping the `fetch` stub only for tests about what
+an answer *means*.
+
+**The brief harness connected differently from production.** `run_pass` passes
+no `row_factory`, so `S.row()` yields tuples; the test used `dict_row`, and
+`_sentry_claims`' positional unpack bound the column **names**. `status` became
+the string `"status"`, every claim came back UNCOMPUTED, and the guarantee under
+test appeared to hold for entirely the wrong reason. A harness that connects
+differently from production tests a different program.
+
+Both were found by `revert_guards.py`, which also caught a third: a case aimed
+at a brief test whose fixture writes `detector_runs.error` directly and
+therefore never exercises `base.py`'s composition at all.

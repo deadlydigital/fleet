@@ -12,6 +12,18 @@ To stop them without uninstalling:
 
     sudo systemctl disable --now fleet-reconciliation.timer fleet-heartbeat.timer
 
+`fleet-sentry.timer` (dd_api_errors, every 15 minutes at :07 past each
+quarter) is written and **not installed**. It is waiting on two things that
+are one action: a Sentry organisation auth token in `.env`, and
+`015_sentry_detector.sql` applied so the registry row exists. Until both are
+done the detector cannot close a run OK, and the brief correctly reports the
+gap rather than a zero — so installing the timer early buys a red board and
+no information.
+
+    sudo cp fleet-sentry.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now fleet-sentry.timer
+
 The observation cycle is a third unit, not installed and not enabled:
 
     sudo cp fleet-proposer-cycle.service fleet-proposer-cycle.timer \

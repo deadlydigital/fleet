@@ -17,9 +17,9 @@ from proposer import config
 from proposer import cycle as cycle_module
 from proposer.findings import KIND_OBSERVATION, KIND_RISK
 from proposer.objectives import load as load_objectives
-from support_proposals import (HEARTBEAT, RECONCILIATION, arrange_issue,
-                               arrange_observations, arrange_run, arrange_runs,
-                               insert_proposal, slot_ends)
+from support_proposals import (HEARTBEAT, RECONCILIATION, all_detectors_healthy,
+                               arrange_issue, arrange_observations, arrange_run,
+                               arrange_runs, insert_proposal, slot_ends)
 
 OBJECTIVES_FILE = config.PROJECT_ROOT / "objectives-2026-Q4.yaml"
 
@@ -35,9 +35,26 @@ def cycle_config():
 
 
 def healthy(admin, *, reconciliation_slots: int = 3, heartbeat_slots: int = 3):
+    """The two detectors these tests reason about, plus every other one.
+
+    The two are named because several tests vary their slot counts. Anything
+    else in the registry just needs to not be the finding under test:
+    `detector_no_successful_run` fires for any detector that has never closed
+    OK, so a helper that named only these two stopped meaning "healthy" the
+    moment 015 registered a third.
+    """
     arrange_runs(admin, RECONCILIATION,
                  slot_ends(admin, RECONCILIATION, reconciliation_slots))
     arrange_runs(admin, HEARTBEAT, slot_ends(admin, HEARTBEAT, heartbeat_slots))
+    for key in _other_detectors(admin):
+        arrange_runs(admin, key, slot_ends(admin, key, 3))
+
+
+def _other_detectors(admin):
+    return [r["detector_key"] for r in admin.execute(
+        "SELECT detector_key FROM detector_registry"
+        " WHERE retired_at IS NULL AND detector_key NOT IN (%s, %s)"
+        " ORDER BY detector_key", (RECONCILIATION, HEARTBEAT)).fetchall()]
 
 
 def open_issue(admin, days: int = 30, **kwargs):
@@ -86,7 +103,10 @@ def test_a_detector_that_has_never_succeeded_is_reported(
         admin, dsns, cycle_config, objectives):
     """And is reported even though every other reading is unusable because of
     it -- that is the point of detector_health being current by construction."""
-    arrange_runs(admin, HEARTBEAT, slot_ends(admin, HEARTBEAT, 3))
+    # Every detector but the one under test. `detector_no_successful_run`
+    # fires per detector, so leaving a third one silent would make this
+    # assert 2 and read as a bug in the finding rather than in the fixture.
+    all_detectors_healthy(admin, exclude=[RECONCILIATION])
     result = run(dsns, cycle_config, objectives, dry_run=True)
 
     found = [f for f in result.proposed
@@ -98,7 +118,7 @@ def test_a_detector_that_has_never_succeeded_is_reported(
 
 def test_a_lapsed_detector_is_reported_with_the_cadences_it_has_missed(
         admin, dsns, cycle_config, objectives):
-    arrange_runs(admin, HEARTBEAT, slot_ends(admin, HEARTBEAT, 3))
+    all_detectors_healthy(admin, exclude=[RECONCILIATION])
     arrange_runs(admin, RECONCILIATION,
                  slot_ends(admin, RECONCILIATION, 2, skip_newest=20))
     result = run(dsns, cycle_config, objectives, dry_run=True)

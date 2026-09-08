@@ -1,0 +1,21 @@
+[Unit]
+Description=dd_api_errors, every 15 minutes
+Documentation=file:/home/ubuntu/fleet/README.md
+
+[Timer]
+Unit=fleet-detector@dd_api_errors.service
+# :07 past each quarter, not :00. settle_lag is 5 minutes, so a run fired at
+# the boundary would find the slot that just closed unsettled and
+# open_scheduled_run would hand back the one before it -- leaving the newest
+# slot permanently unexecuted. Same reasoning as the reconciliation timer's
+# :20, with a smaller lag.
+OnCalendar=*-*-* *:07,22,37,52:00
+AccuracySec=15s
+RandomizedDelaySec=0
+# NOT Persistent. A detector cannot re-derive a missed slot by running late:
+# it reads what Sentry holds NOW, so a catch-up run would record the current
+# level against a window it never observed. Same rule as the other two.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

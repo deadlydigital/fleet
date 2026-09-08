@@ -256,6 +256,57 @@ CASES = [
      "tests/test_outcomes.py::TestWhichCommitIsAskedAbout::"
      "test_already_merged_refuses_the_recorded_sha"),
 
+    # ---- sentry: a failed read must never become a zero -------------------
+    #
+    # Four expressions of one rule. Each reversion below is a plausible
+    # simplification, and each one turns "we could not look" into "there is
+    # nothing there" — the sentence that would appear in the brief, in bold,
+    # on the morning it is least true.
+    ("a missing token fails the subject rather than reading nothing",
+     "detectors/sentry.py",
+     "        if not self._token:",
+     "        if False:",
+     "tests/test_sentry_detector.py::TestAFailedReadIsNeverAZero::"
+     "test_a_missing_token_fails_the_subject"),
+
+    ("enumeration refuses to return an empty subject list",
+     "detectors/sentry.py",
+     "        if not self._org or not self._projects:",
+     "        if False:",
+     "tests/test_sentry_detector.py::TestEnumerationRefusesToBeEmpty::"
+     "test_no_project_configured_is_an_error_not_a_clean_run"),
+
+    ("the brief refuses a claim from a run that did not close OK",
+     "brief/pass_.py",
+     '    if status != "OK":',
+     "    if False:",
+     "tests/test_sentry_brief.py::TestAZeroIsNeverPrintedFromAReadThatDidNotHappen::"
+     "test_a_stale_zero_is_not_printed_when_the_newest_run_failed"),
+
+    ("the brief refuses a run older than cadence plus grace",
+     "brief/pass_.py",
+     "    if allowance is not None and age is not None and age > allowance:",
+     "    if False:",
+     "tests/test_sentry_brief.py::TestAZeroIsNeverPrintedFromAReadThatDidNotHappen::"
+     "test_a_run_older_than_cadence_and_grace_is_not_todays_answer"),
+
+    # A PARTIAL run used to record WHICH subject failed and not WHY, so the
+    # brief could name the gap but not explain it. Reverting this loses the
+    # cause a morning after the process log has rolled.
+    ("a PARTIAL run carries the reason, not only the subject",
+     "detectors/base.py",
+     "                    reason = ctx.first_failure_reason\n"
+     "                    if reason:\n"
+     "                        error += f\" -- {reason[:300]}\"",
+     "                    pass",
+     # Pointed at the DETECTOR test, not the brief one. The brief fixture
+     # writes `detector_runs.error` directly, so it never exercises base.py's
+     # composition at all; only a real failing subject does. Found by this
+     # script, which is the second time it has caught a case aimed at a test
+     # that could not fail.
+     "tests/test_sentry_detector.py::TestAFailedReadIsNeverAZero::"
+     "test_an_unauthorised_token_fails_the_subject"),
+
     ("a thin group is listed, not compared",
      "proposer/precedent.py",
      "        if len(rows) < floor:",

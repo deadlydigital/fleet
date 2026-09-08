@@ -116,6 +116,28 @@ def arrange_runs(admin, detector_key: str, slots: Sequence[datetime], **kwargs) 
     return [arrange_run(admin, detector_key, slot, **kwargs) for slot in slots]
 
 
+def all_detectors_healthy(admin, *, count: int = 3,
+                          exclude: Sequence[str] = (), **kwargs) -> None:
+    """A recent successful history for EVERY registered detector.
+
+    Registry-driven rather than a list of two. `detector_no_successful_run`
+    fires for anything in `detector_registry` that has never closed OK, so a
+    helper naming detectors by hand quietly stops meaning "healthy" the day a
+    third is registered — which is exactly what 015 did: twenty-one tests
+    failed with a finding that was entirely correct.
+
+    Subjects come from the registry's coverage_mode via arrange_run, so an
+    ENUMERATED detector gets subjects and a GLOBAL one does not.
+    """
+    keys = [r["detector_key"] for r in admin.execute(
+        "SELECT detector_key FROM detector_registry WHERE retired_at IS NULL"
+        " ORDER BY detector_key").fetchall()]
+    for key in keys:
+        if key in exclude:
+            continue
+        arrange_runs(admin, key, slot_ends(admin, key, count), **kwargs)
+
+
 def fingerprint(detector_key: str, issue_key_version: int, product: str,
                 subject_type: str, subject_id: str, observation_type: str) -> str:
     material = "|".join((detector_key, str(issue_key_version), product,

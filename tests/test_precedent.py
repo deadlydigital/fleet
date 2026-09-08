@@ -34,7 +34,7 @@ import pytest
 from proposer import config
 from proposer import cycle as cycle_module
 from proposer.objectives import load as load_objectives
-from support_proposals import HEARTBEAT, RECONCILIATION, arrange_issue, arrange_runs, slot_ends
+from support_proposals import all_detectors_healthy, arrange_issue
 
 OBJECTIVES_FILE = config.PROJECT_ROOT / "objectives-2026-Q4.yaml"
 
@@ -50,8 +50,8 @@ def cycle_config():
 
 
 def healthy(admin):
-    arrange_runs(admin, RECONCILIATION, slot_ends(admin, RECONCILIATION, 3))
-    arrange_runs(admin, HEARTBEAT, slot_ends(admin, HEARTBEAT, 3))
+    """Every registered detector, from the registry. See support_proposals."""
+    all_detectors_healthy(admin)
 
 
 def open_issue(admin, days: int = 30, **kwargs):

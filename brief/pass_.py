@@ -116,6 +116,114 @@ def _standing_gaps() -> List[Claim]:
 # The reads
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Sentry
+#
+# THE GUARANTEE THIS FUNCTION EXISTS FOR:
+#   "no unresolved issues" can never be printed while the query cannot run.
+#
+# It is structural, not a matter of care. The claim is derived from the newest
+# RUN and its status, never from the newest OBSERVATION. Reading the newest
+# observation would print yesterday's zero on a day the token expired -- the
+# number would be real, correctly recorded, and describing a moment nobody
+# asked about. That is the exact shape of every defect this system has spent
+# its time removing, and it renders as reassurance.
+#
+# Four states, and only one of them prints a number:
+#   no run ever      -> UNCOMPUTED, the detector has never run
+#   newest run not OK-> UNCOMPUTED, carrying the run's own error text
+#   newest run stale -> UNCOMPUTED, naming how old it is
+#   newest run OK    -> COMPUTED, and a zero here is a zero the run
+#                       established rather than one it failed to disprove
+# ---------------------------------------------------------------------------
+
+SENTRY_DETECTOR = "dd_api_errors"
+
+#: A run older than this is not today's answer. Derived from the registry
+#: rather than typed: cadence + grace is exactly when the heartbeat considers
+#: the detector overdue, so the brief and the heartbeat agree by construction
+#: instead of by two numbers that drift.
+_SENTRY_RUN_SQL = """
+SELECT r.id, r.status, r.completed_at, r.window_end, r.error,
+       r.subjects_failed,
+       reg.cadence + reg.grace AS allowance,
+       now() - r.window_end    AS age,
+       (SELECT sum(o.magnitude)::bigint FROM observations o
+         WHERE o.detector_run_id = r.id
+           AND o.observation_type = 'SENTRY_UNRESOLVED_ISSUES') AS unresolved,
+       (SELECT max(o.evidence_sample ->> 'worst_short_id') FROM observations o
+         WHERE o.detector_run_id = r.id
+           AND o.observation_type = 'SENTRY_UNRESOLVED_ISSUES') AS worst
+  FROM detector_runs r
+  JOIN detector_registry reg
+    ON reg.detector_key = r.detector_key
+   AND reg.issue_key_version = r.issue_key_version
+   AND reg.product = r.product
+ WHERE r.detector_key = %(k)s
+   AND r.run_mode = 'SCHEDULED'
+   AND r.status <> 'RUNNING'
+ ORDER BY r.window_end DESC
+ LIMIT 1
+"""
+
+
+def _sentry_claims(r: S.Reader) -> List[Claim]:
+    name = "fleet:detector_runs/dd_api_errors"
+    key = "sentry.unresolved_issues"
+    label = "unresolved Sentry issues in the API project"
+
+    row = r.probe(name, S.row(_SENTRY_RUN_SQL, {"k": SENTRY_DETECTOR}))
+    if row is None:
+        failed = r.failed(name)
+        if failed:
+            return [Claim.uncomputed(key, label, reason=failed)]
+        return [Claim.uncomputed(
+            key, label,
+            reason=(f"the {SENTRY_DETECTOR} detector has never completed a "
+                    f"scheduled run, so nothing has read Sentry. This is not "
+                    f"a report of zero errors"))]
+
+    (_id, status, completed_at, _window_end, error, failed_subjects,
+     allowance, age, unresolved, worst) = row
+
+    if status != "OK":
+        detail = (error or "").strip() or "no error text was recorded"
+        who = (", ".join(failed_subjects) if failed_subjects else "the project")
+        return [Claim.uncomputed(
+            key, label,
+            reason=(f"the newest {SENTRY_DETECTOR} run closed {status} and "
+                    f"could not read {who}: {detail[:220]}. Sentry may hold "
+                    f"errors that are not counted here"))]
+
+    if allowance is not None and age is not None and age > allowance:
+        return [Claim.uncomputed(
+            key, label,
+            reason=(f"the newest {SENTRY_DETECTOR} run covers a window that "
+                    f"closed {_age(age)} ago, past its {_age(allowance)} "
+                    f"cadence and grace, so it is not today's answer"))]
+
+    count = int(unresolved or 0)
+    statement = f"{count} {label}"
+    if count and worst:
+        statement += f"; largest is {worst}"
+    return [Claim.computed(
+        key, statement, source=f"sentry via fleet:{SENTRY_DETECTOR}",
+        # as_of is when the RUN established it, not when the brief read the
+        # row. A brief at 07:45 reporting a 07:30 detector run is as_of 07:30.
+        as_of=completed_at or _utcnow(), value_num=count,
+        query_key="sentry_unresolved_issues", query_version=1)]
+
+
+def _age(delta) -> str:
+    total = int(delta.total_seconds())
+    if total >= 86400:
+        return f"{total // 86400}d {(total % 86400) // 3600}h"
+    if total >= 3600:
+        return f"{total // 3600}h {(total % 3600) // 60}m"
+    return f"{total // 60}m"
+
+
+
 def _business_claims(r: S.Reader) -> List[Claim]:
     """What the platform looks like. Three tables and orders, per the grants."""
     out: List[Claim] = []
@@ -323,6 +431,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
         previous = reader.probe("fleet:brief_claims",
                                 lambda c: _previous_values(c)) or {}
         claims += _fleet_claims(reader, last)
+        claims += _sentry_claims(reader)
         results += reader.results
 
     # A failure here must not lose the fleet claims already gathered, which is
