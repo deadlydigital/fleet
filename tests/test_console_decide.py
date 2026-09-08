@@ -199,10 +199,23 @@ def test_a_dirty_working_tree_refuses(dsns, repo, task):
 
 
 def test_a_checkout_on_another_branch_refuses(dsns, repo, task):
+    """And says what to do about it.
+
+    The refusal used to read only "the checkout is on X, not Y. Refusing to
+    switch a branch under whoever is using it" -- true, and it leaves the
+    reader to work out whether the branch is wrong, the run is wrong or the
+    base moved. Task 26 was accepted five times against exactly this. The
+    reason now names the state and the fix, and the "will not switch it"
+    argument moved to the detail where it belongs.
+    """
     sh(repo, "git", "checkout", "-q", "-b", "somewhere-else")
     r = merge.merge_and_push(repo, task["task"], task["branch"],
                              task["base_sha"], task["tip"])
-    assert not r.ok and "Refusing to switch" in r.reason
+    assert not r.ok
+    assert "somewhere-else" in r.reason
+    assert "nothing needs re-running" in r.reason
+    assert any("checkout" in d for d in r.detail)
+    assert any("will not switch it" in d for d in r.detail)
 
 
 def test_a_branch_whose_tip_moved_is_refused(dsns, repo, task):

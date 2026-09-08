@@ -466,6 +466,37 @@ CASES = [
      "tests/test_selfcheck.py::TestTheSameShapeGuard::"
      "test_a_new_offending_path_warns"),
 
+    # ---- a refusal that reaches only one browser tab is a silent failure ---
+    ("an outcome cannot be set without being logged",
+     "console/app.py",
+     '        log.warning("task %s REFUSED: %s%s", task_id,',
+     '        pass  # noqa\n        _unused = (lambda *a: None)(',
+     "tests/test_console_blocker.py::TestAnOutcomeCannotBeSetWithoutBeingLogged::"
+     "test_a_refusal_is_logged_at_warning"),
+
+    ("the refusal names the fix, not just the state",
+     "console/merge.py",
+     '            detail=[f"fix: git -C {repo} checkout {base}",',
+     '            detail=[f"{repo}",',
+     "tests/test_console_blocker.py::TestTheRefusalSaysWhatToDo::"
+     "test_it_names_the_state_the_reason_and_the_fix"),
+
+    ("the page asks preflight before offering the button",
+     "console/app.py",
+     "            if not check.ok:\n"
+     "                blocker = {\"reason\": check.reason, \"detail\": list(check.detail)}",
+     "            if False:\n"
+     "                blocker = {\"reason\": check.reason, \"detail\": list(check.detail)}",
+     "tests/test_console.py::TestTheRefusalIsShownBeforeTheButton::"
+     "test_a_ready_task_whose_merge_would_refuse_says_so"),
+
+    ("a preflight that cannot run still yields a blocker",
+     "console/app.py",
+     '            blocker = {"reason": f"the merge preconditions could not be "',
+     '            blocker = None or {"reason": f"" f"',
+     "tests/test_console.py::TestTheRefusalIsShownBeforeTheButton::"
+     "test_the_page_still_renders_when_preflight_cannot_run"),
+
     ("a thin group is listed, not compared",
      "proposer/precedent.py",
      "        if len(rows) < floor:",

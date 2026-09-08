@@ -385,3 +385,43 @@ def test_the_list_renders_one_row_per_task(client, console, admin, runner):
     body = client.get("/tasks?status=all").text
     assert body.count(f'href="/tasks/{tid}"') == 2, "one link per cell, one row"
     assert "over 3 runs" in body
+
+
+# ---------------------------------------------------------------------------
+# The refusal, shown BEFORE the button rather than after it.
+#
+# Task 26 was accepted five times against a checkout on another branch. The
+# merge refused correctly each time and the reason reached one browser tab and
+# nowhere else. `preflight` reads git and writes nothing, so the page can ask
+# it on the GET and turn a refusal from a result into a precondition.
+# ---------------------------------------------------------------------------
+
+class TestTheRefusalIsShownBeforeTheButton:
+
+    def test_a_ready_task_whose_merge_would_refuse_says_so(self, client, a_task):
+        """The client fixture points repo_root at /nonexistent, so preflight
+        refuses -- which is the condition under test, not a workaround."""
+        task_id, _run = a_task
+        body = client.get(f"/tasks/{task_id}").text
+        assert "Accepting will refuse" in body
+
+    def test_the_page_still_renders_when_preflight_cannot_run(
+            self, client, a_task, monkeypatch):
+        """A page that 500s because a git read failed is worse than one that
+        says it could not look. It must never silently omit the blocker."""
+        from console import app as app_module
+
+        def boom(*a, **k):
+            raise OSError("git is not on the path")
+        task_id, _run = a_task
+        monkeypatch.setattr(app_module.merge, "preflight", boom)
+        r = client.get(f"/tasks/{task_id}")
+        assert r.status_code == 200
+        assert "could not be" in r.text and "git is not on the path" in r.text
+
+    def test_a_task_that_is_not_ready_has_no_blocker(self, client, console,
+                                                     a_task):
+        task_id, _run = a_task
+        console.execute("UPDATE tasks SET status='MERGED' WHERE id=%s", (task_id,))
+        console.commit()
+        assert "Accepting will refuse" not in client.get(f"/tasks/{task_id}").text

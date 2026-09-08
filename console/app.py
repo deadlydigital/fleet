@@ -11,6 +11,7 @@ enough, and a websocket is a service that can break silently.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -190,9 +191,39 @@ def task_detail(request: Request, task_id: int):
     patch = next((s for s in steps if s["step_type"] == "PATCH_PROPOSED"), None)
     verification = next((s for s in steps if s["step_type"] == "VERIFICATION_RUN"), None)
 
+    # WHY THIS RUNS ON THE GET.
+    #
+    # `preflight` reads git and writes nothing, so asking it here costs a few
+    # subprocess calls and turns a refusal from a RESULT into a PRECONDITION.
+    # Task 26 was accepted five times against a checkout sitting on another
+    # branch: the button was offered, the merge could not possibly succeed,
+    # and the reason arrived only after the click. Showing it first is the
+    # difference between a gate and a trapdoor.
+    blocker = None
+    if task["status"] == "READY_FOR_REVIEW" and task["branch_name"]:
+        payload = (patch or {}).get("payload") or {}
+        try:
+            check = merge.preflight(
+                config.repo_root() / task["repo"], task, task["branch_name"],
+                payload.get("base_commit_sha", ""),
+                payload.get("patch_commit_sha", ""),
+                payload.get("branch_point_sha", ""))
+            if not check.ok:
+                blocker = {"reason": check.reason, "detail": list(check.detail)}
+        except Exception as exc:                          # noqa: BLE001
+            # A page that 500s because a git read failed is worse than one
+            # that says it could not look. It NEVER silently omits the
+            # blocker -- that is the failure this whole change is about.
+            log.warning("task %s: preflight could not run: %s", task_id, exc)
+            blocker = {"reason": f"the merge preconditions could not be "
+                                 f"checked: {exc}",
+                       "detail": ["Accepting may still work, or may refuse "
+                                  "for a reason this page could not read."]}
+
     return render(
         request, "task_detail.html",
         task=task,
+        blocker=blocker,
         reject_reasons=decide.REJECT_REASONS,
         reason_help=decide.REASON_HELP,
         outcome=_take_outcome(task_id),
@@ -267,10 +298,41 @@ def decisions(request: Request, product: str | None = None):
 # stay in the shell where they are deliberate.
 
 # The result of the last decision, held until the redirected page collects it.
+log = logging.getLogger("console")
+
 # In-process and single-user; the console is one person with a browser, and a
 # durable store for a message that survives one redirect would be a schema
 # change for a toast.
+#
+# BUT IT IS POP-ONCE, AND THAT MADE A REFUSAL INVISIBLE.
+#
+# A merge refusal was written here, rendered on the next page load, and then
+# gone -- nothing in the journal, nothing in the database. Diagnosing from
+# `journalctl` showed `POST /tasks/26/accept 303` and no reason at all, which
+# reads as a successful no-op. Five attempts, five refusals, no trace.
+#
+# So an outcome CANNOT BE SET WITHOUT BEING LOGGED. `_record_outcome` is the
+# only way to write this dict, and it logs before it stores. The toast stays a
+# toast; the journal keeps the fact.
 _OUTCOMES: dict[int, dict[str, Any]] = {}
+
+
+def _record_outcome(task_id: int, outcome: dict[str, Any]) -> None:
+    """Store a decision outcome, and log it whether or not anyone reads it.
+
+    The guard is that there is no other way to populate `_OUTCOMES`. A helper
+    that silently does nothing when its dependency is absent -- here, when
+    nobody ever loads the page -- is the shape this exists to remove.
+    """
+    detail = " | ".join(str(d) for d in (outcome.get("detail") or []) if d)
+    if outcome.get("ok"):
+        log.info("task %s: %s%s", task_id, outcome.get("headline", "done"),
+                 f" -- {detail}" if detail else "")
+    else:
+        log.warning("task %s REFUSED: %s%s", task_id,
+                    outcome.get("headline", "refused"),
+                    f" -- {detail}" if detail else "")
+    _OUTCOMES[task_id] = outcome
 
 
 def _take_outcome(task_id: int) -> dict[str, Any] | None:
@@ -335,14 +397,14 @@ def accept(request: Request, task_id: int,
         reverification=again)
 
     if not result.ok:
-        _OUTCOMES[task_id] = {
+        _record_outcome(task_id, {
             "ok": False, "headline": "Not merged, and nothing recorded",
             "loud": result.merged or result.pushed,
             "detail": ([result.reason] + [d for d in result.detail if d]
                        + ([f"re-verification: {c['command']} exited "
                            f"{c['exit_code']}"
                            for c in (again.checks if again else [])
-                           if c["exit_code"] != 0]))}
+                           if c["exit_code"] != 0]))})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     merge_record = {
@@ -362,7 +424,7 @@ def accept(request: Request, task_id: int,
     except decide.VerdictNotRecorded as exc:
         # The loud case. The merge happened and is on the remote; the database
         # does not know. Never swallowed.
-        _OUTCOMES[task_id] = {
+        _record_outcome(task_id, {
             "ok": False, "loud": True,
             "headline": "MERGED AND PUSHED, BUT THE VERDICT WAS NOT RECORDED",
             "detail": [str(exc),
@@ -370,16 +432,16 @@ def accept(request: Request, task_id: int,
                        f"locally and on origin.",
                        "The branch is merged. The task still reads "
                        "READY_FOR_REVIEW. Record it by hand:",
-                       f"UPDATE tasks SET status='MERGED' WHERE id={task_id};"]}
+                       f"UPDATE tasks SET status='MERGED' WHERE id={task_id};"]})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
-    _OUTCOMES[task_id] = {
+    _record_outcome(task_id, {
         "ok": True,
         "headline": ("Recorded as MERGED; the branch was already in "
                      + task["base_branch"] + ", so no merge was performed"
                      if result.already_merged else
                      "Merged, pushed and recorded"),
-        "detail": result.detail}
+        "detail": result.detail})
     return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
 
@@ -398,23 +460,23 @@ def reject(request: Request, task_id: int,
         return render(request, "missing.html", status_code=404,
                       what=f"task {task_id}")
     if reason not in decide.REJECT_REASONS:
-        _OUTCOMES[task_id] = {"ok": False, "headline": "Not recorded",
+        _record_outcome(task_id, {"ok": False, "headline": "Not recorded",
                               "detail": [f"{reason!r} is not a reason code the "
-                                         f"database accepts."]}
+                                         f"database accepts."]})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     try:
         decide.record(task=task, run_id=run_id, verdict="REJECTED",
                       decision=reason, note=note, rendered_at=rendered_at)
     except decide.VerdictNotRecorded as exc:
-        _OUTCOMES[task_id] = {"ok": False, "headline": "Not recorded",
-                              "detail": [str(exc)]}
+        _record_outcome(task_id, {"ok": False, "headline": "Not recorded",
+                              "detail": [str(exc)]})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
-    _OUTCOMES[task_id] = {
+    _record_outcome(task_id, {
         "ok": True, "headline": f"Recorded as REJECTED ({reason})",
         "detail": ["The branch was not touched. It is still in the checkout "
-                   "and on the remote if it was pushed."]}
+                   "and on the remote if it was pushed."]})
     return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
 

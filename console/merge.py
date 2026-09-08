@@ -92,9 +92,19 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
 
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != base:
-        return MergeOutcome(False, f"the checkout is on {head}, not {base}. "
-                                   f"Refusing to switch a branch under whoever "
-                                   f"is using it.")
+        # NAMES THE STATE, THE REASON, AND THE FIX. The old message said only
+        # "the checkout is on X, not Y", which is true and leaves the reader
+        # to work out whether the branch is wrong, the run is wrong, or the
+        # base moved. None of those: nothing needs re-running.
+        return MergeOutcome(
+            False,
+            f"the {task['repo']} checkout is on {head}; this task's base is "
+            f"{base}, so there is nothing here to merge into. Nothing about "
+            f"the branch or the run is wrong, and nothing needs re-running.",
+            detail=[f"fix: git -C {repo} checkout {base}",
+                    "The console will not switch it for you: another process "
+                    "may be working in this checkout, and moving a branch "
+                    "under someone is worse than refusing to."])
 
     dirty = _git(repo, "status", "--porcelain").stdout.strip()
     if dirty:

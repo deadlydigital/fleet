@@ -22,6 +22,15 @@
   {% endif %}
 {% endif %}
 
+{# ---- what would refuse, said BEFORE the button rather than after ---- #}
+{% if blocker %}
+  <div class="loud">
+    <h3>Accepting will refuse</h3>
+    <div class="mono">{{ blocker.reason }}</div>
+    {% for d in blocker.detail %}<div class="dim mono">{{ d }}</div>{% endfor %}
+  </div>
+{% endif %}
+
 {# ---- the two actions, and only these two ---- #}
 {% if task.status == 'READY_FOR_REVIEW' %}
 <h2>Decide</h2>

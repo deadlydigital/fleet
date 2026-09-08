@@ -1606,3 +1606,83 @@ not a bigger number — and the self-check log is the first evidence that would
 feed it.
 
 Tests: `tests/test_selfcheck.py` (22), six reversion guards.
+
+---
+
+# A merge refusal that reached one browser tab and nowhere else
+
+Task 26 was accepted five times. Every POST returned 303, no `HUMAN_DECISION`
+row was written, `origin/main` never moved, and `journalctl` showed nothing but
+the redirect.
+
+## Where it refused
+
+`merge.preflight`, guard 6 of 8, reached through `merge_and_push`:
+
+> *the deadly-digital-platform checkout is on `fix/api-suite-usable-as-a-gate`;
+> this task's base is `main`, so there is nothing here to merge into.*
+
+**The refusal was correct.** `merge.py` will not switch a branch under whoever
+is using the checkout. It was also invisible everywhere a person would look.
+
+**Neither trigger was involved.** `enforce_acceptance_boundary` and
+`enforce_step_authority` are never reached, because **no INSERT is attempted**:
+`accept()` returns at `if not result.ok:` and `decide.record()` is below it.
+The two `run_steps` rows are not a refused insert; they are an insert that
+never happened.
+
+## Why it was silent
+
+- **Nothing logged.** The failure branch had no log call, so the journal showed
+  `POST … 303` and no reason — which reads as a successful no-op.
+- **Nothing durable.** Correctly: a verdict written before a merge would be a
+  claim about something that had not happened. But it left no trace at all.
+- **`_OUTCOMES` is pop-once.** The reason was rendered on the next page load
+  and then gone. Five refusals each overwrote the last.
+
+## The guard: an outcome cannot be set without being logged
+
+`_record_outcome` is now the **only** writer of `_OUTCOMES`, and it logs before
+it stores — WARNING for a refusal, INFO for a success. A test asserts there is
+exactly one assignment to that dict in the whole module, because a second
+writer would bypass the logging and restore the silence.
+
+This is the general shape worth naming: **a helper that silently does nothing
+when its dependency is absent.** Here the absent dependency was a reader — the
+toast was correct, and nobody ever loaded the page that would consume it.
+
+## And the refusal is now shown before the button
+
+`preflight` reads git and writes nothing, so the task page asks it on the GET
+and renders a blocker above the Decide section. That turns a refusal from a
+**result** into a **precondition** — the difference between a gate and a
+trapdoor. If preflight itself cannot run, the page says so; it never silently
+omits the blocker, which would be the same defect one layer up.
+
+## Should it refuse at all, or offer a rebase? Refuse. There is nothing to rebase.
+
+**A base that merely advances does not trip anything.** `preflight`'s
+merge-base guard is measured and documented in its own comment: *"A base that
+merely ADVANCES does not move the merge base — measured, in a toy repository:
+two commits on the base, merge base unchanged. So this fires for a rebase or a
+rewritten base, not for the overnight case."*
+
+Confirmed empirically here: task 26's branch is based on `7375d0a`, `main` has
+since moved to `9c16d4c` through an unrelated PR, and the trial merge was clean
+and passed all three checks. **The stale base blocked nothing.** So "every task
+queued before an unrelated merge will hit this" is not the case — that case is
+already handled, deliberately.
+
+**And offering a rebase would break the strongest guard in the file.** Rebasing
+rewrites the branch tip, and `preflight` refuses when `tip != recorded_patch`:
+*"Something has been committed to the branch since it was verified, so what
+would merge is not what was checked."* A console that rebased would invalidate
+the verification it is about to rely on, then merge anyway. The right answer to
+a genuinely diverged branch is a new run against the new base, which the
+attempt machinery already expresses.
+
+What actually blocked task 26 was environmental and one command wide:
+`git -C ~/deadly-digital-platform checkout main`.
+
+Tests: `tests/test_console_blocker.py` (6), three in `tests/test_console.py`,
+four reversion guards.
