@@ -4,12 +4,39 @@
 #   the changed files still parse
 #   the changed files are clean under the project's own ruff.toml
 #
+#   tests/unit passes, file by file
+#
 # WHAT IT CANNOT
-#   that anything still works. There is no test gate, because the api suite
-#   has roughly 81 pre-existing failures on a clean database from CI or a dev
-#   machine, and this host must not run it at all. Until that baseline is
-#   green a passing run here means "this change did not break parsing or
-#   lint", and nothing more. Read a branch from this contract accordingly.
+#   that anything still works BEYOND tests/unit. tests/api, tests/integration
+#   and tests/analytics are all green as of 8 Sep 2026 and are still not gated
+#   here -- see "WHY ONLY tests/unit" below. A passing run means parsing, lint
+#   and the unit suite, and nothing wider.
+#
+# THE 81 FAILURES WERE FICTION (corrected 8 Sep 2026)
+#
+# This contract had no test gate because TEST-004 recorded "roughly 81
+# pre-existing failures". Re-measured file by file on a clean database: 26,
+# and not one of them a defect in production code. Three of the four rows in
+# that baseline were dated 17 August and marked "not re-measured" -- already
+# three weeks stale when filed, and the unit and api fixes landed a week
+# later. The corrected table is in docs/TODO.md under TEST-004.
+#
+# What the 26 actually were: a Redis client hard-coded to 6379 when the test
+# container publishes 6380 (11, and they never failed in CI); a container name
+# that had never existed (3); campaign-id fixtures shorter than the id floor
+# 460306e introduced (2); a contract fixture whose tenant had no subscription
+# (7); a key-extractor that required keys from endpoints it deliberately
+# refused to call (1); and a tenant sequence never advanced past the static
+# ids (3).
+#
+# WHY ONLY tests/unit, TODAY
+#
+# Not because the rest is red. Because of cost and of where this runs.
+# tests/analytics exhausts the test database's 384 MiB tmpfs after about eight
+# files and needs it recreated to continue; tests/api takes around ten minutes.
+# Neither belongs in the path of every task while the gate is proportional to
+# the SUITE rather than to the diff. The changed-file-aware gate is the answer
+# and is proposed separately.
 #
 # WHY LINT IS AIMED AT THE CHANGED FILES
 #
@@ -71,6 +98,14 @@ protected_paths:
 verification:
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/ruff_no_new_findings.py
+  # ONE FILE PER PYTEST PROCESS. api/CLAUDE.md forbids suite and directory runs
+  # on this host -- it serves production traffic, and incident 3 was an
+  # allocation failure inside a test process with 63 MB free beside a live API.
+  # The check starts the test services if they are down and stops them again if
+  # it started them, aborts rather than compete for memory, and reports "could
+  # not run" (2) rather than a pass when the database is unreachable.
+  # ~4 minutes for 31 files, inside timeout_seconds below.
+  - /home/ubuntu/fleet/contracts/checks/pytest_unit_per_file.sh api tests/unit
 
 max_diff_lines: 400
 max_cost_gbp: 3.00
