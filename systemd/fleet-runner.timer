@@ -1,0 +1,53 @@
+[Unit]
+Description=Fleet task runner, every 20 minutes in a bounded night window
+Documentation=file:/home/ubuntu/fleet/specs/approval-surface.md
+
+[Timer]
+Unit=fleet-runner.service
+
+# 02:00 to 04:40, every 20 minutes. Nine fires for a queue that holds five.
+#
+# WHY 20 MINUTES AND NOT 10
+#
+# Measured, not assumed. Task durations from `runs` on this host:
+#
+#   draft-spec  task 21  4m05s     task 22  4m35s
+#   code        task 5  11m34s, 12m00s, 10m45s     task 7  13m40s
+#
+# "Four to five minutes" is true of draft-spec tasks and not of code tasks,
+# which have never finished in under ten. 20 minutes clears the observed worst
+# case (13m40s) by about 45% and still drains a full queue of five inside the
+# window with four fires spare.
+#
+# WHY A WINDOW RATHER THAN ALL DAY
+#
+# Because the interval is not a spend control and must not be mistaken for
+# one -- see the note in the service unit. The window is what bounds the day:
+# nine fires is the most this timer can ever start, whatever happens inside
+# them.
+#
+# It ends at 04:40, which is:
+#   02:00-04:40  this
+#   *:20         dd_analytics_reconciliation, hourly
+#   07:30        fleet-proposer-cycle
+#   07:45        fleet-brief
+#
+# so every branch produced overnight is settled in the database hours before
+# the brief reads it, and a tick is never competing with the cycle for the
+# host. A runner still working at 07:30 would put an agent and the proposer on
+# the same box at the same time, which nothing tests.
+OnCalendar=*-*-* 02..04:00/20:00
+AccuracySec=1m
+RandomizedDelaySec=0
+
+# FALSE, and this is the opposite of fleet-brief.timer on purpose.
+#
+# A missed brief is a missing day in a series meant to be compared, so the
+# brief catches up. A missed runner window costs nothing to skip: the tasks
+# are still QUEUED and tomorrow's window drains them. Catching up would mean
+# starting to spend money at whatever hour the host came back, with nobody
+# awake and nothing expecting it. There is no value on the other side of that.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

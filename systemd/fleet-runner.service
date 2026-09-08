@@ -1,0 +1,69 @@
+[Unit]
+Description=Fleet task runner, one task per tick
+Documentation=file:/home/ubuntu/fleet/specs/approval-surface.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_task.py
+
+# 0 ONLY, and this unit differs from fleet-brief on purpose.
+#
+# run_task.py exits 0 when a branch is ready OR when nothing was queued, 1
+# when the task failed, 2 on a configuration problem. The brief widens
+# SuccessExitStatus because a brief that could not reach a source still
+# produces a brief -- a result, not a failure. A failed task is the opposite:
+# it produced nothing, it spent money doing it, and it is terminal at
+# max_attempts=1. That belongs in `systemctl --failed`.
+#
+# Type=oneshot with no Restart= is what makes a failure terminal HERE too:
+# systemd does not re-run a failed oneshot, so a failing task cannot spin the
+# timer. The next fire claims the NEXT task, because the failed one is no
+# longer QUEUED.
+SuccessExitStatus=0
+
+# Longer than the database's own ceiling on timeout_seconds (3600), so
+# systemd killing the process is a last resort and the runner's own deadline
+# -- and the reclaim path behind it -- stays the thing that decides a tick is
+# over. Same reasoning as fleet-detector@.service, one order of magnitude up.
+TimeoutStartSec=4200
+
+SyslogIdentifier=fleet-runner
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+# ProtectHome=read-only is the default here as everywhere, and every exception
+# below is argued for on its own -- the pattern fleet-brief.service set when
+# it opened exactly one directory for briefs/.
+#
+# This unit needs more exceptions than any other, because unlike a detector or
+# a brief it runs git and a subprocess agent:
+#
+#   .fleet-worktrees   the worktree is created and destroyed every tick
+#   deadly-digital-platform   `git worktree add` writes .git/worktrees and the
+#                      branch ref; the push writes refs. The WORKING TREE is
+#                      never touched -- worktree.Untouched asserts that after
+#                      every tick -- but .git is written and cannot be
+#                      narrowed to, because git needs the repo writable
+#   fleet              the same, for draft-spec and research tasks, which take
+#                      their worktree off this repository
+#   .claude, .claude.json, .cache/claude-cli-nodejs
+#                      the agent CLI's own state. Without these the agent
+#                      cannot start, and the tick fails inside _execute with
+#                      a task already claimed and an attempt already spent
+ReadWritePaths=/home/ubuntu/.fleet-worktrees
+ReadWritePaths=/home/ubuntu/deadly-digital-platform
+ReadWritePaths=/home/ubuntu/fleet
+ReadWritePaths=/home/ubuntu/.claude
+ReadWritePaths=/home/ubuntu/.claude.json
+ReadWritePaths=/home/ubuntu/.cache/claude-cli-nodejs
+
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
