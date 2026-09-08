@@ -41,6 +41,17 @@ def proposer_dsn() -> str:
     return base_config.require("FLEET_PROPOSER_DSN")
 
 
+def precedent_dsn() -> str:
+    """The decision log, read as the identity 012 granted it to.
+
+    Deliberately NOT `reader_dsn()`. 010 refuses `fleet_detector_reader` any
+    sight of `decision_log` -- the layer being graded does not see the grade
+    -- and that refusal is kept. This is the detector identity the daily
+    brief already reads the log with, which can read it and write nothing.
+    """
+    return base_config.require("FLEET_DSN")
+
+
 def console_dsn() -> str:
     """The review command, as fleet_console: the only role that may decide.
 

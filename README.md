@@ -803,3 +803,226 @@ It now uses the same LATERAL, shows a `runs` column, and sums **every** run's
 cost rather than the latest, which is the same understatement
 `decision_outcomes` refuses.
 
+
+---
+
+# Precedent, V1 — the layer reads its own record
+
+Fleet recorded twelve decisions and six briefs before anything read any of it
+back. `decision_log` says what was chosen and why; `decision_outcomes` derives
+task status and cost. Nothing consulted either. **The distinction being closed
+is between a trace and a lesson:** a trace lets you replay what happened, and
+Fleet had traces.
+
+Two halves. The derivation is finished in `outcomes.py`; the cycle states the
+record in `proposer/precedent.py` before it ranks anything.
+
+## The reach fix is the largest part, and it needed no new source
+
+`decision_outcomes` joins `tasks` on `decision_log.task_id`. 013 records the
+link the other way round — the approval surface writes
+`candidates.approval_decision_id` and fills in `spec_task_id` and
+`work_task_id` as the tasks are created — and the view has never traversed it.
+
+On the live record that is the difference between one decision reading as an
+unknown and reading as **six tasks with three failures in them**. Following
+both routes takes reach from 7 decisions and 7 tasks to **8 and 13**.
+
+`decision_reach.v1.sql` returns one row per (decision, linked task) and labels
+which route found it. They are not the same claim: `DIRECT` is a task somebody
+named when recording the decision, `CANDIDATE` is a task the approval surface
+created from it.
+
+**Twelve of twenty decisions still cite nothing at all** — no proposal, no
+issue, no task — and for those no outcome is derivable by any route. That is
+printed rather than absorbed into a denominator.
+
+## Merged: the status column and the repository are two claims
+
+`tasks.status = 'MERGED'` is a word a person typed. `run_steps.payload` carries
+the commits, so git can be asked independently whether the work is in the
+task's base branch — preferring the merge commit over the branch tip, for the
+reason below. **`MergeEvidence` returns both and never collapses
+them.** A task marked MERGED whose patch is not in its base is the finding —
+the merge did not happen, or it happened onto something else, or the branch was
+rebuilt and the recorded sha is not what landed — and none of those is visible
+from either source alone.
+
+Two things the obvious version gets wrong, both of them live on this record:
+
+* **The baseline comes from `tasks.base_branch`, never from a constant.** The
+  platform's tasks are based on `main`; fleet's seven are based on
+  `track-2-foundation`, which has no remote-tracking ref, and its one `main`
+  task is against a repository whose remote branch is `master`. Hardcoding
+  `origin/main` answers NO_BASELINE for eight of twelve tasks and reads like a
+  data problem rather than a wrong constant.
+* **A local ref answers a weaker question and is labelled.** "In `origin/main`"
+  is a claim about the shared repository; "in the local `track-2-foundation`"
+  is a claim about this checkout, which nobody else can see. Substituting the
+  second for the first is how work that exists only on this host reads as
+  landed.
+
+Where git cannot answer — no sha recorded, no checkout, an unfetched object —
+the result is `computable = False` and **never a disagreement**. Absence of
+evidence must not read as evidence of contradiction.
+
+## Deployed: `console.deploys` already had this right
+
+No run reaches DEPLOYED, deliberately, so the database cannot answer it. The
+drift state files can, and `console/deploys.py` is the only thing on this host
+that parses them. `outcomes.py` imports it rather than copying it — a second
+copy would be a second definition to drift, which is the trade this codebase
+takes every time. If a third caller appears, lift the module to the root.
+
+**The frontend is why the routing matters and not just the plumbing.** The
+frontend and the API share a repository, so a merged frontend commit *is* an
+ancestor of the running API's commit — while `drift-frontend.state` reads
+`UNKNOWN`, because that container carries no `GIT_SHA` and is not instrumented.
+Asking git one global question answers SHIPPED. The truthful answer is that
+nobody has looked. So every task is routed through `GOVERNED_BY` to the
+deployment that governs it, and only a fresh `OK` may support a claim.
+
+Ancestry is carried beside the verdict as corroboration and **never promoted
+into it** — a repository on this host knows nothing about what a container is
+running. A reversion that promotes it fails
+`test_ancestry_never_overrides_the_verdict`.
+
+Today: of 13 linked tasks, **2 verified in a running container, 1 cannot be
+said, 10 governed by nothing that deploys.** The drift files hold the current
+sha and a `since`, no history, so the answerable question is "is this in what
+is running now", never "was it deployed at the time".
+
+## Whether anything broke afterwards is UNCOMPUTED, and that is the answer
+
+The query is one predicate — `issues.first_seen > decided_at` — and it returns
+zero for every decision in the log. **The zero is worthless.** Two detectors
+are registered, both on `deadly_digital`, watching analytics order
+reconciliation and detector liveness. The one issue ever recorded predates
+every decision. The decisions changed CI configuration, documentation, revenue
+routes and a frontend page, and nothing observes any of that.
+
+So the count is **not computed at all**, rather than computed and hedged. The
+reason names the detectors and their product, because the finding is the shape
+of the observing surface and not the state of the code. A clean bill from
+detectors watching something else is the "plausible brief" failure
+`specs/daily-brief.md` §0 exists to prevent, one system over.
+
+## The proposer reads it, and that is allowed only because it cannot act on it
+
+`010` refuses `fleet_detector_reader` — the identity the cycle reads track 1
+with — any sight of `decision_log`: the layer being graded does not see the
+grade. The cycle now opens a **third connection** as the detector identity 012
+already granted the log to, which can read it and write nothing anywhere.
+
+That keeps the identity half of 010's rule and gives up the process half, and
+saying otherwise would be dishonest: the cycle process now holds its own record
+in memory. What replaces the half given up is structural.
+
+> **Precedent is an output, never an input.**
+
+`rank()` is not passed it, `findings.compute()` has already run by the time it
+is fetched, and the suppression loop does not consult it. A proposer that
+ranked on its own approval history would be optimising for approval rather than
+for what is true, which is exactly what the refusal was guarding.
+
+**That is the condition the feature was allowed under, so it is proven rather
+than asserted.** Four cases in `tests/revert_guards.py`: feed the total into the
+ranking, feed the rejection count into it, stop reading the log, widen `rank()`'s
+signature. All four fail their test.
+
+**The first version of that test could not catch the first two.** It seeded one
+finding, and a one-item list sorts identically in every order; and its two
+worlds differed only in the total, 1 and 7, both odd, so a reversion keyed on
+`total % 2` sorted them the same way and passed. The crowded fixture — eight
+findings against a five-item cap, so order is observable — and the two worlds
+differing on **every** scalar precedent exposes are both there because the
+reversion script reported it. A test whose world cannot express the failure is
+not a guard.
+
+## What it would take to be wrong
+
+The facts are counts over rows that exist. The hazard is not that they are
+false, it is that a record this size is not representative of anything, and a
+true sentence read as a pattern misleads harder than a false one. Four guards,
+all printed:
+
+* **`basis:` under every block** — how many rows, over what span, how many
+  backfilled, how many with no derivable outcome. The size of the record sits
+  in the same place as the claim.
+* **Zero rejections is printed under EVERY approval sentence, not once at the
+  top.** 0 of 20, and 010 exists because "every rejection Fleet has ever
+  produced left no trace at all". A log that has recorded none since is either
+  unbroken agreement or a log still not receiving them, and nothing in it
+  distinguishes those. Every count in those blocks is a count over approved
+  decisions — only an approval produces a task — so each can be read as "this
+  is how decisions turn out" by someone who never sees the missing half. **The
+  repetition is the mechanism.** A caveat stated once is a caveat scrolled past.
+* **Below `precedent.compare_floor` a group is listed, not compared.** The
+  counts still print; the summarising sentence does not. `dd-trustworthy`'s four
+  linked tasks are below it today. In `cycle.yaml` because it is a judgement and
+  judgements get retuned.
+* **`UNCOMPUTED` is reachable and fires.** The regression claim is refused every
+  day; an empty log refuses the whole block; an unreadable log degrades to a
+  reason rather than killing the morning. A guard that can never fire is
+  decoration.
+
+**No rates, no percentages, no trend, no interval.** Twelve or twenty decisions
+is a record you read, not a distribution you sample.
+
+## A correction: the merge commit was never discarded
+
+An earlier note in this section said `console/merge.py` computes
+`base_sha_after`, verifies the push against it and then discards it. **That was
+wrong.** `merge.py` returns it on `MergeOutcome`, and `console/app.py:351` puts
+it on the `HUMAN_DECISION` step as `merge.merge_commit`, inside the same
+transaction as the status change. All four merged tasks on the live record
+carry it, alongside `base_before`, `branch_tip`, `remote_sha`, `pushed` and
+`push_verified`.
+
+The mistake came from reading `merge.py` in isolation, grepping it and
+`approve.py` for a write, finding none, and concluding the value was dropped —
+without opening the caller. **A module that returns a value has not discarded
+it; only its callers can do that.**
+
+What was true is the part that mattered: nothing *read* it. The derivation
+asked git about `patch_commit_sha`, the branch tip, which is the weaker
+question. That is now fixed.
+
+## Three commits, and only one of them is the merge
+
+    patch_commit_sha   what the AGENT wrote — the branch tip, PATCH_PROPOSED
+    merge_commit       what LANDED — base_sha_after, verified against the
+                       remote before any verdict was written, HUMAN_DECISION
+    base_before        where the base stood before the operation
+
+A branch tip that is an ancestor of `main` is **consistent with** the merge and
+does not identify it: the same tip is an ancestor after a merge, after a
+cherry-pick, and after somebody else merged the branch. The merge commit is the
+fact. `choose_sha` prefers it and `sha_kind` reports which question was
+answered, so an inference never reads as a fact. Today 3 of 5 merged tasks can
+be answered from the merge commit; task 5's merges predate this path and it
+falls back to the tip.
+
+**`already_merged` is part of reading the field, and the trap is live.**
+`merge_commit` is `base_sha_after` — the base branch *after* the operation — and
+when the branch was already in the base there was no operation, so the sha is
+simply where the base stood. Task 1 carries `already_merged: true` with a
+`merge_commit` of `63130ad7`, which is **"Merge branch
+'docs/backend-gate-findings'"** and has nothing to do with it. Used
+unconditionally, the field credits a task with another branch's merge. Two
+guards in `revert_guards.py` hold both halves of the rule.
+
+## Files
+
+    outcomes.py                              merged (git) and deployed (drift)
+    proposer/precedent.py                    the facts, the basis, the floor
+    proposer/queries/decision_precedent.v1.sql   the shape of the record
+    proposer/queries/decision_reach.v1.sql       both routes, and both commits
+    proposer/queries/observing_surface.v1.sql    why regressions are refused
+    tests/test_precedent.py                  14 tests
+    tests/test_outcomes.py                   13 tests
+    tests/revert_guards.py                   30 guards, all proven
+
+No migration, no new dependency, no write anywhere, and nothing merges.
+`decision_log` and `decision_outcomes` are read-only here and `010` is
+untouched.

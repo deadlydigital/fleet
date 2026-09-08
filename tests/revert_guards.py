@@ -148,6 +148,120 @@ CASES = [
      'return base_config.require("FLEET_CONSOLE_READER_DSN")',
      'return base_config.require("FLEET_CONSOLE_DSN")',
      "tests/test_console_decide.py::test_the_reader_connection_cannot_write"),
+
+    # ---- precedent: the condition on which the proposer may read the log ----
+    #
+    # 010 refuses the proposal layer's read identity any sight of
+    # `decision_log`, so that a layer cannot learn what gets approved and
+    # propose that instead. The cycle now reads it on a third connection, and
+    # the ONLY thing standing in for that refusal is that the reading never
+    # reaches the ranking. These four are that claim, proven rather than
+    # asserted.
+    #
+    # The first version of the test could not catch the first two: it seeded
+    # one finding, and a one-item list sorts identically in every order. The
+    # crowded fixture and the two worlds differing on every scalar are both
+    # here because of what this script reported.
+    ("precedent does not reach the ranking (by total)",
+     "proposer/cycle.py",
+     "    ordered = sorted(fresh, key=lambda f: rank(f, objectives))",
+     "    _b = (result.precedent.total if result.precedent else 0) % 2\n"
+     "    ordered = sorted(fresh, key=lambda f: rank(f, objectives),\n"
+     "                     reverse=bool(_b))",
+     "tests/test_precedent.py::test_precedent_cannot_change_what_is_proposed"),
+
+    ("precedent does not reach the ranking (by rejections)",
+     "proposer/cycle.py",
+     "    ordered = sorted(fresh, key=lambda f: rank(f, objectives))",
+     "    _b = result.precedent.rejected if result.precedent else 0\n"
+     "    ordered = sorted(fresh, key=lambda f: rank(f, objectives),\n"
+     "                     reverse=bool(_b))",
+     "tests/test_precedent.py::test_precedent_cannot_change_what_is_proposed"),
+
+    ("the cycle actually reads the log",
+     "proposer/cycle.py",
+     "    result.precedent = _read_precedent(precedent_dsn, cycle_config)",
+     "    pass",
+     "tests/test_precedent.py::test_precedent_cannot_change_what_is_proposed"),
+
+    ("rank() is never handed precedent",
+     "proposer/cycle.py",
+     "def rank(finding: Finding, objectives: Objectives):",
+     "def rank(finding: Finding, objectives: Objectives, precedent=None):",
+     "tests/test_precedent.py::test_rank_cannot_reach_precedent_because_it_is_not_given_any"),
+
+    # ---- outcomes: the two ways the obvious derivation goes wrong ----------
+    ("merged status and git ancestry are both carried",
+     "outcomes.py",
+     "        return self.status_says_merged != (self.ancestry == IN_MAIN)",
+     "        return False",
+     "tests/test_outcomes.py::TestMergeEvidenceCarriesBothClaims::"
+     "test_a_commit_that_never_landed_but_reads_merged_is_the_finding"),
+
+    ("an unreadable git answer is not a disagreement",
+     "outcomes.py",
+     "        if not self.computable:\n            return False",
+     "        if not self.computable:\n            pass",
+     "tests/test_outcomes.py::TestMergeEvidenceCarriesBothClaims::"
+     "test_an_unreadable_answer_is_never_a_disagreement"),
+
+    ("the baseline comes from the task, not a constant",
+     "outcomes.py",
+     "    base_branch = base_branch or \"main\"",
+     "    base_branch = \"main\"",
+     "tests/test_outcomes.py::TestTheBaselineComesFromTheData::"
+     "test_the_task_base_branch_is_what_is_compared"),
+
+    ("a local baseline is labelled as local",
+     "outcomes.py",
+     "    local_note = (\" (a LOCAL branch on this host, not the shared repository)\"\n"
+     "                  if is_local else \"\")",
+     "    local_note = \"\"",
+     "tests/test_outcomes.py::TestTheBaselineComesFromTheData::"
+     "test_a_local_branch_answers_a_weaker_question_and_says_so"),
+
+    ("git ancestry never overrides the deploy verdict",
+     "outcomes.py",
+     "    return DeployEvidence(verdict, why, in_running)",
+     "    if in_running:\n        return DeployEvidence(\"SHIPPED\", why, in_running)\n"
+     "    return DeployEvidence(verdict, why, in_running)",
+     # Pointed at the NON-OVERRIDE test, not the frontend one. The real
+     # frontend state carries no sha at all -- its `detail` is a sentence
+     # explaining why -- so `in_running` is None there and a reversion that
+     # promotes ancestry into the verdict cannot fire. The frontend test
+     # proves the routing; this proves the precedence. Found by this script.
+     "tests/test_outcomes.py::TestDeployEvidence::"
+     "test_ancestry_never_overrides_the_verdict"),
+
+    # ---- precedent: the caveat and the floor -------------------------------
+    ("the zero-rejection caveat is under every approval block",
+     "proposer/precedent.py",
+     "                if fact.approval_claim and self.has_no_rejections:",
+     "                if fact.key == \"shape\" and self.has_no_rejections:",
+     "tests/test_precedent.py::TestTheZeroRejectionCaveat::"
+     "test_it_appears_under_every_approval_derived_block"),
+
+    ("the merge commit is preferred over the branch tip",
+     "outcomes.py",
+     "    if merge_commit and not already_merged:\n"
+     "        return merge_commit, MERGE_COMMIT",
+     "    if False:\n        return merge_commit, MERGE_COMMIT",
+     "tests/test_outcomes.py::TestWhichCommitIsAskedAbout::"
+     "test_the_merge_commit_is_preferred_over_the_branch_tip"),
+
+    ("already_merged refuses the recorded merge sha",
+     "outcomes.py",
+     "    if merge_commit and not already_merged:",
+     "    if merge_commit:",
+     "tests/test_outcomes.py::TestWhichCommitIsAskedAbout::"
+     "test_already_merged_refuses_the_recorded_sha"),
+
+    ("a thin group is listed, not compared",
+     "proposer/precedent.py",
+     "        if len(rows) < floor:",
+     "        if False:",
+     "tests/test_precedent.py::TestBelowTheFloorAGroupIsListedNotCompared::"
+     "test_a_thin_group_keeps_its_counts_and_loses_the_comparison"),
 ]
 
 

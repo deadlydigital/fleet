@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """Entrypoint: python run_cycle.py [--dry-run]
 
-The daily observation cycle. Reads track 1 as fleet_detector_reader, writes
-proposals as fleet_proposer, and does nothing else. No model is called, no
-row outside proposals and proposal_evidence is written, and deadly_digital
-is not touched at all -- neither role can reach it.
+The daily observation cycle. Reads track 1 as fleet_detector_reader, reads
+the decision log as dd_detector_login, writes proposals as fleet_proposer,
+and does nothing else. No model is called, no row outside proposals and
+proposal_evidence is written, and deadly_digital is not touched at all --
+none of the three roles can reach it.
+
+THE THIRD READ IS PRECEDENT, AND IT IS AN OUTPUT. The log is stated above
+the ranking and never given to it: `rank()` is not passed it and
+`findings.compute()` has already run by the time it is fetched. 010 refuses
+fleet_detector_reader any sight of the log precisely so that a layer cannot
+learn what gets approved and propose that instead, and that refusal stands
+-- the read side of this layer still cannot see it and the write side
+certainly cannot. What replaces the process-level half of it is the
+structural property, which is proven in tests/revert_guards.py rather than
+promised here.
 
 Exit codes:
     0  the cycle completed, whether or not it had anything to say

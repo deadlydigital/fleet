@@ -26,18 +26,20 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 import psycopg
 from psycopg.types.json import Json
 
 from . import config, detector_adapter, findings as findings_module
+from . import precedent as precedent_module
 from .adapter import AdapterOutput
 from .detector_adapter import DetectorsAdapter
 from .findings import KIND_RISK, Finding, FindingRun
 from .history import ProposalHistory
 from .objectives import Objectives, load as load_objectives
+from .precedent import Precedent
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +66,10 @@ class CycleResult:
     skipped: list[tuple[str, str]] = field(default_factory=list)
     written: list[int] = field(default_factory=list)
     dry_run: bool = False
+    #: What the decision log says, read BEFORE ranking and never given to it.
+    #: See proposer/precedent.py and
+    #: tests/test_precedent.py::test_precedent_cannot_change_what_is_proposed.
+    precedent: Precedent | None = None
 
 
 def validate_config(cycle_config: dict[str, Any], objectives: Objectives) -> None:
@@ -124,6 +130,7 @@ def _as_risk_if_unmapped(finding: Finding) -> Finding:
 
 
 def run_cycle(*, reader_dsn: str | None = None, proposer_dsn: str | None = None,
+              precedent_dsn: str | None = None,
               cycle_config: dict[str, Any] | None = None,
               objectives: Objectives | None = None,
               dry_run: bool = False) -> CycleResult:
@@ -140,6 +147,23 @@ def run_cycle(*, reader_dsn: str | None = None, proposer_dsn: str | None = None,
     now = out.fetched_at
     result = CycleResult(cycle_id=uuid.uuid4(), started_at=now,
                          adapter_output=out, dry_run=dry_run)
+
+    # BEFORE ANYTHING IS RANKED, AND ON ITS OWN CONNECTION.
+    #
+    # A third connection, as the detector identity 012 already granted the
+    # log to. `fleet_detector_reader` -- the identity the block above reads
+    # track 1 with -- is still refused it by 010, and `fleet_proposer` still
+    # cannot read anything at all. What this gives up is that the cycle
+    # PROCESS now holds its own record in memory, and what replaces it is
+    # that the record is an output: nothing below reads `result.precedent`,
+    # `rank()` is not given it, and `findings.compute()` ran before it was
+    # even fetched. That is asserted, not promised -- see
+    # tests/test_precedent.py.
+    #
+    # A failure to read it is not a failure of the cycle. The morning's
+    # findings do not depend on it, and refusing to propose because the log
+    # was unreachable would make an optional reading load-bearing.
+    result.precedent = _read_precedent(precedent_dsn, cycle_config)
 
     run: FindingRun = findings_module.compute(out, history, objectives,
                                               cycle_config, now)
@@ -168,6 +192,17 @@ def run_cycle(*, reader_dsn: str | None = None, proposer_dsn: str | None = None,
         result.written = write(result.proposed, result.cycle_id, proposer_dsn)
 
     return result
+
+
+def _read_precedent(dsn: str | None, cycle_config: dict[str, Any]) -> Precedent | None:
+    try:
+        return precedent_module.read(dsn or config.precedent_dsn(),
+                                     cycle_config=cycle_config)
+    except Exception as exc:                       # noqa: BLE001 - see above
+        log.warning("precedent unavailable: %s", exc)
+        return precedent_module.Precedent(
+            read_at=datetime.now(timezone.utc), read_as="unread",
+            unavailable_reason=f"the decision log could not be read: {exc}")
 
 
 def write(proposals: Sequence[Finding], cycle_id: uuid.UUID,
@@ -242,6 +277,10 @@ def report(result: CycleResult, objectives: Objectives) -> str:
         lines.append("STALE READINGS -- no finding was computed from these:")
         for reading in stale:
             lines.append(f"  {reading.describe()}")
+
+    if result.precedent is not None:
+        lines.append("")
+        lines.extend(result.precedent.render())
 
     lines.append("")
     lines.append(f"{len(result.computed)} findings computed, "

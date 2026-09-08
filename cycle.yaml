@@ -62,6 +62,19 @@ findings:
   coverage_gap:
     min_age: 1 days
 
+# Reading the decision log before ranking. Facts about the record, never an
+# input to the ranking -- see proposer/precedent.py and the test that holds
+# that line.
+precedent:
+  # Below this many linked tasks a group is LISTED, not compared: the counts
+  # still print and the summarising sentence does not. A guess, in the way
+  # the settle lag and the approval batch cap are guesses, and here for the
+  # same reason they are -- twelve decisions is a record you read, and a
+  # sentence of the form "4 of 8 merged" over four rows is a pattern claim
+  # the record cannot support. Raising it makes the cycle quieter and more
+  # honest; lowering it makes it chattier and less.
+  compare_floor: 6
+
 # Which objective a finding serves. Track 1 keeps severity out of detector
 # code for this reason: the mapping is a judgement, judgements get retuned,
 # and a retune should be a data change.
