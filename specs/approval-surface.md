@@ -278,6 +278,20 @@ migration will be raised on the morning something needs longer."*
    — a batch that cannot be afforded should be refused while you are looking at
    it, not discovered half-built at 3am. The surface refuses to queue when
    `SUM(est_cost_gbp)` of the batch exceeds what is left.
+
+   **BUILT 8 Sep 2026 as `014_monthly_credit.sql`, with two departures from
+   this paragraph.** First, the reservation is `max_cost_gbp`, not
+   `est_cost_gbp`: two of the eight settled runs on this host landed at exactly
+   their `max_cost_gbp`, because `settle_model_budget()` refuses an actual above
+   the reservation and settles at the bound — so an estimate calibrated against
+   settled figures is calibrated against numbers already clipped at the cap.
+   `est_cost_gbp` stays a display field. Second, "what is left" needs a pool
+   figure and nothing on this host can read one, so it is a recorded human
+   reading in `model_credit_pool` carrying its source and when it was read;
+   when no reading exists for the month, every consumer **refuses** rather than
+   assuming. That is where a ceiling parts company with §2.9's AWS claim: the
+   brief prints UNCOMPUTED because a reader supplies the judgement, and a
+   ceiling is consulted precisely when nobody is reading.
 3. **Per task.** `max_cost_gbp` is already `NOT NULL CHECK (> 0)` and
    `timeout_seconds` is already ceilinged at 3600. Nothing to add; named so it
    is not re-solved.

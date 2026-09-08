@@ -531,6 +531,19 @@ CEILINGS = """
 """
 
 
+#: The month's credit position, or its refusal to state one. Read from the
+#: database rather than recomputed here for the same reason CEILINGS is: a page
+#: that did its own arithmetic would disagree with the trigger, and would
+#: disagree silently. The row is COMPUTED with figures or UNCOMPUTED with a
+#: reason and no figures, and the template must branch on that rather than
+#: printing whatever is in remaining_gbp.
+MONTH_CREDIT = "SELECT * FROM fleet_month_credit()"
+
+
+def month_credit() -> dict[str, Any] | None:
+    return db.one(MONTH_CREDIT)
+
+
 def candidates_open() -> list[dict[str, Any]]:
     return db.rows(CANDIDATES_OPEN)
 

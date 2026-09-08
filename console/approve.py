@@ -37,19 +37,26 @@ class ApprovalRefused(Exception):
     """The batch was not written. The message is shown to the reviewer."""
 
 
-def _draft_spec_contract() -> Dict[str, Any]:
-    """The stored contract for a draft-spec task.
+def _draft_spec_contract() -> tuple[Dict[str, Any], float, int]:
+    """The stored contract for a draft-spec task, and the limits beside it.
 
     Read from contracts/draft-spec.yaml at approval time rather than embedded,
     so a contract change does not need a code change -- and frozen into the
     task row, because the database freezes a contract once the task is RUNNING
     and the agent must not be able to change what was asked.
+
+    max_cost_gbp and timeout_seconds come from the same file rather than being
+    written here as literals. They used to be 2.00 and 1800 inline, which
+    happened to match the contract and would have stopped matching it silently
+    -- and max_cost_gbp is no longer only a per-task cap. Since 014 it is the
+    number the monthly ceiling reserves against, so a copy that drifts low
+    would let a batch through against a pool it cannot actually afford.
     """
     import yaml
     from . import config
     path = config.PROJECT_ROOT / "contracts" / "draft-spec.yaml"
     data = yaml.safe_load(path.read_text()) or {}
-    return {
+    contract = {
         "work_type": data["work_type"],
         "writable_paths": data["writable_paths"],
         "protected_paths": data["protected_paths"],
@@ -57,6 +64,7 @@ def _draft_spec_contract() -> Dict[str, Any]:
         "worktree_links": data.get("worktree_links", {}),
         "max_diff_lines": data["max_diff_lines"],
     }
+    return contract, float(data["max_cost_gbp"]), int(data["timeout_seconds"])
 
 
 def _spec_md(cand: Dict[str, Any]) -> str:
@@ -171,7 +179,49 @@ def approve_batch(*, reason: str, approve_ids: List[int],
                 "queue deliberately. Let some drain, or raise the depth in a "
                 "migration.")
 
-        contract = _draft_spec_contract()
+        contract, task_max_cost, task_timeout = _draft_spec_contract()
+
+        # THE THIRD CEILING (spec section 6, ceiling 2; built in 014).
+        #
+        # Checked here AND enforced by a trigger on `tasks`, the same pairing
+        # the queue depth already has. The trigger is what makes it a ceiling
+        # rather than a convention -- it fires for any caller, including the
+        # direct inserts that exist because this function only makes draft-spec
+        # tasks. This pre-check is what makes the refusal a sentence the
+        # reviewer can act on instead of a constraint violation arriving as a
+        # 500.
+        #
+        # Reserved at max_cost_gbp, NOT at the candidate's est_cost_gbp, which
+        # is why est_cost_gbp is still only displayed. Two of the eight settled
+        # runs on this host landed at exactly their max_cost_gbp, because
+        # settle_model_budget() refuses an actual above the reservation and
+        # settles at the bound. An estimate calibrated against figures that are
+        # themselves clipped at the cap under-counts precisely the runs worth
+        # counting.
+        if approve_ids:
+            credit = conn.execute("SELECT * FROM fleet_month_credit()").fetchone()
+            if credit["status"] == "UNCOMPUTED":
+                raise ApprovalRefused(
+                    "The monthly credit position is unknown, so nothing can be "
+                    "approved. " + credit["uncomputed_reason"] + " This refuses "
+                    "rather than assuming, because the pool does not roll over "
+                    "and a batch approved against a number nobody read is the "
+                    "one mistake this ceiling exists to prevent.")
+            wanted = task_max_cost * len(approve_ids)
+            if wanted > credit["remaining_gbp"]:
+                raise ApprovalRefused(
+                    f"£{credit['remaining_gbp']:.2f} remains of the "
+                    f"£{credit['pool_gbp']:.2f} pool for "
+                    f"{credit['period_month']:%Y-%m} "
+                    f"(£{credit['committed_gbp']:.2f} already committed, "
+                    f"counting queued and running tasks at what they may "
+                    f"spend). {len(approve_ids)} draft-spec task(s) at "
+                    f"£{task_max_cost:.2f} each would need £{wanted:.2f}. "
+                    "Tick fewer, let some drain, or record a new reading if "
+                    "the pool has actually changed — the figure was read at "
+                    f"{credit['read_at']:%Y-%m-%d %H:%M} from "
+                    f"{credit['source']}.")
+
         decision_id = None
 
         if approve_ids:
@@ -201,7 +251,8 @@ def approve_batch(*, reason: str, approve_ids: List[int],
                 " objective_ref) VALUES (%s,%s,'fleet','track-2-foundation',"
                 " %s,%s,%s,%s)",
                 (f"Draft spec: {c['title']}"[:200], _spec_md(c),
-                 json.dumps(contract), 2.00, 1800, c.get("objective_ref")))
+                 json.dumps(contract), task_max_cost, task_timeout,
+                 c.get("objective_ref")))
             task_id = conn.execute(
                 "SELECT currval('tasks_id_seq') AS id").fetchone()["id"]
             conn.execute(

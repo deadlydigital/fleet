@@ -174,3 +174,141 @@ class TestTheCeilings:
         c = console.execute("SELECT disposition FROM candidates WHERE id=%s",
                             (cid,)).fetchone()
         assert c["disposition"] == "PENDING"
+
+
+class TestTheMonthlyCredit:
+    """The third ceiling (spec §6 ceiling 2, built in 014).
+
+    The pool is not readable from this host, so the figure is recorded by hand.
+    Everything here is about what happens when it is absent, wrong, or nearly
+    used up — a ceiling only ever fails by permitting.
+    """
+
+    def _pool(self, admin, gbp, source="test"):
+        admin.execute("DELETE FROM model_credit_pool"
+                      " WHERE period_month = date_trunc('month', now())::date")
+        if gbp is not None:
+            admin.execute(
+                "INSERT INTO model_credit_pool (period_month, pool_gbp, source,"
+                " read_at) VALUES (date_trunc('month', now())::date,%s,%s,now())",
+                (gbp, source))
+
+    def test_no_reading_refuses_the_batch_rather_than_assuming_a_number(
+        self, console, admin
+    ):
+        """The one that matters. An absent pool is a refusal, never a default.
+
+        This is where the design differs from the brief, which prints the AWS
+        figure as UNCOMPUTED and lets a reader supply the judgement. A ceiling
+        is consulted when nobody is reading, so it has nothing to fall back on.
+        """
+        self._pool(admin, None)
+        b = _batch(console)
+        cid = _cand(console, b)
+
+        with pytest.raises(approve.ApprovalRefused, match="unknown"):
+            approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                                  not_now_ids=[], decided_by="test")
+
+        # Whole, like every other refusal here: nothing half-written.
+        c = console.execute("SELECT disposition FROM candidates WHERE id=%s",
+                            (cid,)).fetchone()
+        assert c["disposition"] == "PENDING"
+
+    def test_an_unknown_pool_reports_no_figures_at_all(self, console, admin):
+        """UNCOMPUTED carries a reason and NULLs, not a reason and a zero.
+
+        Zero is a number; every comparison against it quietly succeeds. NULL
+        makes a caller that forgot to check the status get a refusal it did not
+        write rather than an approval it did not mean.
+        """
+        self._pool(admin, None)
+        k = console.execute("SELECT * FROM fleet_month_credit()").fetchone()
+        assert k["status"] == "UNCOMPUTED"
+        assert k["pool_gbp"] is None
+        assert k["remaining_gbp"] is None
+        assert k["uncomputed_reason"]
+        # committed is derivable and is still reported: what is missing is the
+        # pool, not the spend, and blanking both would hide a real figure.
+        assert k["committed_gbp"] is not None
+
+    def test_a_batch_beyond_the_remaining_credit_is_refused(self, console, admin):
+        committed = console.execute(
+            "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
+        # Room for one draft-spec task at £2.00, and not for two.
+        self._pool(admin, committed + 3)
+        b = _batch(console)
+        ids = [_cand(console, b, "one"), _cand(console, b, "two")]
+
+        with pytest.raises(approve.ApprovalRefused, match="remains"):
+            approve.approve_batch(reason="r", approve_ids=ids, reject={},
+                                  not_now_ids=[], decided_by="test")
+
+        assert console.execute(
+            "SELECT count(*) AS n FROM tasks WHERE title LIKE 'Draft spec:%'"
+        ).fetchone()["n"] == 0
+
+    def test_a_batch_within_the_remaining_credit_is_queued(self, console, admin):
+        committed = console.execute(
+            "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
+        self._pool(admin, committed + 3)
+        b = _batch(console)
+        out = approve.approve_batch(
+            reason="one task fits", approve_ids=[_cand(console, b)], reject={},
+            not_now_ids=[], decided_by="test")
+        assert len(out["queued_task_ids"]) == 1
+
+    def test_a_queued_task_is_committed_money_before_it_spends_any(
+        self, console, admin
+    ):
+        """The window the whole ceiling exists for.
+
+        Five approved tasks have no model_calls and no reservations. A pool
+        checked against spend alone would approve five more, and the first
+        evidence would be the bill.
+        """
+        self._pool(admin, 10000)
+        before = console.execute(
+            "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
+        b = _batch(console)
+        approve.approve_batch(reason="r", approve_ids=[_cand(console, b)],
+                              reject={}, not_now_ids=[], decided_by="test")
+        after = console.execute(
+            "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
+
+        # £2.00 is the draft-spec contract's max_cost_gbp, and it is what a
+        # task reserves — not an estimate of what it will probably cost.
+        assert round(after - before, 2) == 2.00
+
+    def test_the_ceiling_is_on_tasks_and_not_only_in_the_surface(
+        self, console, admin
+    ):
+        """A direct insert is refused too.
+
+        approve_batch() only makes draft-spec tasks, so code tasks are inserted
+        directly — that has already happened on this host. A ceiling that only
+        the surface respected would not have been consulted at all.
+        """
+        self._pool(admin, None)
+        floor = console.execute(
+            "SELECT jsonb_agg(glob) AS g FROM protected_path_floor"
+            " WHERE repo='fleet'").fetchone()["g"]
+        contract = json.dumps({
+            "work_type": "research", "writable_paths": ["research/x.md"],
+            "protected_paths": floor, "verification": ["true"],
+            "max_diff_lines": 10})
+        with pytest.raises(Exception, match="credit is unknown"):
+            console.execute(
+                "INSERT INTO tasks (title, spec_md, repo, acceptance_contract,"
+                " max_cost_gbp) VALUES ('direct','x','fleet',%s,0.01)",
+                (contract,))
+
+    def test_the_spending_identity_cannot_write_its_own_ceiling(self, console):
+        """Same rule as a runner that cannot set MERGED on its own branch."""
+        p = console.execute(
+            "SELECT has_table_privilege('fleet_console','model_credit_pool','SELECT') AS r,"
+            " has_table_privilege('fleet_console','model_credit_pool','INSERT') AS w,"
+            " has_table_privilege('fleet_console','model_credit_pool','UPDATE') AS u"
+        ).fetchone()
+        assert p["r"] is True
+        assert p["w"] is False and p["u"] is False

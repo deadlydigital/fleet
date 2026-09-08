@@ -28,7 +28,37 @@
     <div class="big">{{ open_candidates|length }}</div>
     <div class="dim">open candidates</div>
   </div>
+  {# The month's credit, and the two states are rendered differently on
+     purpose. An UNCOMPUTED position prints no number at all: showing "£0" or a
+     dash where a figure belongs invites the reader to supply one, and the
+     whole argument of 014 is that a pool nobody read must not become a number
+     anybody trusts. #}
+  <div class="panel">
+    {% if credit and credit.status == 'COMPUTED' %}
+    <div class="big">£{{ '%.2f'|format(credit.remaining_gbp) }}</div>
+    <div class="dim">credit left this month, of
+      £{{ '%.2f'|format(credit.pool_gbp) }}</div>
+    {% else %}
+    <div class="big">unknown</div>
+    <div class="dim">credit left this month</div>
+    {% endif %}
+  </div>
 </div>
+{% if credit and credit.status == 'COMPUTED' %}
+<p class="dim">£{{ '%.2f'|format(credit.committed_gbp) }} committed — spend
+  already billed this month, plus every queued and running task counted at what
+  it <em>may</em> spend rather than at an estimate. Pool read
+  {{ credit.read_at.strftime('%Y-%m-%d %H:%M') }} from {{ credit.source }}.</p>
+{% elif credit %}
+<div class="note"><strong>The monthly credit position is unknown, so nothing
+  can be approved.</strong>
+  <p>{{ credit.uncomputed_reason }}</p>
+  <p class="dim">Nothing on this host can read the provider balance — the same
+  gap the brief carries for AWS billing. The brief prints UNCOMPUTED because a
+  reader supplies the judgement; a ceiling has no reader to fall back on, so it
+  refuses instead. £{{ '%.2f'|format(credit.committed_gbp) }} is committed this
+  month, which is derivable and is not the part that is missing.</p></div>
+{% endif %}
 {% if ceilings.queued_now >= ceilings.max_queued %}
 <div class="note"><strong>The queue is full.</strong>
   <p>Draft-spec tasks and the code tasks they produce share this queue

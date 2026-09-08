@@ -397,7 +397,8 @@ def candidates(request: Request):
                   batches=queries.candidate_batches_open(),
                   open_candidates=queries.candidates_open(),
                   decided=queries.candidates_decided(),
-                  ceilings=queries.ceilings())
+                  ceilings=queries.ceilings(),
+                  credit=queries.month_credit())
 
 
 @app.post("/candidates/approve")

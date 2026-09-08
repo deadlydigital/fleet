@@ -34,7 +34,8 @@ cd "$(dirname "$0")/.."
 MIGRATIONS=(001_v1_core 002_proposals 003_tasks 004_console_reader
             005_console_decisions 006_verdict_coverage 007_research_floor
             008_task_reclaim 009_task_reclaims 010_decision_log
-            011_proposal_product)
+            011_proposal_product 012_daily_brief 013_approval_surface
+            014_monthly_credit)
 SCRATCH="${TMPDIR:-/tmp}/fleet-drift-$$"
 LOCAL_DB="fleet_fromfiles"
 SOCKET="${PGHOST:-/var/run/postgresql}"
