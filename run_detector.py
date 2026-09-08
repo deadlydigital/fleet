@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 
 from detectors import base
+from detectors.aws_cost import AwsCostDetector
 from detectors.heartbeat import HeartbeatDetector
 from detectors.reconciliation import ReconciliationDetector
 from detectors.sentry import SentryDetector
@@ -24,6 +25,7 @@ DETECTORS = {
     ReconciliationDetector.key: ReconciliationDetector,
     HeartbeatDetector.key: HeartbeatDetector,
     SentryDetector.key: SentryDetector,
+    AwsCostDetector.key: AwsCostDetector,
 }
 
 

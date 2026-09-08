@@ -91,14 +91,6 @@ def _objectives_version() -> str:
 def _standing_gaps() -> List[Claim]:
     return [
         Claim.uncomputed(
-            "cost.aws.monthly_gbp",
-            "AWS spend against the 200 GBP/month objective",
-            reason=("no AWS credential on this host. `infra_costs` is readable "
-                    "and is NOT a substitute — it is what fleet recorded, not "
-                    "what Amazon charged, and presenting one as the other "
-                    "would be two systems agreeing on a number neither got "
-                    "from the biller")),
-        Claim.uncomputed(
             "ci.build_status",
             "whether the build is green",
             reason=("GitHub Actions is unreadable from this host: `gh` is not "
@@ -172,6 +164,115 @@ SELECT r.id, r.status, r.completed_at, r.window_end, r.error,
  ORDER BY r.window_end DESC
  LIMIT 1
 """
+
+
+# ---------------------------------------------------------------------------
+# AWS cost
+#
+# `cost-discipline` carried a STANDING UNCOMPUTED claim on every brief ever
+# written, because nothing on this host could read the bill. Cost Explorer
+# access closed that, and this reports what dd_aws_cost established.
+#
+# It reads the RUN, for the reason `_sentry_claims` does: a stale figure from
+# the last successful check, printed on a morning the check failed, is a true
+# number about a moment nobody asked about.
+#
+# WHAT IT CANNOT SAY, AND THIS IS A REAL LIMIT
+#
+# Below the ceiling the detector emits NO observation -- an observation
+# creates an issue, and an always-open issue for ordinary spend is noise. So
+# on a healthy month the brief can say the objective is being met and cannot
+# say by how much. The percent appears only once the ceiling is crossed,
+# which is the moment the number starts mattering. Reporting the daily figure
+# regardless would need somewhere to put a level that is not an issue, and
+# that is a table nobody has asked for yet.
+# ---------------------------------------------------------------------------
+
+AWS_DETECTOR = "dd_aws_cost"
+
+_AWS_RUN_SQL = """
+SELECT r.status, r.completed_at, r.error, r.subjects_failed,
+       reg.cadence + reg.grace AS allowance,
+       -- completed_at, not window_end. See _sentry_claims: settle_lag makes
+       -- the window legitimately old while the run is fresh, and this
+       -- detector's settle_lag is a full day.
+       now() - r.completed_at  AS age,
+       (SELECT max(o.magnitude) FROM observations o
+         WHERE o.detector_run_id = r.id
+           AND o.observation_type = 'AWS_SPEND_VS_CEILING') AS percent,
+       (SELECT max(o.evidence_sample ->> 'spend_quote') FROM observations o
+         WHERE o.detector_run_id = r.id
+           AND o.observation_type = 'AWS_SPEND_VS_CEILING') AS spend_quote
+  FROM detector_runs r
+  JOIN detector_registry reg
+    ON reg.detector_key = r.detector_key
+   AND reg.issue_key_version = r.issue_key_version
+   AND reg.product = r.product
+ WHERE r.detector_key = %(k)s
+   AND r.run_mode = 'SCHEDULED'
+   AND r.status <> 'RUNNING'
+ ORDER BY r.window_end DESC
+ LIMIT 1
+"""
+
+
+def _aws_cost_claims(r: S.Reader) -> List[Claim]:
+    key = "cost.aws.vs_ceiling"
+    try:
+        from proposer import config as pconfig
+        from proposer.objectives import load as load_objectives
+        ceiling = load_objectives(
+            pconfig.PROJECT_ROOT / "objectives-2026-Q4.yaml"
+        ).require("cost-discipline").ceiling
+        ceiling_text = ceiling.describe()
+    except Exception as exc:                                  # noqa: BLE001
+        return [Claim.uncomputed(
+            key, "AWS spend against the cost-discipline ceiling",
+            reason=f"the objectives file could not be read: {exc}")]
+
+    label = f"AWS spend against the {ceiling_text} ceiling"
+    name = "fleet:detector_runs/dd_aws_cost"
+    row = r.probe(name, S.row(_AWS_RUN_SQL, {"k": AWS_DETECTOR}))
+    if row is None:
+        failed = r.failed(name)
+        return [Claim.uncomputed(key, label, reason=failed or (
+            f"the {AWS_DETECTOR} detector has never completed a scheduled "
+            f"run, so nothing has read Cost Explorer. This is not a report "
+            f"that spend is within the ceiling"))]
+
+    status, completed_at, error, failed_subjects, allowance, age, percent, spend = row
+
+    if status != "OK":
+        detail = (error or "").strip() or "no error text was recorded"
+        return [Claim.uncomputed(key, label, reason=(
+            f"the newest {AWS_DETECTOR} run closed {status}: {detail[:240]}. "
+            f"A month with no recorded fx_rate reading lands here, and that "
+            f"is the detector refusing to compare dollars to pounds rather "
+            f"than a report that spend is fine"))]
+
+    if allowance is not None and age is not None and age > allowance:
+        return [Claim.uncomputed(key, label, reason=(
+            f"the newest {AWS_DETECTOR} run completed {_age(age)} ago, past "
+            f"its {_age(allowance)} cadence and grace"))]
+
+    if percent is None:
+        # Under the ceiling. A fact the run established, with no number
+        # behind it -- see the note above.
+        return [Claim.computed(
+            key, f"AWS spend is within the {ceiling_text} ceiling",
+            source=f"aws:cost-explorer via fleet:{AWS_DETECTOR}",
+            as_of=completed_at or _utcnow(),
+            value_text=f"under {ceiling_text}",
+            query_key="aws_cost_vs_ceiling", query_version=1)]
+
+    pct = int(percent)
+    statement = f"AWS spend is {pct}% of the {ceiling_text} ceiling"
+    if spend:
+        statement += f" ({spend} {ceiling.currency} month to date)"
+    return [Claim.computed(
+        key, statement, source=f"aws:cost-explorer via fleet:{AWS_DETECTOR}",
+        as_of=completed_at or _utcnow(), value_num=pct,
+        query_key="aws_cost_vs_ceiling", query_version=1)]
 
 
 def _sentry_claims(r: S.Reader) -> List[Claim]:
@@ -441,6 +542,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
                                 lambda c: _previous_values(c)) or {}
         claims += _fleet_claims(reader, last)
         claims += _sentry_claims(reader)
+        claims += _aws_cost_claims(reader)
         results += reader.results
 
     # A failure here must not lose the fleet claims already gathered, which is

@@ -1167,3 +1167,136 @@ differently from production tests a different program.
 Both were found by `revert_guards.py`, which also caught a third: a case aimed
 at a brief test whose fixture writes `detector_runs.error` directly and
 therefore never exercises `base.py`'s composition at all.
+
+---
+
+# dd_aws_cost — a pound ceiling measured against a dollar bill
+
+`cost-discipline` is 0.05 of the quarter and had **no evidence path at all**:
+the brief printed it UNCOMPUTED on every run it ever made. Cost Explorer read
+access closes that.
+
+## What the first of the month is, and why it is not an anomaly
+
+| 1 Sep 2026 | USD |
+|---|---:|
+| AWS Business Support+ | 29.00 |
+| Tax | 16.25 |
+| Route 53 (hosted zones) | 2.50 |
+| **recurring subtotal** | **47.75** |
+| ordinary day's usage | 6.88 |
+| **total** | **54.63** |
+
+It recurs — 1 Jun 76.01 (65.90 recurring), 1 Jul 77.62 (67.63), 1 Aug 74.89
+(64.82), 1 Sep 54.63 (47.75) — so a day-over-day detector fires on the 1st of
+every month, forever, and **a detector that fires every month is worse than
+none.**
+
+**The fix is not an exclusion list.** Business Support only appears from
+August; Tax swings between 16.25 and 65.13. Any list of "recurring services"
+is wrong within two months. The fix is that **the objective is monthly, so the
+subject is the month** — day-one charges stop being a spike and become part of
+a total. The whole class of problem disappears instead of being filtered.
+
+## The spend figure, corrected
+
+| month | USD |
+|---|---:|
+| Jun | 380.38 |
+| Jul | 390.78 |
+| **Aug** | **388.71** |
+| Sep (measured run rate) | **≈ 255** |
+
+September is much cheaper because a great deal was switched off: VPC
+108.65 → 88.26 → **1.74** (a NAT Gateway, by that shape), and ECS, ELB, Lambda,
+ElastiCache and CloudWatch all to **zero**. The run rate is $6.93/day plus
+$47.75 of monthly charges.
+
+**At $255/month the objective is decided by the exchange rate**: £204 at 1.25,
+£197 at 1.30, crossing £200 at about **1.278**. That is why the currency is not
+a rounding detail.
+
+## The objective now states its unit
+
+`objectives-2026-Q4.yaml` gained a machine-readable ceiling:
+
+```yaml
+    ceiling:
+      amount: 200
+      currency: GBP
+      period: month
+```
+
+The statement always said "200 GBP" in prose, which is enough for a person and
+nothing else — a detector had to parse a sentence or carry `200` as a literal,
+and a literal in the detector is the threshold living somewhere other than the
+objective that owns it. **`currency` is required and `load()` refuses a ceiling
+without it**, because an implied unit is one misreading away from a 25% error
+in the direction of looking fine.
+
+## The rate is a recorded reading, not a constant
+
+A hardcoded rate is precisely the stored number this system keeps deleting, so
+`fx_rate` is a **recorded human reading** on the same terms `014` set for the
+credit pool, and for the argument `014` already makes: a rate is not a decision
+anybody takes, it is a fact about the world that changes continuously, and
+freezing it in a function means a migration due monthly — which is a migration
+that gets rubber-stamped.
+
+**No reading for the month → the detector emits nothing and the brief says
+why.** It refuses rather than comparing two different units.
+
+**The direction is in the column name, not a label.** `USD/GBP = 1.27` is
+ambiguous — dollars per pound or pounds per dollar? The two are reciprocals and
+both read plausibly, so a column called `rate` beside a pair called `USD/GBP`
+is a 60% error waiting to happen. The column is **`quote_per_base`**: one unit
+of base buys this many units of quote, and conversion is always
+`amount_in_base * quote_per_base`. A test asserts the reciprocal would have
+read 162% where the correct answer is 100%.
+
+## Magnitude is percent of the ceiling, which is what keeps the rate out of the schema
+
+Banding on USD would put a dollar number in `routing_policy` standing in for a
+pound objective — a hardcoded rate hiding in a data table, the same defect as
+one in a function wearing a different hat. A percent has no currency in it, and
+computing it *requires* the reading.
+
+**100 MEDIUM, 120 HIGH, 150 CRITICAL. There is no early-warning band.** 100 is
+the objective itself; anything below it is a number nobody chose. Warning ahead
+of a breach needs a projection, a projection is growth detection, and growth
+detection is deferred until there is more than one month of history not
+distorted by the infrastructure just removed.
+
+**Consequence, stated rather than discovered:** this reports a breach, it does
+not predict one. And below the ceiling the brief can say the objective is being
+met but not by how much — an observation creates an issue, and an always-open
+issue for ordinary spend is noise. The percent appears once the ceiling is
+crossed, which is when it starts mattering.
+
+## A latent bug in the Sentry claim, found by building this
+
+Brief staleness was `now() - window_end`. A detector with a settle lag
+**deliberately** evaluates a window that is already old: `dd_aws_cost` has
+`settle_lag` of a full day, so its newest executable window closed ~2 days ago
+even when the run finished seconds ago — and the brief reported "past its
+cadence and grace" about a detector that had just succeeded.
+
+The freshness question is about the **run**, not the window, so both claims now
+measure `now() - completed_at`. `_sentry_claims` carried the same rule and the
+same latent bug; its `settle_lag` is five minutes, so it was invisible there and
+would have surfaced the day anyone raised it.
+
+## boto3 was undeclared
+
+Importable in the venv, absent from `requirements.txt`, and now load-bearing. A
+detector that works today and breaks on a clean rebuild is worse than one never
+written. Pinned at 1.43.89.
+
+## Waiting on
+
+An `fx_rate` reading for the current month, and `016` applied. `fleet-aws-cost.timer`
+(06:40 daily, before the 07:45 brief) is written and **not installed** until
+both — until then the detector cannot close a run OK and the brief reports the
+gap rather than a pass.
+
+Tests: `tests/test_aws_cost.py` (24), five reversion guards.

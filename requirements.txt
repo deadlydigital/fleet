@@ -7,3 +7,7 @@ Jinja2==3.1.6
 Pygments==2.19.1
 httpx==0.28.1
 python-multipart==0.0.20
+# Cost Explorer, for dd_aws_cost. Present in the venv but UNDECLARED until
+# 016 made it load-bearing -- a detector that works today and breaks on a
+# clean rebuild is worse than one that was never written.
+boto3==1.43.89

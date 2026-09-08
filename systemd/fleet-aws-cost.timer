@@ -1,0 +1,19 @@
+[Unit]
+Description=dd_aws_cost, daily
+Documentation=file:/home/ubuntu/fleet/README.md
+
+[Timer]
+Unit=fleet-detector@dd_aws_cost.service
+# 06:40. settle_lag is a full day, so the window this executes closed
+# yesterday and Cost Explorer has had a night to finish restating it. Before
+# the daily brief at 07:45, so the morning reads today's answer.
+OnCalendar=*-*-* 06:40:00
+AccuracySec=1m
+RandomizedDelaySec=0
+# NOT Persistent. Same rule as the other detectors: a missed slot cannot be
+# re-derived by running late, and month-to-date is read fresh each time
+# anyway.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

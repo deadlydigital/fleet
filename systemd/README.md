@@ -24,6 +24,15 @@ no information.
     sudo systemctl daemon-reload
     sudo systemctl enable --now fleet-sentry.timer
 
+`fleet-aws-cost.timer` (dd_aws_cost, 06:40 daily) is written and **not
+installed**, waiting on an `fx_rate` reading for the month and `016` applied.
+06:40 is before the 07:45 brief so the morning reads a fresh answer, and after
+a night in which Cost Explorer finishes restating yesterday.
+
+    sudo cp fleet-aws-cost.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now fleet-aws-cost.timer
+
 The observation cycle is a third unit, not installed and not enabled:
 
     sudo cp fleet-proposer-cycle.service fleet-proposer-cycle.timer \

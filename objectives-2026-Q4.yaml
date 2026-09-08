@@ -66,6 +66,26 @@ objectives:
     statement: >
       AWS under 200 GBP/month; neither venture carries cost it cannot justify.
     weight: 0.05
+    # THE CEILING, MACHINE-READABLE, WITH ITS UNIT STATED RATHER THAN IMPLIED.
+    #
+    # The statement above says "200 GBP" in prose. That is enough for a person
+    # and not enough for anything else: a detector had to either parse the
+    # sentence or carry 200 as a literal, and a literal in the detector is the
+    # threshold living somewhere other than the objective that owns it.
+    #
+    # `currency` is required and is the point of this block. Cost Explorer
+    # answers in USD; this objective is in GBP; the two differ by about 25%
+    # and September's spend lands either side of the ceiling depending only on
+    # which one is meant. An implied unit is one misreading away from being
+    # wrong by that margin, in the direction that says everything is fine.
+    #
+    # Changing `amount` retunes the detector. Changing `currency` without a
+    # matching fx_rate reading stops it emitting at all, which is the correct
+    # failure: it refuses rather than comparing two different units.
+    ceiling:
+      amount: 200
+      currency: GBP
+      period: month
     signals:
       - AWS monthly spend
       - AI API spend per useful outcome

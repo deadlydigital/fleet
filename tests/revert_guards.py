@@ -278,15 +278,23 @@ CASES = [
 
     ("the brief refuses a claim from a run that did not close OK",
      "brief/pass_.py",
-     '    if status != "OK":',
-     "    if False:",
+     '    if status != "OK":\n'
+     '        detail = (error or "").strip() or "no error text was recorded"\n'
+     '        who = ',
+     '    if False:\n'
+     '        detail = (error or "").strip() or "no error text was recorded"\n'
+     '        who = ',
      "tests/test_sentry_brief.py::TestAZeroIsNeverPrintedFromAReadThatDidNotHappen::"
      "test_a_stale_zero_is_not_printed_when_the_newest_run_failed"),
 
     ("the brief refuses a run older than cadence plus grace",
      "brief/pass_.py",
-     "    if allowance is not None and age is not None and age > allowance:",
-     "    if False:",
+     "    if allowance is not None and age is not None and age > allowance:\n"
+     "        return [Claim.uncomputed(\n"
+     "            key, label,",
+     "    if False:\n"
+     "        return [Claim.uncomputed(\n"
+     "            key, label,",
      "tests/test_sentry_brief.py::TestAZeroIsNeverPrintedFromAReadThatDidNotHappen::"
      "test_a_run_older_than_cadence_and_grace_is_not_todays_answer"),
 
@@ -306,6 +314,47 @@ CASES = [
      # that could not fail.
      "tests/test_sentry_detector.py::TestAFailedReadIsNeverAZero::"
      "test_an_unauthorised_token_fails_the_subject"),
+
+    # ---- aws cost: a pound ceiling against a dollar bill ------------------
+    ("a missing fx reading refuses rather than guessing a rate",
+     "detectors/aws_cost.py",
+     "        if row is None:\n            raise CostUnavailable(",
+     "        if False:\n            raise CostUnavailable(",
+     # Pointed at the test that reads the REASON. Without the guard the next
+     # line subscripts None and raises TypeError -- still a failed subject, so
+     # an assertion on PARTIAL alone cannot tell a refusal from a crash.
+     "tests/test_aws_cost.py::TestAMissingRateRefusesRatherThanGuesses::"
+     "test_the_refusal_names_the_month_and_the_pair"),
+
+    ("under the ceiling emits nothing",
+     "detectors/aws_cost.py",
+     "        if percent < 100:\n            return",
+     "        if percent < 100:\n            pass",
+     "tests/test_aws_cost.py::TestWhatItMeasures::"
+     "test_under_the_ceiling_emits_nothing"),
+
+    ("an empty Cost Explorer response is a failed read, not a zero bill",
+     "detectors/aws_cost.py",
+     "        if not buckets:",
+     "        if False:",
+     "tests/test_aws_cost.py::TestAFailedReadIsNeverAZeroBill::"
+     "test_an_empty_period_list_is_a_failed_read_not_a_zero_bill"),
+
+    ("a ceiling must declare its currency",
+     "proposer/objectives.py",
+     "    missing = [k for k in (\"amount\", \"currency\", \"period\") if not raw.get(k)]",
+     "    missing = [k for k in (\"amount\", \"period\") if not raw.get(k)]",
+     "tests/test_aws_cost.py::TestTheThresholdIsTheObjectives::"
+     "test_a_ceiling_without_a_currency_is_refused_at_load"),
+
+    ("brief staleness is measured from completed_at, not window_end",
+     "brief/pass_.py",
+     "       now() - r.completed_at  AS age,\n"
+     "       (SELECT max(o.magnitude) FROM observations o",
+     "       now() - r.window_end  AS age,\n"
+     "       (SELECT max(o.magnitude) FROM observations o",
+     "tests/test_aws_cost.py::TestTheBriefClaim::"
+     "test_a_settle_lag_does_not_make_a_fresh_run_read_as_stale"),
 
     ("a thin group is listed, not compared",
      "proposer/precedent.py",

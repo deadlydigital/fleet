@@ -23,11 +23,30 @@ WEIGHT_SUM_TOLERANCE = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
+class Ceiling:
+    """A spending limit an objective declares, with its unit stated.
+
+    `currency` is not optional and there is no default. A ceiling of "200"
+    with an assumed unit is the defect this class exists to prevent: the
+    biller answers in USD, this quarter's objective is in GBP, and the gap
+    between them is about 25% -- comfortably enough to move a figure from one
+    side of the line to the other while reading as precise.
+    """
+    amount: Decimal
+    currency: str
+    period: str
+
+    def describe(self) -> str:
+        return f"{self.amount} {self.currency}/{self.period}"
+
+
+@dataclass(frozen=True)
 class Objective:
     id: str
     statement: str
     weight: Decimal
     signals: tuple[str, ...]
+    ceiling: "Ceiling | None" = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +73,28 @@ class Objectives:
         return self.by_id[objective_ref]
 
 
+def _ceiling(path: Path, entry: dict[str, Any]) -> "Ceiling | None":
+    """Parse a ceiling block, REFUSING one that does not state its unit.
+
+    Raising rather than defaulting is the whole value of the block. A missing
+    currency is not a small omission to be filled in with the likely answer --
+    it is the one field whose absence makes the number mean two things.
+    """
+    raw = entry.get("ceiling")
+    if raw is None:
+        return None
+    missing = [k for k in ("amount", "currency", "period") if not raw.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"{path}: objective {entry['id']} declares a ceiling missing "
+            f"{', '.join(missing)}. A ceiling without a currency is a number "
+            f"whose unit has to be guessed, and guessing it wrong is a 25% "
+            f"error in the direction of looking fine.")
+    return Ceiling(amount=Decimal(str(raw["amount"])),
+                   currency=str(raw["currency"]).strip().upper(),
+                   period=str(raw["period"]).strip().lower())
+
+
 def load(path: Path | str | None = None) -> Objectives:
     if path is None:
         cycle = config.load_cycle_config()
@@ -75,7 +116,8 @@ def load(path: Path | str | None = None) -> Objectives:
         obj = Objective(id=entry["id"],
                         statement=" ".join(str(entry["statement"]).split()),
                         weight=weight,
-                        signals=tuple(entry.get("signals") or ()))
+                        signals=tuple(entry.get("signals") or ()),
+                        ceiling=_ceiling(path, entry))
         if obj.id in by_id:
             raise RuntimeError(f"{path}: objective {obj.id} declared twice")
         by_id[obj.id] = obj
