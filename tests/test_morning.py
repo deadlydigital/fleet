@@ -375,3 +375,44 @@ class TestTheTimerProbe:
         monkeypatch.setattr(morning.subprocess, "run",
                             lambda *a, **k: (_ for _ in ()).throw(OSError()))
         assert morning._timer_enabled() is None
+
+
+class TestAThreadIsNotInTwoSectionsAtOnce:
+    """"What I did" and "what's next" must not both claim the same work."""
+
+    def _thread(self, *steps):
+        t = morning.Thread(key="k", title="t", repo="r", objective_ref=None)
+        t.steps = list(steps)
+        return t
+
+    def test_an_approval_alone_is_not_something_that_got_done(self):
+        """Task 25: approved at 23:08, never ran, still QUEUED.
+
+        Its only in-window event is the reader's own approval. Listing it under
+        "what I did" claims work that has not happened, while it correctly also
+        appears under "what I'm doing next" — and one of those two has to be
+        wrong.
+        """
+        approved_at = NOW - timedelta(hours=2)
+        t = self._thread(
+            morning.Step(actor="FLEET", label="Proposed as a candidate"),
+            morning.Step(actor="HUMAN", label="You approved it",
+                         when=approved_at, status="APPROVED"),
+            morning.Step(actor="FLEET", label="Wrote a draft spec",
+                         when=None, status="QUEUED"))
+        assert t.progressed_since(NOW - timedelta(hours=6)) is False
+        assert morning.in_window([t], NOW - timedelta(hours=6)) == []
+
+    def test_a_thread_whose_task_finished_in_the_window_did_get_done(self):
+        t = self._thread(
+            morning.Step(actor="HUMAN", label="You approved it",
+                         when=NOW - timedelta(hours=5), status="APPROVED"),
+            morning.Step(actor="FLEET", label="Wrote a draft spec",
+                         when=NOW - timedelta(hours=1), status="FAILED"))
+        assert t.progressed_since(NOW - timedelta(hours=6)) is True
+
+    def test_work_that_finished_before_the_window_is_not_re_reported(self):
+        t = self._thread(
+            morning.Step(actor="FLEET", label="Wrote a draft spec",
+                         when=NOW - timedelta(days=4), status="MERGED"))
+        assert t.progressed_since(NOW - timedelta(hours=6)) is False

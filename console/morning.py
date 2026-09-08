@@ -97,6 +97,27 @@ class Thread:
         stamps = [s.when for s in self.steps if s.when]
         return max(stamps) if stamps else None
 
+    def progressed_since(self, since: Optional[datetime]) -> bool:
+        """Did FLEET actually finish something here, in the window?
+
+        AN APPROVAL IS NOT PROGRESS. This is the distinction that keeps a
+        thread out of two sections at once: "Payment method breakdown" was
+        approved at 23:08 and its task has never run, so its only in-window
+        event is the approval. It belongs under what happens NEXT, and listing
+        it under what got DONE claims work that has not happened.
+
+        Terminal statuses only. QUEUED and RUNNING are the future; APPROVED is
+        the reader's own act and its consequence is the queue.
+        """
+        for s in self.steps:
+            if s.status not in ("FAILED", "READY_FOR_REVIEW", "MERGED"):
+                continue
+            if s.when is None:
+                continue
+            if since is None or s.when >= since:
+                return True
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Blockers
@@ -405,9 +426,7 @@ def in_window(threads: List[Thread], since: Optional[datetime]) -> List[Thread]:
     candidate 12 was approved on 7 Sep and its code task queued on 8 Sep, and a
     window over any single timestamp would either drop it or count it twice.
     """
-    if since is None:
-        return threads
-    return [t for t in threads if t.last_at and t.last_at >= since]
+    return [t for t in threads if t.progressed_since(since)]
 
 
 # ---------------------------------------------------------------------------
