@@ -1494,6 +1494,32 @@ cannot edit the thing it is allowed to run.
 **It runs the contract's FIRST verification command, not a copy of it**, so the
 preview cannot drift from the gate.
 
+## THE CAP IS SOFT. THE TERMINAL CHECK IS WHAT ENFORCES CORRECTNESS.
+
+Read this before reading the next section, because "capped at three" is
+exactly the phrase someone will remember and exactly the wrong thing to
+remember.
+
+**Three is a limit on PREVIEWS, not on attempts at correctness, and not a
+guarantee of anything.** Specifically:
+
+* the agent can **ignore the self-check entirely** — nothing requires it to
+  run once, let alone three times, and a spec written without ever calling it
+  reaches the terminal check exactly as before
+* the cap stops a fourth *preview*. It does not stop a fourth edit: the agent
+  may keep changing the document after its last self-check, unobserved, and
+  what it hands over is whatever the file says when it exits
+* the same-shape guard **warns and records; it does not refuse**
+* passing the self-check three times is not passing the gate. The runner
+  re-runs the real verification after the agent exits, on the derived diff,
+  and that verdict is the only one that decides anything
+
+So the cap is a control on **how much iterating-against-the-gate we are
+willing to pay for and see**, not a control on output quality. If in six
+months something is relying on "three" as a correctness property, it is
+relying on the wrong thing — the property is `verification` in the contract,
+run by the runner, after the agent is gone.
+
 ## The cap is 3, and the cap is the point
 
 An agent that can run the gate can also mutate paths until it goes green —
@@ -1511,10 +1537,11 @@ Three things make the cap hold:
   fail the branch. Outside, the agent cannot reach it — it has no shell but the
   one scoped command.
 - **every invocation and its verdict is recorded** on the `PATCH_PROPOSED`
-  step. A sequence whose unresolved set *changes composition* rather than
-  shrinking is the signature of mutation, and it is visible to whoever reviews
-  the branch. Recorded rather than judged: no check can tell a correction from
-  a lucky guess, and a reviewer reading three different failing path sets can.
+  step, with a `shape_changed` flag. The check reports every unresolved path
+  at once, so fixing one cannot reveal another — a path present in run N and
+  absent from run N-1 was **introduced**, which is the mutation signature. The
+  script warns on it in as many words. It does **not** refuse: refusing would
+  block a legitimate rewrite, and the terminal check enforces either way.
 - the runner still runs the real verification after the agent exits. **This
   never becomes the gate; it is a preview of it.**
 

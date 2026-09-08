@@ -78,9 +78,41 @@ out=$(FLEET_CHANGED_FILES="$CHANGED" $CHECK 2>&1)
 code=$?
 echo "$out"
 
+# THE SAME-SHAPE GUARD.
+#
+# The check reports EVERY unresolved path at once, so a path appearing in run
+# N that was absent from run N-1 was not revealed by fixing something else --
+# it was introduced. That is the mutation signature: an agent trying another
+# spelling rather than establishing what the file is.
+#
+# It WARNS and records; it does not refuse. Refusing would block a legitimate
+# rewrite, and the terminal check is what enforces correctness either way.
+OFFENDING=$(echo "$out" | grep -oE "'[^']+'" | sort -u | tr '\n' ' ')
+SHAPE_CHANGED=no
+if [ -n "$STATE" ] && [ -f "$STATE" ] && [ -n "${OFFENDING// }" ]; then
+    PREV=$(grep '^  offending: ' "$STATE" | tail -1 | sed 's/^  offending: //')
+    if [ -n "${PREV// }" ]; then
+        for tok in $OFFENDING; do
+            case " $PREV " in
+                *" $tok "*) ;;
+                *) SHAPE_CHANGED=yes ;;
+            esac
+        done
+    fi
+fi
+if [ "$SHAPE_CHANGED" = yes ]; then
+    echo
+    echo "selfcheck: WARNING -- this run names a path the previous run did not."
+    echo "The check reports every unresolved path at once, so this one was not"
+    echo "uncovered by fixing another: it is new. If you are trying spellings,"
+    echo "stop and read the tree instead -- reference/PATHS.md lists it. This"
+    echo "is recorded on the run either way."
+fi
+
 if [ -n "$STATE" ]; then
     {
-      echo "run $n exit=$code"
+      echo "run $n exit=$code shape_changed=$SHAPE_CHANGED"
+      echo "  offending: $OFFENDING"
       echo "  changed: $(echo "$CHANGED" | tr '\n' ' ')"
       echo "$out" | sed 's/^/  /'
     } >> "$STATE"

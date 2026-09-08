@@ -269,3 +269,60 @@ class TestTheContractSaysAllOfThis:
     def test_the_cap_is_in_the_contract(self):
         c = yaml.safe_load((FLEET / "contracts" / "draft-spec.yaml").read_text())
         assert c["self_check"] is True and c["self_check_max"] == 3
+
+
+class TestTheSameShapeGuard:
+    """A path in run N absent from run N-1 was introduced, not uncovered.
+
+    The check reports every unresolved path at once, so fixing one cannot
+    reveal another. A new one means the agent tried a different spelling.
+    """
+
+    @staticmethod
+    def write(tmp_path, cited):
+        (tmp_path / "drafts").mkdir(exist_ok=True)
+        (tmp_path / "drafts" / "a-spec.md").write_text(
+            spec(["api/analytics/routes/orders.py"], [cited]))
+
+    def harness(self, tmp_path):
+        subprocess.run(("git", "init", "-q"), cwd=tmp_path)
+        state = tmp_path.parent / f"shape-{tmp_path.name}.log"
+        return {**os.environ, "FLEET_SELFCHECK_STATE": str(state),
+                "FLEET_SELFCHECK_MAX": "3",
+                "FLEET_SELFCHECK_COMMAND": f"{PY} {CHECK}"}, state
+
+    def run(self, tmp_path, env):
+        return subprocess.run((str(SELFCHECK),), cwd=tmp_path, env=env,
+                              capture_output=True, text=True)
+
+    def test_a_new_offending_path_warns(self, tmp_path):
+        env, state = self.harness(tmp_path)
+        self.write(tmp_path, "routes/orders.py")
+        self.run(tmp_path, env)
+        self.write(tmp_path, "routes/payments.py")     # a different spelling
+        r = self.run(tmp_path, env)
+        assert "WARNING" in r.stdout and "names a path the previous run did not" in r.stdout
+
+        from runner.packs import read_selfcheck
+        runs = read_selfcheck(str(state))
+        assert runs[0]["shape_changed"] is False
+        assert runs[1]["shape_changed"] is True
+
+    def test_the_same_failure_twice_does_not_warn(self, tmp_path):
+        env, state = self.harness(tmp_path)
+        self.write(tmp_path, "routes/orders.py")
+        self.run(tmp_path, env)
+        r = self.run(tmp_path, env)
+        assert "WARNING" not in r.stdout
+        from runner.packs import read_selfcheck
+        assert all(not x["shape_changed"] for x in read_selfcheck(str(state)))
+
+    def test_it_warns_rather_than_refusing(self, tmp_path):
+        """The terminal check enforces correctness. This only makes the
+        mutation visible -- refusing would block a legitimate rewrite."""
+        env, _ = self.harness(tmp_path)
+        self.write(tmp_path, "routes/orders.py")
+        self.run(tmp_path, env)
+        self.write(tmp_path, "routes/payments.py")
+        r = self.run(tmp_path, env)
+        assert r.returncode == 1        # the check's verdict, not a refusal

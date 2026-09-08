@@ -426,8 +426,8 @@ CASES = [
 
     ("every self-check invocation is recorded",
      "contracts/checks/spec_selfcheck.sh",
-     'if [ -n "$STATE" ]; then\n    {\n      echo "run $n exit=$code"',
-     'if false; then\n    {\n      echo "run $n exit=$code"',
+     'if [ -n "$STATE" ]; then\n    {\n      echo "run $n exit=$code shape_changed=$SHAPE_CHANGED"',
+     'if false; then\n    {\n      echo "run $n exit=$code shape_changed=$SHAPE_CHANGED"',
      "tests/test_selfcheck.py::TestTheSelfCheckIsCapped::"
      "test_every_invocation_is_recorded"),
 
@@ -444,6 +444,13 @@ CASES = [
      "        for p in sorted([]):",
      "tests/test_selfcheck.py::TestThePathsPack::"
      "test_it_lists_real_files_under_the_declared_roots"),
+
+    ("a changed offending set is flagged as mutation",
+     "contracts/checks/spec_selfcheck.sh",
+     '                *) SHAPE_CHANGED=yes ;;',
+     '                *) SHAPE_CHANGED=no ;;',
+     "tests/test_selfcheck.py::TestTheSameShapeGuard::"
+     "test_a_new_offending_path_warns"),
 
     ("a thin group is listed, not compared",
      "proposer/precedent.py",

@@ -127,11 +127,17 @@ def read_selfcheck(state_path: str | None) -> list[dict[str, Any]]:
             continue
         head = block.split("\n", 1)[0].replace("run ", "", 1)
         try:
-            n, _, code = head.partition(" exit=")
+            n, _, rest = head.partition(" exit=")
+            code, _, shape = rest.partition(" shape_changed=")
+            body = block.split("\n", 1)[1].strip()[:1200] if "\n" in block else ""
             runs.append({"n": int(n.strip()),
                          "exit_code": int(code.strip()),
-                         "output": block.split("\n", 1)[1].strip()[:1200]
-                                   if "\n" in block else ""})
+                         # True when this run named a path the previous did
+                         # not. The check reports every unresolved path at
+                         # once, so a new one was introduced rather than
+                         # uncovered -- the mutation signature.
+                         "shape_changed": shape.strip() == "yes",
+                         "output": body})
         except ValueError:
             continue
     return runs
