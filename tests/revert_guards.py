@@ -440,10 +440,24 @@ CASES = [
 
     ("the paths pack names the real tree",
      "runner/packs.py",
-     "        for p in sorted(start.rglob(\"*\")):",
-     "        for p in sorted([]):",
-     "tests/test_selfcheck.py::TestThePathsPack::"
-     "test_it_lists_real_files_under_the_declared_roots"),
+     "            for p in sorted(start.rglob(\"*\")):",
+     "            for p in sorted([]):",
+     "tests/test_selfcheck.py::TestThePathsPackIsGeneratedNotCommitted::"
+     "test_it_lists_real_files_and_says_how_to_cite_them"),
+
+    ("a worktree_link to a checkout counts as a read-only tree",
+     "runner/packs.py",
+     "        if (p / \".git\").exists():\n            trees[p.name] = p",
+     "        if False:\n            trees[p.name] = p",
+     "tests/test_selfcheck.py::TestThePathsPackIsGatedOnCapability::"
+     "test_a_worktree_link_to_a_checkout_grants_one_too"),
+
+    ("readable_repos counts as a read-only tree",
+     "runner/packs.py",
+     "        if p.is_dir():\n            trees[name] = p",
+     "        if False:\n            trees[name] = p",
+     "tests/test_selfcheck.py::TestThePathsPackIsGatedOnCapability::"
+     "test_readable_repos_grants_a_listing"),
 
     ("a changed offending set is flagged as mutation",
      "contracts/checks/spec_selfcheck.sh",

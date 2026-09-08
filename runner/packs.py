@@ -10,9 +10,36 @@ prefix -- and recall is fixed by putting the tree in front of it rather than
 by asking it to try harder.
 
 So the RUNNER lists the paths, exactly as it runs the evidence queries: the
-agent reads a file. Committed before the agent runs, for the reason the
-evidence pack is -- an uncommitted runner artifact lands in the derived diff,
-where the boundary correctly refuses it for being outside writable_paths.
+agent reads a file.
+
+GENERATED PER RUN, OUTSIDE THE WORKTREE, AND NEVER COMMITTED
+
+A committed listing is the wrong shape for the same reason the gap list was:
+it goes stale, nothing re-derives it, and it is believed while it is wrong.
+Generated at run start it is current by construction and it disappears with
+the worktree.
+
+It also must not be committed FOR A SECOND AND HARDER REASON. A file in the
+repository is readable by every later task, including ones whose contract
+makes that repository writable. A committed listing of both trees is a
+standing index of a tree a given task was never granted -- exactly the leak
+the research contract's readable_repos boundary exists to prevent, arriving as
+a convenience rather than as a grant. Whoever finds this generating a file
+every run and thinks to check it in: that is what it costs.
+
+Outside the worktree, because inside it the file lands in the derived diff and
+the boundary correctly refuses it for being outside writable_paths -- the same
+trap the evidence pack solved by committing, which is the option ruled out
+above.
+
+GATED ON THE CAPABILITY, NOT ON THE WORK TYPE
+
+A contract that already exposes a read-only tree gets a listing of it, because
+a listing of a tree the agent may read grants nothing it could not already
+enumerate. Derived from `readable_repos` and from `worktree_links` targets
+that are repositories, so a future contract that adds a read-only worktree
+gets this automatically rather than when somebody remembers to add its name to
+a list.
 
 THE SELF-CHECK STATE
 --------------------
@@ -38,17 +65,53 @@ DEFAULT_SELFCHECK_MAX = 3
 MAX_PATHS_LISTED = 4000
 
 
-def write_paths_pack(worktree: Path, contract: dict[str, Any]) -> tuple[Path | None, int]:
-    """Materialise the real tree under the contract's declared roots."""
-    spec = contract.get("paths_pack")
-    if not spec:
+def read_only_trees(contract: dict[str, Any], repo_root: Path) -> dict[str, Path]:
+    """Every tree this contract lets the agent READ but not write.
+
+    THE CAPABILITY, DERIVED -- not a flag somebody sets. Two mechanisms grant
+    it today and both are found here, so a contract that acquires one later is
+    covered without an edit:
+
+      readable_repos   --add-dir, granting read for the whole run
+      worktree_links   a symlink to a checkout
+
+    `worktree_links` is included with a caveat that matters: the runner
+    creates those links AFTER the diff is derived, so for a draft-spec task
+    the linked checkout DOES NOT EXIST while the agent runs. Task 25's own
+    spec says so -- "the reference/deadly-digital-platform checkout named in
+    the task was not present in this worktree ... no path or line number below
+    was read from the tree for this spec". The listing is therefore not a
+    convenience for that contract; it is the only view of the tree it has.
+    """
+    trees: dict[str, Path] = {}
+    for name in contract.get("readable_repos") or []:
+        p = repo_root / name
+        if p.is_dir():
+            trees[name] = p
+    for target in (contract.get("worktree_links") or {}).values():
+        p = Path(target)
+        if (p / ".git").exists():
+            trees[p.name] = p
+    return trees
+
+
+def write_paths_pack(out_dir: Path, contract: dict[str, Any],
+                     repo_root: Path) -> tuple[Path | None, int]:
+    """List every read-only tree, into a directory OUTSIDE the worktree.
+
+    Returns (file, count). No contract key is required: the listing follows
+    the capability. `paths_pack.roots` narrows it when a contract says so, and
+    a contract that says nothing gets the whole of each tree it may read --
+    which is no more than it may already enumerate.
+    """
+    trees = read_only_trees(contract, repo_root)
+    if not trees:
         return None, 0
-    rel = spec.get("file") or "reference/PATHS.md"
+    spec = contract.get("paths_pack") or {}
     roots = list(spec.get("roots") or [])
-    base = Path(spec.get("base") or ".")
 
     lines = [
-        "# Real paths in this tree",
+        "# Real paths in the read-only trees for this run",
         "",
         "Listed by the runner before the agent started, from the checkout "
         "itself. **These are the paths. Anything you write that is not one of "
@@ -59,32 +122,31 @@ def write_paths_pack(worktree: Path, contract: dict[str, Any]) -> tuple[Path | N
         "",
     ]
     total = 0
-    for root in roots:
-        start = (worktree / base / root).resolve()
-        lines.append(f"## {root}")
-        lines.append("")
-        if not start.exists():
-            lines.append(f"_(nothing at `{root}`)_")
-            lines.append("")
-            continue
-        found = []
-        for p in sorted(start.rglob("*")):
-            if not p.is_file() or "/." in str(p):
+    for name, tree in sorted(trees.items()):
+        starts = [tree / r for r in roots] if roots else [tree]
+        found: list[str] = []
+        for start in starts:
+            if not start.exists():
                 continue
-            try:
-                found.append(p.relative_to((worktree / base).resolve()).as_posix())
-            except ValueError:
-                continue
-            if len(found) >= MAX_PATHS_LISTED:
-                break
+            for p in sorted(start.rglob("*")):
+                if not p.is_file() or "/." in str(p):
+                    continue
+                try:
+                    found.append(p.relative_to(tree).as_posix())
+                except ValueError:
+                    continue
+                if len(found) >= MAX_PATHS_LISTED:
+                    break
         total += len(found)
+        lines.append(f"## {name}")
+        lines.append("")
         lines.append("```")
-        lines.extend(found)
+        lines.extend(found or ["(nothing listed)"])
         lines.append("```")
         lines.append("")
 
-    out = worktree / rel
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "PATHS.md"
     out.write_text("\n".join(lines))
     return out, total
 

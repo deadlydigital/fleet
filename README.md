@@ -1462,14 +1462,54 @@ correction attached: `routes/orders.py -> api/analytics/routes/orders.py`.
 Replayed against the three branches: **task 23 passes**, task 24 fails on one
 path instead of two, task 25 is told exactly what to write.
 
-## The paths pack — recall, not knowledge
+## The paths pack — and the capability the prompt promised and did not deliver
 
-Every failing path had a real sibling in the same directory. That is a recall
-failure, and the fix is to put the tree in front of the agent rather than ask
-the prompt to try harder. The **runner** lists it, exactly as it runs the
-evidence queries, and commits it before the agent starts — an uncommitted
-runner artifact lands in the derived diff, where the boundary correctly refuses
-it.
+Every failing path had a real sibling in the same directory. But the cause was
+worse than recall, and **task 25 said so in its own document**:
+
+> *"The `reference/deadly-digital-platform` checkout named in the task **was
+> not present in this worktree** and the platform tree is outside the
+> session's permitted directories, so **no path or line number below was read
+> from the tree for this spec.** Every one is carried from a document in this
+> repository that did read it."*
+
+`worktree_links` are created **after** the diff is derived — deliberately, so
+the agent cannot write through them. `draft-spec.yaml` declares no
+`readable_repos`. So the prompt told the agent to read a checkout that does not
+exist while it runs, the agent found it absent, **reported the gap correctly**,
+and was failed terminally for the consequence. The prompt no longer makes that
+claim, and it names the generated listing instead.
+
+**Generated per run, outside the worktree, never committed.**
+
+- **Per run**, because a committed listing is the wrong shape for the same
+  reason the gap list was: it goes stale, nothing re-derives it, and it is
+  believed while it is wrong. Generated at run start it is current by
+  construction and it disappears with the worktree.
+- **Never committed, for a second and harder reason.** A file in the
+  repository is readable by every later task, *including ones whose contract
+  makes that repository writable*. A committed listing of both trees is a
+  standing index of a tree a given task was never granted — exactly the leak
+  `readable_repos` exists to bound, arriving as a convenience rather than as a
+  grant. **Whoever finds this generating a file every run and thinks to check
+  it in: that is what it costs.**
+- **Outside the worktree**, because inside it the file lands in the derived
+  diff and the boundary refuses it — the trap the evidence pack solved by
+  committing, which is the option ruled out above. It is exposed by
+  `--add-dir`, like any other read-only tree.
+
+**Gated on the capability, not the work type.** `read_only_trees()` derives it
+from `readable_repos` and from `worktree_links` targets that are repositories,
+so a contract that acquires a read-only tree later gets a listing automatically
+rather than when somebody remembers to add its name to a list. A listing of a
+tree the agent may already read grants nothing it could not already enumerate —
+which is precisely why the gate is the capability and not the label.
+
+One consequence worth stating: for `draft-spec` today the listing is **not a
+convenience, it is the only view of the tree the contract actually delivers.**
+Whether that contract should also gain `readable_repos` — so the agent can read
+the files and not just their names — is a separate decision and has not been
+taken here.
 
 ## The gate, reachable during the run
 

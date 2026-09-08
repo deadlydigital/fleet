@@ -26,6 +26,7 @@ explicit task-branch refspec.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -178,6 +179,9 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         watched[name] = worktree.Untouched.of(path)
 
     branch = worktree.branch_name(task["id"], task["attempts"])
+    # Beside the worktree, never inside it: a file inside lands in the derived
+    # diff and the boundary refuses it. Removed with the worktree.
+    packs_dir = Path(settings["worktree_root"]) / f"{branch.replace('/', '-')}-packs"
     result.branch = branch
     wt_root = Path(settings["worktree_root"])
     wt_root.mkdir(parents=True, exist_ok=True)
@@ -213,20 +217,24 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         # The evidence pack: the RUNNER reads the databases, as roles holding
         # SELECT and nothing else, and the agent reads a file. It never holds a
         # credential and has no shell to use one with.
-        # The paths pack: the tree, listed by the runner, in front of the
-        # agent before it writes a line. Three draft specs failed on paths
-        # whose real siblings were sitting in the same directory -- recall,
-        # not knowledge, and recall is fixed by showing rather than asking.
-        paths_written, paths_n = packs.write_paths_pack(wt_path, contract)
+        # THE PATHS PACK. Generated per run, OUTSIDE the worktree, never
+        # committed -- see runner/packs.py for why a committed listing is the
+        # wrong shape twice over. Exposed by --add-dir like any other
+        # read-only tree, so it cannot land in the derived diff.
+        #
+        # Gated on the capability rather than the work type: a contract that
+        # already exposes a read-only tree gets a listing of it.
+        paths_written, paths_n = packs.write_paths_pack(
+            packs_dir, contract, Path(settings["repo_root"]))
         if paths_written:
-            log(f"  paths pack {paths_written.relative_to(wt_path)}: "
-                f"{paths_n} real path(s) listed")
+            readable.append(paths_written.parent)
+            log(f"  paths pack {paths_written}: {paths_n} real path(s) listed "
+                f"(generated for this run, not committed)")
 
         pack_path = contract.get("evidence_pack")
-        if contract.get("evidence_queries") or paths_written:
-            results = (evidence.run_queries(contract["evidence_queries"])
-                       if contract.get("evidence_queries") else [])
-            if results:
+        if contract.get("evidence_queries"):
+            results = evidence.run_queries(contract["evidence_queries"])
+            if True:
                 written = evidence.write_pack(
                     wt_path, pack_path or "EVIDENCE.md", results, task)
                 failed = [r.key for r in results if not r.ok]
@@ -246,14 +254,15 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             # travel with the document, on the same branch, so a reviewer can
             # see what the numbers came from.
             boundary.commit_agent_work(
-                wt_path, f"packs for task {task['id']}: {len(results)} reading(s) "
-                         f"and {paths_n} listed path(s), taken before the agent ran")
+                wt_path, f"evidence pack for task {task['id']}: "
+                         f"{len(results)} readings taken before the agent ran")
             base_sha = boundary.git(wt_path, "rev-parse", "HEAD").strip()
             log(f"  evidence committed; the agent's diff is measured from "
                 f"{base_sha[:12]}")
 
         token, reserved = _reserve(task, run_id, log)
-        prompt = agent_mod.build_prompt(task, contract)
+        prompt = agent_mod.build_prompt(task, contract,
+                                        paths_file=paths_written)
         # The reservation, in the currency the CLI caps in. Converted with the
         # same stated constant settlement uses, so the cap the agent is given
         # and the figure the ledger records cannot disagree by definition.
@@ -423,6 +432,9 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         result.reason = "verified, branch ready"
     finally:
         worktree.remove(repo, wt_path)
+        # The listing goes with the worktree. It described the tree at one
+        # moment and keeping it would be keeping a figure nothing re-derives.
+        shutil.rmtree(packs_dir, ignore_errors=True)
         if not keep_branch:
             worktree.delete_branch(repo, branch)
         for name, snap in watched.items():

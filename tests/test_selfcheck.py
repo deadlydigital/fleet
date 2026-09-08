@@ -210,26 +210,87 @@ class TestTheSelfCheckIsCapped:
 
 # ---- the paths pack --------------------------------------------------------
 
-class TestThePathsPack:
+class TestThePathsPackIsGatedOnCapability:
+    """A listing follows the READ-ONLY TREE, not the work type.
 
-    def test_it_lists_real_files_under_the_declared_roots(self, tmp_path):
+    Gating on a label means a future contract that adds a read-only worktree
+    gets nothing until somebody remembers to add its name to a list. Gating on
+    the capability means it is covered the moment it has one -- and a listing
+    of a tree the agent may already read grants nothing new.
+    """
+
+    def test_readable_repos_grants_a_listing(self, tmp_path):
+        from runner.packs import read_only_trees
+        trees = read_only_trees(
+            {"readable_repos": ["deadly-digital-platform"]}, Path.home())
+        assert set(trees) == {"deadly-digital-platform"}
+
+    def test_a_worktree_link_to_a_checkout_grants_one_too(self, tmp_path):
+        from runner.packs import read_only_trees
+        trees = read_only_trees(
+            {"worktree_links": {"reference/x": str(PLATFORM)}}, Path.home())
+        assert set(trees) == {"deadly-digital-platform"}
+
+    def test_a_link_to_something_that_is_not_a_repo_does_not(self, tmp_path):
+        from runner.packs import read_only_trees
+        (tmp_path / "node_modules").mkdir()
+        trees = read_only_trees(
+            {"worktree_links": {"node_modules": str(tmp_path / "node_modules")}},
+            Path.home())
+        assert trees == {}
+
+    def test_a_contract_with_no_read_only_tree_gets_nothing(self, tmp_path):
         from runner.packs import write_paths_pack
-        (tmp_path / "reference").mkdir()
-        (tmp_path / "reference" / "deadly-digital-platform").symlink_to(PLATFORM)
+        assert write_paths_pack(tmp_path, {}, Path.home()) == (None, 0)
+
+    def test_the_real_draft_spec_contract_is_covered_without_a_new_key(self):
+        """It declares no readable_repos -- the capability comes from its
+        existing worktree_links, which is the point."""
+        from runner.packs import read_only_trees
+        c = yaml.safe_load((FLEET / "contracts" / "draft-spec.yaml").read_text())
+        assert c.get("readable_repos") is None
+        assert set(read_only_trees(c, Path.home())) == {"deadly-digital-platform"}
+
+
+class TestThePathsPackIsGeneratedNotCommitted:
+
+    def test_it_lists_real_files_and_says_how_to_cite_them(self, tmp_path):
+        from runner.packs import write_paths_pack
         out, n = write_paths_pack(tmp_path, {
-            "paths_pack": {"file": "reference/PATHS.md",
-                           "base": "reference/deadly-digital-platform",
-                           "roots": ["api/analytics/routes"]}})
+            "readable_repos": ["deadly-digital-platform"],
+            "paths_pack": {"roots": ["api/analytics/routes"]}}, Path.home())
         text = out.read_text()
         assert n > 5
         assert "api/analytics/routes/orders.py" in text
-        # And it says the thing the failures needed it to say.
         assert "IN FULL from the repository root" in text
-        assert "`routes/orders.py` is " in text
 
-    def test_no_pack_declared_writes_nothing(self, tmp_path):
+    def test_it_is_written_outside_the_worktree(self, tmp_path):
+        """Inside it, the file lands in the derived diff and the boundary
+        refuses it -- the trap the evidence pack solved by committing, which
+        is the option ruled out here."""
         from runner.packs import write_paths_pack
-        assert write_paths_pack(tmp_path, {}) == (None, 0)
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        packs = tmp_path / "worktree-packs"
+        out, _ = write_paths_pack(packs, {
+            "readable_repos": ["deadly-digital-platform"],
+            "paths_pack": {"roots": ["api/analytics/routes"]}}, Path.home())
+        assert worktree not in out.parents
+        assert list(worktree.iterdir()) == []
+
+    def test_the_runner_removes_it_with_the_worktree(self):
+        """A listing that outlived its run would be a figure nothing
+        re-derives, which is the shape this replaced."""
+        src = (FLEET / "runner" / "cycle.py").read_text()
+        assert "shutil.rmtree(packs_dir" in src
+        assert "worktree.remove(repo, wt_path)" in src
+
+    def test_it_is_not_committed(self):
+        """A committed listing of both trees is readable by every later task,
+        including ones whose contract makes that repository writable."""
+        src = (FLEET / "runner" / "cycle.py").read_text()
+        commit_block = src[src.index("boundary.commit_agent_work("):][:400]
+        assert "paths" not in commit_block.lower()
 
 
 class TestTheSelfCheckEnvironment:

@@ -101,15 +101,20 @@ Objective: `{cand.get('objective_ref') or 'none stated'}`
 
 {paths}
 
-A read-only checkout of `{cand['repo']}` is linked at
-`reference/{cand['repo']}`. **Read it.** The suggested paths above came from a
-findings document and may be wrong; the tree is the authority.
+The suggested paths above came from a findings document and may be wrong.
 
-`reference/PATHS.md` is the tree already listed for you, by the runner, before
-you started. **Cite paths IN FULL from the repository root.**
-`routes/orders.py` is not a path; `api/analytics/routes/orders.py` is. Three
-specs before this one died on exactly that, and in every case the real path was
-sitting in the same directory as the one written.
+**The runner lists the real tree for you and names the file in a section
+below.** Read that listing; it is the authority, and it is generated fresh for
+this run.
+
+This prompt used to promise a read-only checkout at
+`reference/{cand['repo']}`. **That was not true during the run** — the runner
+creates those links after the agent exits, deliberately, so the agent cannot
+write through them. Three specs died on paths written from memory, and one of
+them said so in its own words: *"the reference checkout named in the task was
+not present in this worktree ... no path or line number below was read from
+the tree for this spec."* It was failed for the consequence of a capability it
+had been promised and did not have.
 
 ## What your spec must contain
 
