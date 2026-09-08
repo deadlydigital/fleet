@@ -359,7 +359,14 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
                       sources_ok=len(ok), sources_failed=len(bad))
     completed = _utcnow()
 
-    disk_path = _write_to_disk(generated, markdown)
+    # NOT under dry_run. `run_brief.py --dry-run` documents itself as
+    # "render to stdout, write nothing", `run_pass` says "writes one brief
+    # unless dry_run", and the run line prints "(dry run, nothing written)" --
+    # while this call sat ABOVE the dry_run return and overwrote
+    # briefs/YYYY-MM-DD.md every time. Found when a dry run replaced a brief
+    # that had already been committed. Three statements of a guarantee and one
+    # line that broke all three.
+    disk_path = None if dry_run else _write_to_disk(generated, markdown)
 
     summary = {
         "disk_path": disk_path,
