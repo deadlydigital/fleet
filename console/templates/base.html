@@ -8,10 +8,15 @@
 :root {
   --bg:#fbfbfa; --fg:#1a1a18; --dim:#6b6b66; --line:#e0e0dc; --panel:#fff;
   --ok:#0f7b3e; --warn:#9a6700; --bad:#a4243b; --accent:#1f4e79;
+  /* The blockers band. Light enough to sit under body text without becoming a
+     second background, strong enough that the one section asking something of
+     the reader is visibly not the same as the three that do not. */
+  --hi:#f4f1e8;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#16171a; --fg:#e6e6e3; --dim:#9a9a94; --line:#2c2e33; --panel:#1c1e22;
-          --ok:#4ec27f; --warn:#d3a24a; --bad:#e2778b; --accent:#7fb0e0; }
+          --ok:#4ec27f; --warn:#d3a24a; --bad:#e2778b; --accent:#7fb0e0;
+          --hi:#232019; }
 }
 * { box-sizing:border-box }
 body { margin:0; background:var(--bg); color:var(--fg);
@@ -67,12 +72,73 @@ select,input[type=text] { font:inherit; padding:.3rem .4rem; border-radius:4px;
 label { display:block; margin:.4rem 0 .15rem; font-size:12px; color:var(--dim) }
 a.t { color:var(--accent); text-decoration:none } a.t:hover { text-decoration:underline }
 .diff { overflow-x:auto; font-size:12px; line-height:1.35 }
+
+/* ---- the morning page ------------------------------------------------
+   Every rule below is shared by both colour modes: nothing here names a
+   colour, only a token, so a mode that renders wrong renders wrong in one
+   place rather than in this stylesheet. */
+.stand { max-width:760px }
+.stand h2 { margin:1.9rem 0 .35rem }
+.stand h2:first-of-type { margin-top:.6rem }
+.since { color:var(--dim); font-size:12.5px; margin:.1rem 0 1.2rem;
+  font-family:ui-monospace,monospace }
+/* A settled section. Not an absence — a sentence. */
+.settled { color:var(--dim); padding:.45rem 0 .2rem; font-size:13.5px }
+.settled strong { color:var(--fg); font-weight:600 }
+
+.band { background:var(--hi); border:1px solid var(--line); border-radius:7px;
+  padding:.55rem .85rem; margin:.3rem 0 .5rem }
+.band.clear { background:transparent }
+
+/* One bullet. <details> so detail is one keypress away and nothing is behind
+   a click you must make to learn there was nothing there. */
+details.ask { border-bottom:1px solid var(--line); padding:.42rem 0 }
+details.ask:last-child { border-bottom:0 }
+details.ask > summary { cursor:pointer; list-style:none; display:flex;
+  gap:.55rem; align-items:baseline; flex-wrap:wrap }
+details.ask > summary::-webkit-details-marker { display:none }
+details.ask > summary::before { content:"▸"; color:var(--dim); font-size:11px;
+  flex:0 0 auto }
+details.ask[open] > summary::before { content:"▾" }
+details.ask > summary:hover { color:var(--accent) }
+.ask .what { font-weight:600 }
+.ask .aside { color:var(--dim); font-size:12.5px; margin-left:auto;
+  font-family:ui-monospace,monospace; white-space:nowrap }
+.ask .body { padding:.5rem 0 .35rem 1.15rem; color:var(--dim);
+  font-size:13px; max-width:62ch }
+.ask .body p { margin:.35rem 0 }
+
+/* The thread rail. A vertical line with the steps hung off it, so a thread
+   reads as one movement rather than as a table of rows. */
+.rail { list-style:none; margin:.55rem 0 .2rem; padding:0 0 0 1.15rem;
+  border-left:2px solid var(--line) }
+.rail li { position:relative; padding:.25rem 0 .3rem .9rem }
+.rail li::before { content:""; position:absolute; left:-1.32rem; top:.62rem;
+  width:8px; height:8px; border-radius:50%; background:var(--line) }
+.rail li.human::before { background:var(--accent) }
+.rail li.gap::before { background:var(--bg); border:2px dashed var(--warn);
+  width:10px; height:10px; left:-1.42rem }
+.rail .who { font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--dim); margin-right:.45rem }
+.rail li.human .who { color:var(--accent) }
+.rail .said { color:var(--dim); font-size:12.5px; display:block;
+  margin-top:.1rem; max-width:60ch }
+.rail .cost { font-family:ui-monospace,monospace; font-size:12px;
+  color:var(--dim); margin-left:.5rem }
+
+/* A missing value. Never a zero — see morning.human_elapsed. */
+.nil { color:var(--dim) }
+
+.reach { border-left:3px solid var(--accent); background:var(--panel);
+  padding:.6rem .9rem; margin:.7rem 0; border-radius:0 5px 5px 0 }
+.reach .cost-of { color:var(--fg); font-weight:600 }
 {{ diff_css|safe }}
 </style>
 </head>
 <body>
 <header>
   <strong>fleet</strong>
+  <a href="/" class="{% block nav_morning %}{% endblock %}">Morning</a>
   <a href="/tasks" class="{% block nav_tasks %}{% endblock %}">Tasks</a>
   <a href="/detectors" class="{% block nav_det %}{% endblock %}">Detectors</a>
   <a href="/proposals" class="{% block nav_prop %}{% endblock %}">Proposals</a>

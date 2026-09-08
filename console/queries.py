@@ -554,3 +554,259 @@ def candidates_decided() -> list[dict[str, Any]]:
 
 def ceilings() -> dict[str, Any] | None:
     return db.one(CEILINGS)
+
+
+# ---------------------------------------------------------------- the morning page
+#
+# One page, read once, by the person who owns every decision here. Everything
+# below exists to fill a section of it, and each query is written so that the
+# EMPTY answer is a fact rather than a gap: "no rows" must be renderable as
+# "nothing is waiting on you", never as a blank panel.
+
+#: The window. Not "today" and not "24 hours" -- the boundary is the previous
+#: brief, because that is the last thing the reader was told. `compares_since`
+#: on the latest run is the previous run's `generated_at`, recorded at the time
+#: rather than recomputed, so a brief that ran late moves this boundary with it.
+#:
+#: NULL on the very first brief, and the caller renders that as "since the
+#: beginning" rather than substituting now() and silently showing nothing.
+MORNING_WINDOW = """
+    SELECT id AS run_id, generated_at, compares_since,
+           claims_total, claims_uncomputed
+      FROM brief_runs ORDER BY id DESC LIMIT 1
+"""
+
+#: BLOCKERS 1 AND 2. Both are `READY_FOR_REVIEW`, and the split is on work
+#: type, because a drafted spec and a built branch ask different things of a
+#: reader. A spec asks "is this the right work"; a branch asks "is this the
+#: right change". Collapsing them into "3 things to review" would hide which
+#: question is being asked.
+MORNING_AWAITING_YOU = """
+    SELECT t.id, t.title, t.repo, t.branch_name, t.objective_ref,
+           t.completed_at, t.attempts, t.max_attempts,
+           t.acceptance_contract->>'work_type' AS work_type,
+           (t.acceptance_contract->>'work_type' = 'draft_spec') AS is_spec,
+           r.id AS run_id, r.committed_gbp,
+           EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds,
+           agg.spent_all_runs, agg.runs_total
+      FROM tasks t
+      LEFT JOIN LATERAL (
+          SELECT * FROM runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1
+      ) r ON true
+      LEFT JOIN LATERAL (
+          SELECT count(*) AS runs_total,
+                 coalesce(sum(committed_gbp), 0) AS spent_all_runs
+            FROM runs WHERE task_id = t.id
+      ) agg ON true
+     WHERE t.status = 'READY_FOR_REVIEW'
+     ORDER BY t.completed_at DESC NULLS LAST, t.id DESC
+"""
+
+#: WHAT I DID, as threads. One row per candidate that has produced anything,
+#: carrying both tasks and the decision that approved it.
+#:
+#: LEFT JOINs throughout and no WHERE on the window: a thread is filtered in
+#: Python against the window because a thread STRADDLES it -- candidate 12 was
+#: approved on 7 Sep and its code task was queued on 8 Sep, and a SQL window
+#: over any single timestamp would either drop it or double it.
+#:
+#: The promotion step is missing from this query and cannot be added: moving a
+#: draft from drafts/ to specs/ is a human act with no database row, by design
+#: (contracts/draft-spec.yaml keeps specs/** protected so a task cannot write
+#: its own instructions). The template says so where the gap falls rather than
+#: closing it with an inferred timestamp.
+MORNING_THREADS = """
+    SELECT c.id AS candidate_id, c.title, c.repo, c.objective_ref,
+           c.disposition, c.decided_at, c.batch_id,
+
+           d.id AS decision_id, d.reason AS decision_reason,
+           d.decided_at AS decision_at, d.decided_by,
+
+           s.id AS spec_task_id, s.status AS spec_status,
+           s.completed_at AS spec_completed_at, s.branch_name AS spec_branch,
+           s.acceptance_contract->>'work_type' AS spec_work_type,
+           sr.committed_gbp AS spec_cost,
+           EXTRACT(EPOCH FROM (sr.completed_at - sr.started_at)) AS spec_elapsed,
+
+           w.id AS work_task_id, w.status AS work_status,
+           w.completed_at AS work_completed_at, w.branch_name AS work_branch,
+           w.acceptance_contract->>'work_type' AS work_work_type,
+           wr.committed_gbp AS work_cost,
+           EXTRACT(EPOCH FROM (wr.completed_at - wr.started_at)) AS work_elapsed
+      FROM candidates c
+      LEFT JOIN decision_log d ON d.id = c.approval_decision_id
+      LEFT JOIN tasks s ON s.id = c.spec_task_id
+      LEFT JOIN tasks w ON w.id = c.work_task_id
+      LEFT JOIN LATERAL (
+          SELECT * FROM runs WHERE task_id = s.id ORDER BY id DESC LIMIT 1
+      ) sr ON true
+      LEFT JOIN LATERAL (
+          SELECT * FROM runs WHERE task_id = w.id ORDER BY id DESC LIMIT 1
+      ) wr ON true
+     WHERE c.spec_task_id IS NOT NULL OR c.work_task_id IS NOT NULL
+     ORDER BY c.id DESC
+"""
+
+#: Tasks that finished in the window and belong to NO candidate.
+#:
+#: Without this the page would be a lie by omission. Task 26 -- the net-refunds
+#: code task -- was inserted directly, because console/approve.py only makes
+#: draft-spec tasks, and a threads-only view would show its candidate's thread
+#: while a directly-inserted task with no candidate at all would vanish.
+MORNING_LOOSE_TASKS = """
+    SELECT t.id, t.title, t.status, t.repo, t.branch_name, t.objective_ref,
+           t.completed_at, t.created_at, t.attempts,
+           t.acceptance_contract->>'work_type' AS work_type,
+           r.committed_gbp,
+           EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds
+      FROM tasks t
+      LEFT JOIN LATERAL (
+          SELECT * FROM runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1
+      ) r ON true
+     WHERE NOT EXISTS (SELECT 1 FROM candidates c
+                        WHERE c.spec_task_id = t.id OR c.work_task_id = t.id)
+     ORDER BY t.completed_at DESC NULLS LAST, t.id DESC
+"""
+
+#: Every task that reached a terminal state, with its verification failure if
+#: it had one. Feeds both the thread steps and the failure-pattern detection:
+#: two specs failing the same check for the same reason is one finding, not two
+#: rows, and the reason lives in the VERIFICATION_RUN step rather than on the
+#: task.
+#: `payload->'checks'` is an ARRAY -- one entry per verification command, each
+#: with its own exit_code and output_tail. A task failing two checks has two
+#: reasons, and reading `payload->>'command'` off the top level (which does not
+#: exist) would have silently produced no reasons at all rather than an error.
+#:
+#: Only non-zero checks. A run that failed its second command still ran its
+#: first, and the passing one is not why the task failed.
+MORNING_FAILURES = """
+    SELECT t.id AS task_id, t.title, t.completed_at,
+           t.acceptance_contract->>'work_type' AS work_type,
+           chk->>'command'          AS command,
+           (chk->>'exit_code')::int AS exit_code,
+           chk->>'output_tail'      AS output_tail,
+           (chk->>'timed_out')::bool AS timed_out
+      FROM tasks t
+      JOIN runs r ON r.task_id = t.id
+      JOIN run_steps s ON s.run_id = r.id AND s.step_type = 'VERIFICATION_RUN'
+      CROSS JOIN LATERAL jsonb_array_elements(s.payload->'checks') chk
+     WHERE t.status = 'FAILED'
+       AND coalesce((chk->>'exit_code')::int, 0) <> 0
+     ORDER BY t.completed_at DESC NULLS LAST, t.id DESC
+"""
+
+#: WHAT I'M DOING NEXT: the queue in the order the runner will actually claim
+#: it. `(priority, id)` is claim_task()'s own ORDER BY, so this is intent
+#: rather than a listing -- the top row is the next thing that will happen.
+MORNING_QUEUE = """
+    SELECT t.id, t.title, t.repo, t.objective_ref, t.created_at,
+           t.max_cost_gbp, t.timeout_seconds, t.priority,
+           t.acceptance_contract->>'work_type' AS work_type,
+           c.id AS candidate_id, c.title AS candidate_title
+      FROM tasks t
+      LEFT JOIN candidates c
+             ON c.spec_task_id = t.id OR c.work_task_id = t.id
+     WHERE t.status = 'QUEUED'
+     ORDER BY t.priority, t.id
+"""
+
+#: WHAT I COULDN'T SEE. The latest brief's uncomputed claims, each with how
+#: many consecutive briefs it has been uncomputed for.
+#:
+#: The streak is the part that matters. A claim uncomputed once is a source
+#: that blinked; a claim uncomputed for eleven briefs is a standing gap nobody
+#: has closed, and only the second is worth asking for reach over. Counted from
+#: the newest run backwards and stopped at the first brief where the metric was
+#: computed, so a gap that was closed and reopened reports the CURRENT streak.
+MORNING_UNSEEN = """
+    WITH latest AS (SELECT max(id) AS id FROM brief_runs)
+    SELECT c.metric_key, c.statement, c.uncomputed_reason,
+           (SELECT count(*) FROM brief_claims h
+             WHERE h.metric_key = c.metric_key
+               AND h.status = 'UNCOMPUTED'
+               AND h.run_id > coalesce(
+                   (SELECT max(g.run_id) FROM brief_claims g
+                     WHERE g.metric_key = c.metric_key
+                       AND g.status = 'COMPUTED'), 0)) AS briefs_running
+      FROM brief_claims c, latest
+     WHERE c.run_id = latest.id AND c.status = 'UNCOMPUTED'
+     ORDER BY c.metric_key
+"""
+
+#: The month's ceiling position, for the blockers section. Distinct from
+#: month_credit() only in intent: this one is asked so the page can say "you
+#: need to record a reading", not so it can print a figure.
+MORNING_QUEUE_DEPTH = """
+    SELECT fleet_max_queued_tasks() AS max_queued,
+           (SELECT count(*) FROM tasks WHERE status = 'QUEUED') AS queued_now,
+           (SELECT count(*) FROM candidates
+             WHERE disposition IN ('PENDING','NOT_NOW')) AS candidates_open
+"""
+
+
+def morning_window() -> dict[str, Any] | None:
+    return db.one(MORNING_WINDOW)
+
+
+def morning_awaiting_you() -> list[dict[str, Any]]:
+    return db.rows(MORNING_AWAITING_YOU)
+
+
+def morning_threads() -> list[dict[str, Any]]:
+    return db.rows(MORNING_THREADS)
+
+
+def morning_loose_tasks() -> list[dict[str, Any]]:
+    return db.rows(MORNING_LOOSE_TASKS)
+
+
+def morning_failures() -> list[dict[str, Any]]:
+    return db.rows(MORNING_FAILURES)
+
+
+def morning_queue() -> list[dict[str, Any]]:
+    return db.rows(MORNING_QUEUE)
+
+
+def morning_unseen() -> list[dict[str, Any]]:
+    return db.rows(MORNING_UNSEEN)
+
+
+def morning_queue_depth() -> dict[str, Any] | None:
+    return db.one(MORNING_QUEUE_DEPTH)
+
+
+#: Every metric_key in the latest brief, computed AND uncomputed.
+#:
+#: Feeds morning.uninstrumented_objectives(), which needs "is this objective
+#: represented at all" rather than "did it compute". An objective whose claim
+#: failed has a broken source; one with no key here was never instrumented, and
+#: those are different failures that must not be listed together.
+MORNING_CLAIM_KEYS = """
+    SELECT metric_key FROM brief_claims
+     WHERE run_id = (SELECT max(id) FROM brief_runs)
+"""
+
+
+def morning_claim_keys() -> list[str]:
+    return [r["metric_key"] for r in db.rows(MORNING_CLAIM_KEYS)]
+
+
+#: Runs that finished inside the window. THE DENOMINATOR for a failure pattern.
+#:
+#: "2 of 4" has to mean two of the four things that actually ran, not two of
+#: everything visible on the page. A pattern claims something about a step, and
+#: a denominator counting threads that did not run in the window would dilute
+#: the claim precisely when it is most worth making.
+MORNING_RUNS_IN_WINDOW = """
+    SELECT count(*) AS n FROM runs
+     WHERE task_id IS NOT NULL
+       AND completed_at IS NOT NULL
+       AND (%(since)s::timestamptz IS NULL OR completed_at >= %(since)s)
+"""
+
+
+def morning_runs_in_window(since) -> int:
+    row = db.one(MORNING_RUNS_IN_WINDOW, {"since": since})
+    return int(row["n"]) if row else 0

@@ -1,4 +1,4 @@
-"""The fleet console. Four pages, read-only, no writes of any kind.
+"""The fleet console. A morning page, and six tables behind it.
 
 There is no POST route in this file and no form in any template. That is the
 V1 boundary and it is worth stating as code rather than as intent: the
@@ -11,6 +11,7 @@ enough, and a websocket is a service that can break silently.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import time
@@ -20,7 +21,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from console import approve, config, db, decide, gitdiff, merge, queries, reverify
+from console import (approve, config, db, decide, deploys, gitdiff, merge,
+                     morning, queries, reverify)
 
 RUNNING_AS: str = ""
 WRITING_AS: str = ""
@@ -104,7 +106,59 @@ def same_origin(request: Request) -> bool:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return tasks(request, status="READY_FOR_REVIEW")
+    """The morning page. Read once, after the Telegram ping, by one person.
+
+    This is the console's index because the six table pages are not an entry
+    point: they prove the data is reachable, which is a different job from
+    telling someone what happened. They all still exist, unchanged, and this
+    page links into them wherever a bullet needs more than a bullet.
+
+    A standup, stacked: what is blocking you, what got done, what is next,
+    what could not be seen. All four at once rather than behind a Next button
+    — "nothing is blocking me" is an answer you should get by reading, not by
+    clicking twice to find out there was nothing there.
+    """
+    window = queries.morning_window()
+    since = window["compares_since"] if window else None
+
+    deployments = deploys.all_deployments()
+    credit = queries.month_credit()
+
+    failures = queries.morning_failures()
+    by_task: dict[int, list] = {}
+    for f in failures:
+        by_task.setdefault(f["task_id"], []).append(f)
+
+    threads = morning.build_threads(queries.morning_threads(), by_task,
+                                    deployments)
+    threads += morning.loose_threads(queries.morning_loose_tasks(), by_task,
+                                     deployments)
+    done = sorted(morning.in_window(threads, since),
+                  key=lambda t: t.last_at or datetime.min.replace(
+                      tzinfo=timezone.utc), reverse=True)
+
+    # The denominator for a pattern: RUNS that finished in the window, counted
+    # in SQL. "2 of 4" must mean two of the four things that actually ran, not
+    # two of the threads visible on the page -- a thread can appear here having
+    # only been approved, and counting it would dilute the claim exactly when
+    # the claim is worth making.
+    attempted = queries.morning_runs_in_window(since)
+
+    return render(
+        request, "morning.html",
+        window=window, since=since,
+        awaiting=morning.awaiting_you(queries.morning_awaiting_you()),
+        depth=queries.morning_queue_depth(),
+        fleet_blocked=morning.fleet_blocked(credit, deployments),
+        credit=credit,
+        done=done,
+        patterns=morning.failure_patterns(failures, since, attempted),
+        queue=queries.morning_queue(),
+        unseen=queries.morning_unseen(),
+        uninstrumented=morning.uninstrumented_objectives(
+            claim_keys=queries.morning_claim_keys()),
+        deployments=deployments,
+        elapsed=morning.human_elapsed, money=morning.money)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
