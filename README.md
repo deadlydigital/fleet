@@ -1106,18 +1106,37 @@ one. The ERROR path already did this; only PARTIAL was silent.
 - **Not which tenant.** `send_default_pii=False` and no tenant tag is set at any
   of the six `capture_exception` sites, so an error on HIB's revenue page
   arrives indistinguishable from any other.
-- **Not whether it mattered.** Volume is not severity — which is why magnitude
-  is the count of issues a person would triage, and event totals ride along as
-  evidence rather than being folded into a score nobody can decompose.
+- **Not whether it mattered.** Volume is a proxy for urgency, not importance: a
+  loud harmless error outranks a quiet data-losing one on this scale, and
+  nothing here can tell them apart.
 - **Not more than one page.** At 100 issues the count is reported `capped`, a
   floor rather than a total.
 
-## The bands are a guess and say so
+## Severity is on event volume, reversing what this file first argued
 
-`015_sentry_detector.sql` routes 1-4 MEDIUM, 5-24 HIGH, 25+ CRITICAL. Nothing
-has ever read this project, so there is no measured distribution to set them
-against; the first week of readings is the evidence. They are deliberately not
-tuned to make the first run look calm.
+The first version banded on **issue count** and argued that volume is not
+severity. Ruled the other way, on the case that prompted the detector:
+twenty-five unresolved issues had accumulated unseen, and under an issue-count
+rule that reads CRITICAL and stops there. The first thing a person needs is
+whether **one of them is firing in a loop right now**, and that is a count of
+events. One issue at fifty thousand events is an incident; twenty-five at one
+event each is a backlog.
+
+Both numbers are kept. `magnitude` is events and is what `routing_policy`
+bands; `unresolved_issues` is in `evidence_sample` and is what the brief's
+sentence leads with — *"25 unresolved Sentry issues in the API project over
+9,001 event(s); largest is DD-API-1A"*.
+
+`015` routes **1-99 MEDIUM, 100-999 HIGH, 1000+ CRITICAL**, over the 24h query
+window. Guesses — nothing has read this project, so there is no distribution to
+set them against and the first week of readings is the evidence. Deliberately
+not tuned to make the first run look calm.
+
+**015 was edited in place rather than superseded by an 016**, because it has
+never been applied anywhere but test databases — verified against production,
+which holds zero `dd_api_errors` registry rows. A forward-only 016 contradicting
+an unapplied 015 leaves two files disagreeing and nothing in the database to say
+which won.
 
 ## Waiting on two things that are one action
 

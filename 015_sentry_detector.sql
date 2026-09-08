@@ -25,6 +25,14 @@
 -- second project (the frontend has its own DSN) must be able to fail
 -- independently rather than taking the whole run down with it.
 --
+-- EDITED IN PLACE RATHER THAN SUPERSEDED BY A 016
+--
+-- 015 has never been applied anywhere but test databases -- verified against
+-- production, which holds zero dd_api_errors registry rows and zero
+-- SENTRY_UNRESOLVED_ISSUES routing rows. A forward-only 016 that immediately
+-- contradicted an unapplied 015 would leave two files disagreeing about the
+-- bands and nothing in the fleet database to explain which won.
+--
 -- THE BANDS ARE A GUESS AND SAY SO
 --
 -- Nothing has ever read this project, so there is no measured distribution to
@@ -64,20 +72,32 @@ VALUES
   2, 3, '2 minutes', 50, 500, 1)
 ON CONFLICT (detector_key, issue_key_version, product) DO NOTHING;
 
--- Magnitude is the count of UNRESOLVED ISSUES, not of events. An issue with
--- ten thousand events is one issue: the count is what a person triages, and
--- the event totals ride along in evidence_sample rather than being folded
--- into a composite nobody can decompose later.
+-- MAGNITUDE IS EVENT VOLUME, NOT THE NUMBER OF ISSUES.
 --
--- 1-4 MEDIUM, 5-24 HIGH, 25+ CRITICAL. Guesses, as the header says. The
--- detector only emits when the count is above zero, so the min_magnitude 0
--- band is reached from 1 upward and a clean project produces no observation
--- at all -- which is what lets required_clear_runs resolve the issue.
+-- This reverses the first version of this file, which banded on issue count
+-- and argued that volume is not severity. The case that settled it is the one
+-- that prompted the detector: twenty-five unresolved issues had accumulated
+-- unseen, and under an issue-count rule that reads CRITICAL and stops. The
+-- first thing a person needs to know is whether ONE of them is firing in a
+-- loop right now, which is a count of events. One issue at fifty thousand
+-- events is an incident; twenty-five at one event each is a backlog, and the
+-- issue count cannot tell those apart. It is still carried, in evidence_sample,
+-- and it is what the brief's sentence leads with.
+--
+-- Events are counted over the detector's 24h query window, across all
+-- unresolved issues in the project.
+--
+-- 1-99 MEDIUM, 100-999 HIGH, 1000+ CRITICAL. GUESSES, as the header says --
+-- nothing has read this project, so there is no distribution to set them
+-- against and the first week of readings is the evidence. The detector emits
+-- only when there is something unresolved, so the min_magnitude 0 band is
+-- reached from 1 event upward and a clean project produces no observation at
+-- all -- which is what lets required_clear_runs resolve the issue.
 INSERT INTO routing_policy (observation_type, policy_version, min_magnitude, severity)
 VALUES
- ('SENTRY_UNRESOLVED_ISSUES', 1,  0, 'MEDIUM'),
- ('SENTRY_UNRESOLVED_ISSUES', 1,  5, 'HIGH'),
- ('SENTRY_UNRESOLVED_ISSUES', 1, 25, 'CRITICAL')
+ ('SENTRY_UNRESOLVED_ISSUES', 1,    0, 'MEDIUM'),
+ ('SENTRY_UNRESOLVED_ISSUES', 1,  100, 'HIGH'),
+ ('SENTRY_UNRESOLVED_ISSUES', 1, 1000, 'CRITICAL')
 ON CONFLICT (observation_type, policy_version, min_magnitude) DO NOTHING;
 
 COMMIT;

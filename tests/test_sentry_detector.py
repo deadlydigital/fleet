@@ -85,7 +85,16 @@ class TestAFailedReadIsNeverAZero:
     """Each of these would, uncaught, produce an empty list of issues."""
 
     def test_a_missing_token_fails_the_subject(self, fleet, admin, dsns):
-        result = run(fleet, detector([], token=None))
+        """`token=""`, not `token=None`.
+
+        The constructor reads `None` as "not supplied, go and look in the
+        environment", so once a real token existed in .env this test started
+        picking it up and closing OK. It began failing the moment the
+        credential landed, which is the test being honest rather than the
+        code changing — but the ambiguity is real, and an explicitly-absent
+        token is the empty string.
+        """
+        result = run(fleet, detector([], token=""))
         assert result.status == base.STATUS_PARTIAL
         assert result.subjects_failed == [SUBJECT]
         assert result.observations_created == 0
@@ -175,17 +184,22 @@ class TestWhatASuccessfulReadRecords:
         assert result.subjects_evaluated == [SUBJECT]
         assert result.observations_created == 0
 
-    def test_unresolved_issues_become_one_observation_counted_by_issue(
+    def test_the_observation_is_measured_in_events_with_issues_as_evidence(
             self, fleet, admin, dsns):
+        """Magnitude is EVENT VOLUME; the issue count rides along.
+
+        Both numbers are kept and they are deliberately different: one issue
+        at nine thousand events is an incident, twenty-five at one event each
+        is a backlog, and a single number cannot say which this is.
+        """
         result = run(fleet, detector([issue(1, events=9000), issue(2)]))
         assert result.status == base.STATUS_OK
         rows = observations(admin, result.run_id)
         assert len(rows) == 1
         assert rows[0]["observation_type"] == "SENTRY_UNRESOLVED_ISSUES"
-        # TWO issues, not nine thousand and one events. The count is what a
-        # person triages; the events ride along as evidence.
-        assert rows[0]["magnitude"] == 2
-        assert rows[0]["unit"] == "issues"
+        assert rows[0]["magnitude"] == 9001
+        assert rows[0]["unit"] == "events"
+        assert rows[0]["evidence_sample"]["unresolved_issues"] == 2
         assert rows[0]["evidence_sample"]["total_events"] == 9001
         assert rows[0]["evidence_sample"]["worst_short_id"] == "DD-API-1"
 
@@ -200,9 +214,11 @@ class TestWhatASuccessfulReadRecords:
         """
         result = run(fleet, detector(
             projects=("p-low", "p-mid", "p-high"),
-            per_project={"p-low": [issue(i) for i in range(1)],
-                         "p-mid": [issue(i) for i in range(5)],
-                         "p-high": [issue(i) for i in range(25)]}))
+            # Banded on EVENTS: 1-99 MEDIUM, 100-999 HIGH, 1000+ CRITICAL.
+            # One issue each, so the issue count cannot be what decides.
+            per_project={"p-low": [issue(1, events=50)],
+                         "p-mid": [issue(1, events=500)],
+                         "p-high": [issue(1, events=5000)]}))
         assert result.status == base.STATUS_OK
         # Severity lives on the ISSUE, not the observation: route_severity
         # decides it at upsert time from routing_policy.

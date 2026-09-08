@@ -148,9 +148,16 @@ SELECT r.id, r.status, r.completed_at, r.window_end, r.error,
        r.subjects_failed,
        reg.cadence + reg.grace AS allowance,
        now() - r.window_end    AS age,
-       (SELECT sum(o.magnitude)::bigint FROM observations o
+       -- ISSUES from the evidence, EVENTS from magnitude. Magnitude is the
+       -- event volume that severity bands on; the count of issues is what a
+       -- person reads first, and it is deliberately not the same number.
+       (SELECT sum((o.evidence_sample ->> 'unresolved_issues')::int)
+          FROM observations o
          WHERE o.detector_run_id = r.id
            AND o.observation_type = 'SENTRY_UNRESOLVED_ISSUES') AS unresolved,
+       (SELECT sum(o.magnitude)::bigint FROM observations o
+         WHERE o.detector_run_id = r.id
+           AND o.observation_type = 'SENTRY_UNRESOLVED_ISSUES') AS events,
        (SELECT max(o.evidence_sample ->> 'worst_short_id') FROM observations o
          WHERE o.detector_run_id = r.id
            AND o.observation_type = 'SENTRY_UNRESOLVED_ISSUES') AS worst
@@ -184,7 +191,7 @@ def _sentry_claims(r: S.Reader) -> List[Claim]:
                     f"a report of zero errors"))]
 
     (_id, status, completed_at, _window_end, error, failed_subjects,
-     allowance, age, unresolved, worst) = row
+     allowance, age, unresolved, events, worst) = row
 
     if status != "OK":
         detail = (error or "").strip() or "no error text was recorded"
@@ -204,8 +211,10 @@ def _sentry_claims(r: S.Reader) -> List[Claim]:
 
     count = int(unresolved or 0)
     statement = f"{count} {label}"
-    if count and worst:
-        statement += f"; largest is {worst}"
+    if count:
+        statement += f" over {int(events or 0)} event(s)"
+        if worst:
+            statement += f"; largest is {worst}"
     return [Claim.computed(
         key, statement, source=f"sentry via fleet:{SENTRY_DETECTOR}",
         # as_of is when the RUN established it, not when the brief read the

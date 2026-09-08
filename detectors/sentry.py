@@ -161,12 +161,16 @@ class SentryDetector(Detector):
             observation_type=OBSERVATION_TYPE,
             subject_type=SUBJECT_TYPE,
             subject_id=subject.subject_id,
-            magnitude=len(issues), unit="issues",
+            # EVENTS, not issues. See the module docstring: the first
+            # question is whether one of these is firing in a loop, and the
+            # issue count cannot answer it. `unresolved_issues` is in the
+            # evidence and is what the statement leads with.
+            magnitude=events, unit="events",
             # There is no "expected" number of errors to compare against, and
             # inventing one would put a threshold in the detector that
             # routing_policy already owns. Zero is the only defensible
             # expectation for an unresolved error.
-            expected=0, actual=len(issues), delta=len(issues),
+            expected=0, actual=events, delta=events,
             evidence_query_key="sentry_unresolved_issues",
             evidence_query_version=1,
             evidence_params={"org": subject.payload["org"],
@@ -175,9 +179,9 @@ class SentryDetector(Detector):
             evidence_sample=sample,
             evidence_source=f"sentry:{subject.payload['org']}/{subject.subject_id}",
         ))
-        log.info("%s SENTRY_UNRESOLVED_ISSUES magnitude=%s severity=%s new=%s "
-                 "capped=%s", subject.label, len(issues), result.severity,
-                 result.inserted, capped)
+        log.info("%s SENTRY_UNRESOLVED_ISSUES issues=%s events=%s severity=%s "
+                 "new=%s capped=%s", subject.label, len(issues), events,
+                 result.severity, result.inserted, capped)
 
     # ---- the read ---------------------------------------------------------
 
