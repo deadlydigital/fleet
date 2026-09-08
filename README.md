@@ -1431,3 +1431,111 @@ rows by hand.
 Files: `contracts/candidate-producer.yaml`,
 `contracts/checks/candidate_block_shape.py`, `tests/test_candidate_block.py`
 (41), six reversion guards.
+
+---
+
+# The draft-spec gate, made reachable — and capped
+
+Three draft specs (tasks 23, 24, 25) died at `draft_spec_shape.py` for what
+looked like one reason. £4.23 across the three.
+
+## Five of the six failing paths were not mistakes
+
+| path | what it was |
+|---|---|
+| `api/analytics/routes/coupons.py` | a file the spec proposes to **create** |
+| `api/analytics/services/coupon_report.py` | a file the spec proposes to **create** |
+| `api/analytics/services/category_report.py` | a file the spec proposes to **create** |
+| `routes/categories.py` | abbreviation, of a file to be created |
+| `routes/orders.py` | **abbreviation** — `api/analytics/routes/orders.py` exists |
+| `routes/payments.py` | abbreviation, of a file to be created |
+
+**The check contradicted itself.** Rule 3 allows a *declared* writable path
+whose parent directory exists — a spec may create a new file. The prose rule
+four lines below required bare existence. Task 23 declared
+`api/analytics/routes/coupons.py`, the check **accepted it there**, and then
+failed the identical string for appearing in the prose. It failed for nothing
+it did wrong.
+
+So prose now gets the same rule, and an abbreviation is named as one with its
+correction attached: `routes/orders.py -> api/analytics/routes/orders.py`.
+Replayed against the three branches: **task 23 passes**, task 24 fails on one
+path instead of two, task 25 is told exactly what to write.
+
+## The paths pack — recall, not knowledge
+
+Every failing path had a real sibling in the same directory. That is a recall
+failure, and the fix is to put the tree in front of the agent rather than ask
+the prompt to try harder. The **runner** lists it, exactly as it runs the
+evidence queries, and commits it before the agent starts — an uncommitted
+runner artifact lands in the derived diff, where the boundary correctly refuses
+it.
+
+## The gate, reachable during the run
+
+`contracts/checks/spec_selfcheck.sh`, exposed by a **scoped** Bash entry:
+
+```yaml
+agent_tools:
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+  - Bash(/home/ubuntu/fleet/contracts/checks/spec_selfcheck.sh)
+```
+
+One command, no argument wildcard. `runner.yaml` says Bash is absent by default
+because an agent with arbitrary shell "would gain a way out of the worktree,"
+and permits a contract to widen it per task — this widens it by exactly one
+thing. The script lives under `contracts/**`, which is protected, so the agent
+cannot edit the thing it is allowed to run.
+
+**It runs the contract's FIRST verification command, not a copy of it**, so the
+preview cannot drift from the gate.
+
+## The cap is 3, and the cap is the point
+
+An agent that can run the gate can also mutate paths until it goes green —
+which satisfies the check without establishing what the file is, and is worse
+than the failure because it passes.
+
+**One to discover, one to confirm the fix, one spare for a second distinct
+problem.** Past that it is search, not correction, and the script says so
+rather than failing silently.
+
+Three things make the cap hold:
+
+- the state file lives **outside the worktree**. Inside it, every invocation
+  would write a file the boundary then refuses, so the act of checking would
+  fail the branch. Outside, the agent cannot reach it — it has no shell but the
+  one scoped command.
+- **every invocation and its verdict is recorded** on the `PATCH_PROPOSED`
+  step. A sequence whose unresolved set *changes composition* rather than
+  shrinking is the signature of mutation, and it is visible to whoever reviews
+  the branch. Recorded rather than judged: no check can tell a correction from
+  a lucky guess, and a reviewer reading three different failing path sets can.
+- the runner still runs the real verification after the agent exits. **This
+  never becomes the gate; it is a preview of it.**
+
+## `max_attempts` stays at 1
+
+The retry machinery exists — `task_transitions` has `RUNNING -> QUEUED
+'requeued below max_attempts'` — and the default is 1 in `003_tasks.sql`. It
+should stay there, for now.
+
+With the check reachable, a content failure that survives three self-checks is
+a spec the agent could not write, and retrying it unchanged is the definition
+of repeating something that did not work. The retry would cost another £1.30
+and re-run the same reasoning from the same prompt.
+
+**The real gap is not the number, it is that a FAILED run has no class.** Task
+21 failed with a *passing* check and a clean boundary — a different failure
+entirely, and one a retry might well have fixed. A retry policy that cannot
+tell "the check refused the content" from "the agent timed out" will either
+retry things that fail identically or refuse to retry things that would
+succeed. If retries are wanted, the thing to build is failure classification,
+not a bigger number — and the self-check log is the first evidence that would
+feed it.
+
+Tests: `tests/test_selfcheck.py` (22), six reversion guards.

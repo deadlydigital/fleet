@@ -1,0 +1,271 @@
+"""The gate, made reachable during the run — and capped.
+
+Three draft specs died at draft_spec_shape.py for the same reason. The
+diagnosis that shaped this file: of the six paths that failed, **five were
+files the spec proposed to create** and three of those were declared writable
+in the same document and accepted there. One rule for a declared path and a
+stricter one for the identical string in prose.
+
+So there are two halves here:
+
+  * the check stops contradicting itself, and names an abbreviation as an
+    abbreviation instead of as a path that resolves nowhere
+  * the check becomes runnable by the agent, CAPPED at three, with every
+    invocation recorded — because an agent that can run the gate without
+    limit can mutate paths until it goes green, which passes without
+    establishing anything
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import textwrap
+from pathlib import Path
+
+import pytest
+import yaml
+
+FLEET = Path.home() / "fleet"
+PLATFORM = Path.home() / "deadly-digital-platform"
+CHECK = FLEET / "contracts" / "checks" / "draft_spec_shape.py"
+SELFCHECK = FLEET / "contracts" / "checks" / "spec_selfcheck.sh"
+PY = FLEET / ".venv" / "bin" / "python"
+
+
+def spec(writable, prose_paths, work_type="dd_api"):
+    block = yaml.safe_dump({
+        "work_type": work_type, "repo": "deadly-digital-platform",
+        "title": "A spec", "writable_paths": writable})
+    prose = "\n".join(f"- `{p}` does the thing" for p in prose_paths)
+    # NOT textwrap.dedent. The block is interpolated before dedent runs, so
+    # only its FIRST line carries the template's indent and the rest sit at
+    # column 0 -- dedent then finds a common prefix of zero, strips nothing,
+    # and the YAML is invalid in a way that looks like the check's fault.
+    return ("# A spec\n\n```fleet-spec\n" + block + "```\n\n## The change\n\n"
+            + prose + "\n\nProse enough to be a document, describing what the\n"
+            "change does and why it is worth making, at some length.\n")
+
+
+def run_check(tmp_path, text, name="drafts/a-spec.md"):
+    doc = tmp_path / name
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(text)
+    r = subprocess.run((str(PY), str(CHECK)), cwd=tmp_path,
+                       env={**os.environ, "FLEET_CHANGED_FILES": name},
+                       capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+# ---- the check no longer contradicts itself --------------------------------
+
+class TestProseAndDeclaredPathsAreJudgedTheSameWay:
+
+    def test_a_file_the_spec_will_create_passes_in_prose(self, tmp_path):
+        """THE BUG THAT KILLED TASK 23.
+
+        It declared `api/analytics/routes/coupons.py` writable, the check
+        accepted it there, and then failed the identical string for being in
+        the prose. £1.93 for nothing the agent did wrong.
+        """
+        new = "api/analytics/routes/coupons.py"
+        assert not (PLATFORM / new).exists()
+        code, out = run_check(tmp_path, spec([new], [new]))
+        assert code == 0, out
+
+    def test_the_same_string_declared_and_cited_cannot_disagree(self, tmp_path):
+        new = "api/analytics/services/coupon_report.py"
+        declared_only = run_check(tmp_path, spec([new], []))[0]
+        also_cited = run_check(tmp_path, spec([new], [new]))[0]
+        assert declared_only == also_cited == 0
+
+    def test_a_new_file_in_a_directory_that_does_not_exist_still_fails(
+            self, tmp_path):
+        code, out = run_check(tmp_path, spec(
+            ["api/analytics/routes/orders.py"], ["api/nowhere/at/all/thing.py"]))
+        assert code == 1
+        assert "whose directory does not either" in out
+
+    def test_an_existing_path_passes(self, tmp_path):
+        code, out = run_check(tmp_path, spec(
+            ["api/analytics/routes/orders.py"],
+            ["api/analytics/routes/orders.py"]))
+        assert code == 0, out
+
+
+class TestAnAbbreviationIsNamedAsOne:
+
+    def test_it_says_which_path_was_meant(self, tmp_path):
+        """THE ONE REAL ERROR IN THE THREE FAILURES.
+
+        `routes/orders.py` is not a path; the same document declared
+        `api/analytics/routes/orders.py` correctly. Recall, not knowledge — so
+        the message supplies the thing that was not recalled.
+        """
+        code, out = run_check(tmp_path, spec(
+            ["api/analytics/routes/orders.py"], ["routes/orders.py"]))
+        assert code == 1
+        assert "abbreviated" in out
+        assert "routes/orders.py -> api/analytics/routes/orders.py" in out
+
+    def test_an_abbreviation_of_a_file_nobody_has_is_not_called_one(
+            self, tmp_path):
+        code, out = run_check(tmp_path, spec(
+            ["api/analytics/routes/orders.py"], ["routes/payments.py"]))
+        assert code == 1
+        assert "do not exist" in out
+
+
+class TestReplayingTheThreeRealFailures:
+    """Measured, not assumed. The branches are still in the repository."""
+
+    @staticmethod
+    def draft(task: int) -> tuple[str, str]:
+        name = subprocess.run(
+            ("git", "-C", str(FLEET), "show", f"fleet/task-{task}",
+             "--stat", "--format="), capture_output=True, text=True).stdout
+        rel = next(t for t in name.split() if t.startswith("drafts/"))
+        body = subprocess.run(("git", "-C", str(FLEET), "show",
+                               f"fleet/task-{task}:{rel}"),
+                              capture_output=True, text=True).stdout
+        return rel, body
+
+    def test_task_23_now_passes(self, tmp_path):
+        rel, body = self.draft(23)
+        code, out = run_check(tmp_path, body, name=rel)
+        assert code == 0, out
+
+    def test_task_24_still_fails_but_on_one_path_not_two(self, tmp_path):
+        rel, body = self.draft(24)
+        code, out = run_check(tmp_path, body, name=rel)
+        assert code == 1
+        assert "routes/categories.py" in out
+        assert "category_report.py" not in out      # legitimate new file
+
+    def test_task_25_still_fails_and_names_the_correction(self, tmp_path):
+        rel, body = self.draft(25)
+        code, out = run_check(tmp_path, body, name=rel)
+        assert code == 1
+        assert "routes/orders.py -> api/analytics/routes/orders.py" in out
+
+
+# ---- the cap ---------------------------------------------------------------
+
+class TestTheSelfCheckIsCapped:
+
+    @staticmethod
+    def harness(tmp_path, cap="3"):
+        subprocess.run(("git", "init", "-q"), cwd=tmp_path)
+        (tmp_path / "drafts").mkdir()
+        (tmp_path / "drafts" / "a-spec.md").write_text(
+            spec(["api/analytics/routes/orders.py"], ["routes/orders.py"]))
+        state = tmp_path.parent / f"state-{tmp_path.name}.log"
+        env = {**os.environ,
+               "FLEET_SELFCHECK_STATE": str(state),
+               "FLEET_SELFCHECK_MAX": cap,
+               "FLEET_SELFCHECK_COMMAND": f"{PY} {CHECK}"}
+        return env, state
+
+    def run(self, tmp_path, env):
+        return subprocess.run((str(SELFCHECK),), cwd=tmp_path, env=env,
+                              capture_output=True, text=True)
+
+    def test_it_reproduces_the_gate_exactly(self, tmp_path):
+        env, _ = self.harness(tmp_path)
+        r = self.run(tmp_path, env)
+        assert r.returncode == 1
+        assert "routes/orders.py -> api/analytics/routes/orders.py" in r.stdout
+
+    def test_the_fourth_invocation_is_refused(self, tmp_path):
+        env, _ = self.harness(tmp_path)
+        for _ in range(3):
+            assert self.run(tmp_path, env).returncode == 1
+        r = self.run(tmp_path, env)
+        assert r.returncode == 3
+        assert "used all 3 self-checks" in r.stdout
+
+    def test_the_cap_is_configuration_not_a_literal(self, tmp_path):
+        env, _ = self.harness(tmp_path, cap="1")
+        assert self.run(tmp_path, env).returncode == 1
+        assert self.run(tmp_path, env).returncode == 3
+
+    def test_every_invocation_is_recorded(self, tmp_path):
+        env, state = self.harness(tmp_path)
+        self.run(tmp_path, env)
+        self.run(tmp_path, env)
+        from runner.packs import read_selfcheck
+        runs = read_selfcheck(str(state))
+        assert [r["n"] for r in runs] == [1, 2]
+        assert all(r["exit_code"] == 1 for r in runs)
+        assert "abbreviated" in runs[0]["output"]
+
+    def test_an_untracked_file_is_seen(self, tmp_path):
+        """`git status --porcelain` collapses an untracked DIRECTORY to
+        `drafts/`, and the check then reported "no markdown file in the diff"
+        about a diff containing exactly one. -uall is why that works."""
+        env, _ = self.harness(tmp_path)
+        r = self.run(tmp_path, env)
+        assert "drafts/a-spec.md" in r.stdout
+        assert "no markdown file" not in r.stdout
+
+
+# ---- the paths pack --------------------------------------------------------
+
+class TestThePathsPack:
+
+    def test_it_lists_real_files_under_the_declared_roots(self, tmp_path):
+        from runner.packs import write_paths_pack
+        (tmp_path / "reference").mkdir()
+        (tmp_path / "reference" / "deadly-digital-platform").symlink_to(PLATFORM)
+        out, n = write_paths_pack(tmp_path, {
+            "paths_pack": {"file": "reference/PATHS.md",
+                           "base": "reference/deadly-digital-platform",
+                           "roots": ["api/analytics/routes"]}})
+        text = out.read_text()
+        assert n > 5
+        assert "api/analytics/routes/orders.py" in text
+        # And it says the thing the failures needed it to say.
+        assert "IN FULL from the repository root" in text
+        assert "`routes/orders.py` is " in text
+
+    def test_no_pack_declared_writes_nothing(self, tmp_path):
+        from runner.packs import write_paths_pack
+        assert write_paths_pack(tmp_path, {}) == (None, 0)
+
+
+class TestTheSelfCheckEnvironment:
+
+    def test_the_command_is_the_contracts_own_verification(self):
+        from runner.packs import selfcheck_env
+        env = selfcheck_env({"self_check": True,
+                             "verification": ["/bin/true", "/bin/false"]})
+        assert env["FLEET_SELFCHECK_COMMAND"] == "/bin/true"
+        assert env["FLEET_SELFCHECK_MAX"] == "3"
+
+    def test_a_contract_that_does_not_ask_for_it_gets_nothing(self):
+        from runner.packs import selfcheck_env
+        assert selfcheck_env({"verification": ["/bin/true"]}) == {}
+
+    def test_the_state_file_is_outside_the_worktree(self, tmp_path):
+        """Inside it, every invocation writes a file the boundary refuses --
+        so the act of checking would fail the branch."""
+        from runner.packs import selfcheck_env
+        env = selfcheck_env({"self_check": True, "verification": ["/bin/true"]})
+        assert not str(env["FLEET_SELFCHECK_STATE"]).startswith(str(tmp_path))
+        assert str(env["FLEET_SELFCHECK_STATE"]).startswith("/tmp")
+
+
+class TestTheContractSaysAllOfThis:
+
+    def test_draft_spec_declares_a_scoped_bash_and_nothing_wider(self):
+        c = yaml.safe_load((FLEET / "contracts" / "draft-spec.yaml").read_text())
+        bash = [t for t in c["agent_tools"] if t.startswith("Bash")]
+        assert bash == ["Bash(/home/ubuntu/fleet/contracts/checks/spec_selfcheck.sh)"]
+        assert "Bash" not in c["agent_tools"]        # not the bare tool
+
+    def test_the_script_it_may_run_is_protected(self):
+        c = yaml.safe_load((FLEET / "contracts" / "draft-spec.yaml").read_text())
+        assert "contracts/**" in c["protected_paths"]
+
+    def test_the_cap_is_in_the_contract(self):
+        c = yaml.safe_load((FLEET / "contracts" / "draft-spec.yaml").read_text())
+        assert c["self_check"] is True and c["self_check_max"] == 3

@@ -93,6 +93,48 @@ protected_paths:
 worktree_links:
   reference/deadly-digital-platform: /home/ubuntu/deadly-digital-platform
 
+# THE TREE, LISTED BY THE RUNNER, BEFORE THE AGENT WRITES A LINE.
+#
+# Three specs failed on paths and every failing one had a real sibling in the
+# same directory: `routes/orders.py` beside a genuine
+# `api/analytics/routes/orders.py`. That is recall, not knowledge, and asking
+# the prompt to try harder puts the burden back on the thing that already
+# failed three times. So the paths are put in front of it.
+paths_pack:
+  file: reference/PATHS.md
+  base: reference/deadly-digital-platform
+  roots:
+    - api/analytics
+    - platform/app/(dashboard)/analytics
+
+# THE GATE, MADE REACHABLE DURING THE RUN, AND CAPPED.
+#
+# The check ran after the agent exited, so three fixes of seconds each went
+# unmade and the tasks died terminally. self_check runs the contract's FIRST
+# verification command -- the same command, not a copy -- so the preview
+# cannot drift from the gate.
+#
+# self_check_max is 3: one to discover, one to confirm the fix, one spare for
+# a second distinct problem. An agent that could run it without limit could
+# mutate paths until green, which satisfies the check without establishing
+# what the file is -- a worse outcome than the failure, because it passes.
+# Every invocation is recorded on the PATCH_PROPOSED step.
+self_check: true
+self_check_max: 3
+
+# Bash is absent from the default tool list on purpose (see runner.yaml), and
+# this widens it by exactly ONE command with no argument wildcard. The script
+# lives under contracts/**, which is protected, so the agent cannot edit the
+# thing it is allowed to run; and the runner still runs the real verification
+# after the agent exits, so this never becomes the gate.
+agent_tools:
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+  - Bash(/home/ubuntu/fleet/contracts/checks/spec_selfcheck.sh)
+
 verification:
   - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/draft_spec_shape.py
 

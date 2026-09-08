@@ -25,6 +25,7 @@ explicit task-branch refspec.
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -36,7 +37,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from runner import agent as agent_mod
-from runner import boundary, config, evidence, reclaim as reclaim_mod
+from runner import boundary, config, evidence, packs, reclaim as reclaim_mod
 from runner import verify, worktree
 
 FORBIDDEN_RUN_STATUS = {"DEPLOYED"}
@@ -212,17 +213,28 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         # The evidence pack: the RUNNER reads the databases, as roles holding
         # SELECT and nothing else, and the agent reads a file. It never holds a
         # credential and has no shell to use one with.
+        # The paths pack: the tree, listed by the runner, in front of the
+        # agent before it writes a line. Three draft specs failed on paths
+        # whose real siblings were sitting in the same directory -- recall,
+        # not knowledge, and recall is fixed by showing rather than asking.
+        paths_written, paths_n = packs.write_paths_pack(wt_path, contract)
+        if paths_written:
+            log(f"  paths pack {paths_written.relative_to(wt_path)}: "
+                f"{paths_n} real path(s) listed")
+
         pack_path = contract.get("evidence_pack")
-        if contract.get("evidence_queries"):
-            results = evidence.run_queries(contract["evidence_queries"])
-            written = evidence.write_pack(
-                wt_path, pack_path or "EVIDENCE.md", results, task)
-            failed = [r.key for r in results if not r.ok]
-            log(f"  evidence pack {written.relative_to(wt_path)}: "
-                f"{len(results)} quer{'y' if len(results) == 1 else 'ies'}"
-                + (f", {len(failed)} FAILED: {', '.join(failed)}" if failed else ""))
-            result.notes.extend(
-                f"evidence query {k} failed and produced no reading" for k in failed)
+        if contract.get("evidence_queries") or paths_written:
+            results = (evidence.run_queries(contract["evidence_queries"])
+                       if contract.get("evidence_queries") else [])
+            if results:
+                written = evidence.write_pack(
+                    wt_path, pack_path or "EVIDENCE.md", results, task)
+                failed = [r.key for r in results if not r.ok]
+                log(f"  evidence pack {written.relative_to(wt_path)}: "
+                    f"{len(results)} quer{'y' if len(results) == 1 else 'ies'}"
+                    + (f", {len(failed)} FAILED: {', '.join(failed)}" if failed else ""))
+                result.notes.extend(
+                    f"evidence query {k} failed and produced no reading" for k in failed)
 
             # COMMITTED BEFORE THE AGENT RUNS, and the base moves to that
             # commit. The pack is the runner's file, not the agent's: leaving
@@ -234,8 +246,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             # travel with the document, on the same branch, so a reviewer can
             # see what the numbers came from.
             boundary.commit_agent_work(
-                wt_path, f"evidence pack for task {task['id']}: "
-                         f"{len(results)} readings taken before the agent ran")
+                wt_path, f"packs for task {task['id']}: {len(results)} reading(s) "
+                         f"and {paths_n} listed path(s), taken before the agent ran")
             base_sha = boundary.git(wt_path, "rev-parse", "HEAD").strip()
             log(f"  evidence committed; the agent's diff is measured from "
                 f"{base_sha[:12]}")
@@ -248,12 +260,35 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         cap_usd = reserved / float(settings["usd_to_gbp"])
         log(f"  spend cap ${cap_usd:.4f} (£{reserved:.4f} at "
             f"{settings['usd_to_gbp']})")
-        outcome = agent_mod.invoke(
-            wt_path, prompt, int(remaining),
-            allowed_tools=tuple(contract.get("agent_tools",
-                                             settings["agent_tools"])),
-            readable=tuple(readable),
-            max_cost_usd=cap_usd)
+        # THE SELF-CHECK, MADE REACHABLE AND CAPPED.
+        #
+        # The state file is outside the worktree: inside it, every invocation
+        # would write a file the boundary then refuses, so checking would fail
+        # the branch. The command is the contract's FIRST verification command
+        # rather than a second copy, so the preview cannot drift from the gate.
+        sc_env = packs.selfcheck_env(contract)
+        if sc_env:
+            log(f"  self-check reachable, capped at {sc_env['FLEET_SELFCHECK_MAX']}")
+        previous = {k: os.environ.get(k) for k in sc_env}
+        os.environ.update(sc_env)
+        try:
+            outcome = agent_mod.invoke(
+                wt_path, prompt, int(remaining),
+                allowed_tools=tuple(contract.get("agent_tools",
+                                                 settings["agent_tools"])),
+                readable=tuple(readable),
+                max_cost_usd=cap_usd)
+        finally:
+            for k, v in previous.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self_checks = packs.read_selfcheck(sc_env.get("FLEET_SELFCHECK_STATE"))
+        if self_checks:
+            verdicts = ", ".join(f"#{r['n']}={'pass' if not r['exit_code'] else 'fail'}"
+                                 for r in self_checks)
+            log(f"  self-checks run by the agent: {len(self_checks)} ({verdicts})")
         result.cost_gbp = _settle(token, reserved, outcome, run_id, settings,
                                   result, log)
         log(f"  agent exit {outcome.exit_code} in {outcome.duration_ms}ms"
@@ -265,7 +300,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             result.reason = (f"agent exceeded the {task['timeout_seconds']}s "
                              f"wall clock and was killed")
             _record_patch(task, run_id, base_sha, None, outcome, log,
-                          branch_point_sha=branch_point_sha)
+                          branch_point_sha=branch_point_sha,
+                          self_checks=self_checks)
             return
 
         if outcome.budget_exhausted:
@@ -277,7 +313,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             result.reason = (f"agent reached the £{reserved:.2f} spend cap "
                              f"and was stopped")
             _record_patch(task, run_id, base_sha, None, outcome, log,
-                          branch_point_sha=branch_point_sha)
+                          branch_point_sha=branch_point_sha,
+                          self_checks=self_checks)
             return
 
         # ---- what it actually did ----
@@ -287,7 +324,8 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         change.reported = outcome.reported_paths
         result.change = change
         _record_patch(task, run_id, base_sha, change, outcome, log,
-                      branch_point_sha=branch_point_sha)
+                      branch_point_sha=branch_point_sha,
+                      self_checks=self_checks)
 
         if change.empty:
             result.outcome = "FAILED"
@@ -501,7 +539,8 @@ def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
 
 
 def _record_patch(task, run_id, base_sha, change, outcome, log,
-                  *, branch_point_sha: str = "") -> None:
+                  *, branch_point_sha: str = "",
+                  self_checks: list[dict[str, Any]] | None = None) -> None:
     """PATCH_PROPOSED, written as fleet_agent.
 
     The derived facts and the agent's own account both go in, labelled, so
@@ -516,6 +555,12 @@ def _record_patch(task, run_id, base_sha, change, outcome, log,
         "agent_duration_ms": outcome.duration_ms,
         "agent_session_id": outcome.session_id,
         "derived_by": "runner",
+        # What the agent saw of the gate before it exited, and what it did
+        # after. A sequence whose unresolved set changes composition rather
+        # than shrinking is an agent mutating paths until green -- recorded
+        # rather than judged, because no check can tell that from a fix and a
+        # reviewer reading three different failing sets can.
+        "self_checks": self_checks or [],
     }
     if change is not None:
         payload.update({

@@ -105,6 +105,12 @@ A read-only checkout of `{cand['repo']}` is linked at
 `reference/{cand['repo']}`. **Read it.** The suggested paths above came from a
 findings document and may be wrong; the tree is the authority.
 
+`reference/PATHS.md` is the tree already listed for you, by the runner, before
+you started. **Cite paths IN FULL from the repository root.**
+`routes/orders.py` is not a path; `api/analytics/routes/orders.py` is. Three
+specs before this one died on exactly that, and in every case the real path was
+sitting in the same directory as the one written.
+
 ## What your spec must contain
 
 A fenced ```fleet-spec block with `work_type`, `repo`, `title` and
@@ -124,8 +130,26 @@ code change or an investigation. That determination is your job.
 - a declared writable path does not resolve in the repo, and neither does its
   parent directory
 - a declared writable path is protected by the contract you named
-- a path cited in prose resolves nowhere
+- a path cited in prose does not resolve AND its directory does not either —
+  naming a file you intend to CREATE is fine, in a directory that exists
+- a path cited in prose is an abbreviation of a real one (it will tell you
+  which)
 - the diff contains anything other than markdown
+
+## Run the check before you finish
+
+    /home/ubuntu/fleet/contracts/checks/spec_selfcheck.sh
+
+That is the same command the runner will run on your diff, so what it says is
+what you will be judged on. **You may run it three times.** Use one to see
+where you are, fix what it names, and run it again to confirm.
+
+The cap is deliberate and it is not a budget to spend. If the check still fails
+on the third run, the remaining problem is one to think about rather than to
+iterate against — read the tree and establish what the path IS, rather than
+trying another spelling. Every invocation and its verdict is recorded on the
+run, so a sequence of different failing paths is visible to whoever reviews
+this.
 
 **The path checks are why this step exists.** Two hand-written specs contained
 wrong file paths and would have sent builds at directories that do not exist.

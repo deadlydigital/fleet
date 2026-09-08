@@ -74,6 +74,31 @@ PROSE_PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./-]*/[\w.-]+\.[A-Za-z0-9]{1,5})`"
 REQUIRED = ("work_type", "repo", "title", "writable_paths")
 
 
+def _repo_files_ending(root, suffix: str, limit: int = 4000) -> list[str]:
+    """Real repo-relative paths ending in `suffix`, for the abbreviation hint.
+
+    Bounded: a spec cites a handful of paths and this only runs for one that
+    already failed, so walking is affordable, but a runaway tree should not
+    hang the check.
+    """
+    out: list[str] = []
+    tail = "/" + suffix.lstrip("/")
+    seen = 0
+    for p in root.rglob("*" + suffix.rsplit("/", 1)[-1]):
+        seen += 1
+        if seen > limit:
+            break
+        if not p.is_file():
+            continue
+        try:
+            rel = p.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if rel.endswith(tail):
+            out.append(rel)
+    return out
+
+
 def fail(msg: str) -> int:
     print(f"FAIL: {msg}", file=sys.stderr)
     return 1
@@ -200,13 +225,53 @@ def main() -> int:
                         "CHECK THAT EXISTS BECAUSE TWO HAND-WRITTEN SPECS GOT "
                         "PATHS WRONG.")
 
-        # 6. Prose paths, narrowly.
+        # 6. Prose paths, narrowly -- AND ON THE SAME TERMS AS THE DECLARED
+        # ONES ABOVE.
+        #
+        # This used to require bare existence, while rule 3 four lines up
+        # allows a declared path whose parent directory exists. Two rules for
+        # one string, and the contradiction was not theoretical: task 23
+        # DECLARED `api/analytics/routes/coupons.py` writable, the check
+        # accepted it there, and then failed the identical string for
+        # appearing in the prose. Of the six paths that failed tasks 23, 24
+        # and 25, five were files the spec proposed to CREATE and three of
+        # those were declared in the same document.
+        #
+        # A spec that may not name the files it is about to write cannot
+        # describe the work. So: exists, or its directory does.
         cited = {c for c in PROSE_PATH_RE.findall(text)}
-        unresolved = sorted(c for c in cited
-                            if not (checkout / c).exists() and not (FLEET / c).exists())
-        if unresolved:
-            return fail(f"{rel} cites repo paths in prose that resolve in "
-                        f"neither {repo} nor fleet: {unresolved}")
+        declared = {w.split("*")[0].rstrip("/") for w in writable}
+
+        abbreviated: list[str] = []
+        unknown: list[str] = []
+        for c in sorted(cited):
+            if (checkout / c).exists() or (FLEET / c).exists():
+                continue
+            if (checkout / c).parent.is_dir() or (FLEET / c).parent.is_dir():
+                continue                      # a file this spec will create
+            # THE REMAINING REAL ERROR, named for what it is. `routes/orders.py`
+            # is not a path; `api/analytics/routes/orders.py` is, and the same
+            # document declared it correctly. Recall, not knowledge -- so the
+            # message supplies the thing that was not recalled.
+            match = next((d for d in sorted(declared)
+                          if d.endswith("/" + c) or d == c), None)
+            if match is None:
+                match = next((d for d in sorted(_repo_files_ending(checkout, c))),
+                             None)
+            if match:
+                abbreviated.append(f"{c} -> {match}")
+            else:
+                unknown.append(c)
+
+        if abbreviated or unknown:
+            parts = []
+            if abbreviated:
+                parts.append("cites abbreviated paths; write them in full from "
+                             f"the repository root: {abbreviated}")
+            if unknown:
+                parts.append(f"cites paths that do not exist in {repo} or fleet "
+                             f"and whose directory does not either: {unknown}")
+            return fail(f"{rel} " + "; and ".join(parts))
 
         print(f"ok: {rel} -- work_type '{work_type}' has a contract, "
               f"{len(writable)} writable path(s) resolve and none is protected, "

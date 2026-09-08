@@ -400,6 +400,51 @@ CASES = [
      "    if False:",
      "tests/test_candidate_block.py::TestTheCeiling::test_over_the_cap_is_refused"),
 
+    # ---- the draft-spec gate, reachable and capped ------------------------
+    ("prose paths get the same parent rule as declared ones",
+     "contracts/checks/draft_spec_shape.py",
+     "            if (checkout / c).parent.is_dir() or (FLEET / c).parent.is_dir():\n"
+     "                continue                      # a file this spec will create",
+     "            if False:\n"
+     "                continue                      # a file this spec will create",
+     "tests/test_selfcheck.py::TestProseAndDeclaredPathsAreJudgedTheSameWay::"
+     "test_a_file_the_spec_will_create_passes_in_prose"),
+
+    ("an abbreviation is named as one, with its correction",
+     "contracts/checks/draft_spec_shape.py",
+     "            if match:\n                abbreviated.append",
+     "            if False:\n                abbreviated.append",
+     "tests/test_selfcheck.py::TestAnAbbreviationIsNamedAsOne::"
+     "test_it_says_which_path_was_meant"),
+
+    ("the self-check is capped",
+     "contracts/checks/spec_selfcheck.sh",
+     'if [ "$used" -ge "$MAX" ]; then',
+     "if false; then",
+     "tests/test_selfcheck.py::TestTheSelfCheckIsCapped::"
+     "test_the_fourth_invocation_is_refused"),
+
+    ("every self-check invocation is recorded",
+     "contracts/checks/spec_selfcheck.sh",
+     'if [ -n "$STATE" ]; then\n    {\n      echo "run $n exit=$code"',
+     'if false; then\n    {\n      echo "run $n exit=$code"',
+     "tests/test_selfcheck.py::TestTheSelfCheckIsCapped::"
+     "test_every_invocation_is_recorded"),
+
+    ("the self-check sees untracked files",
+     "contracts/checks/spec_selfcheck.sh",
+     "CHANGED=$(git status --porcelain -uall 2>/dev/null | awk '{print $NF}')",
+     "CHANGED=$(git status --porcelain 2>/dev/null | awk '{print $NF}')",
+     "tests/test_selfcheck.py::TestTheSelfCheckIsCapped::"
+     "test_an_untracked_file_is_seen"),
+
+    ("the paths pack names the real tree",
+     "runner/packs.py",
+     "        for p in sorted(start.rglob(\"*\")):",
+     "        for p in sorted([]):",
+     "tests/test_selfcheck.py::TestThePathsPack::"
+     "test_it_lists_real_files_under_the_declared_roots"),
+
     ("a thin group is listed, not compared",
      "proposer/precedent.py",
      "        if len(rows) < floor:",
