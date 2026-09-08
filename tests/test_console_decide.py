@@ -792,3 +792,72 @@ class TestTheBaseMustAgreeWithItsRemote:
                                  task["base_sha"], task["tip"])
         assert not r.ok and "diverged" in r.reason
         assert not r.merged and not r.pushed
+
+
+# ---------------------------------------------------------------------------
+# decided_via: who performed the merge, which is a third question again.
+#
+# MERGED_OUTSIDE was proposed as a status and does not exist. MERGED is read in
+# fourteen places across eight files; a status every reader must learn is a
+# large change to say something the payload can say. The task IS merged, so
+# tasks.status says MERGED and the provenance lives here.
+# ---------------------------------------------------------------------------
+
+class TestDecidedVia:
+
+    def test_it_defaults_to_console(self, dsns, repo, task, console):
+        out = decide.record(task=task["task"], run_id=task["run_id"],
+                            verdict="MERGED", decision=decide.ACCEPT_DECISION,
+                            note="", rendered_at=time.time())
+        assert out["decided_via"] == "console"
+
+    def test_a_hand_merge_can_be_recorded_as_one(self, dsns, repo, task,
+                                                 console):
+        out = decide.record(task=task["task"], run_id=task["run_id"],
+                            verdict="MERGED", decision=decide.ACCEPT_DECISION,
+                            note="merged by hand", rendered_at=time.time(),
+                            decided_via="by_hand")
+        assert out["decided_via"] == "by_hand"
+        row = console.execute(
+            "SELECT payload FROM run_steps WHERE run_id=%s AND"
+            " step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()
+        assert row["payload"]["decided_via"] == "by_hand"
+
+    def test_an_unknown_value_is_refused(self, dsns, repo, task):
+        with pytest.raises(decide.VerdictNotRecorded) as exc:
+            decide.record(task=task["task"], run_id=task["run_id"],
+                          verdict="MERGED", decision=decide.ACCEPT_DECISION,
+                          note="", rendered_at=time.time(),
+                          decided_via="somehow")
+        assert "not a way a decision can be arrived at" in str(exc.value)
+
+    def test_the_status_is_MERGED_either_way(self, dsns, repo, task, console):
+        """The task is merged. Provenance is not a status.
+
+        A new status would have to be learnt by decision_outcomes'
+        task_outcome and attempts_to_green, decide.py's whitelist, four places
+        in morning.py, three templates, outcomes.py and precedent.py -- all to
+        record something one payload field carries.
+        """
+        decide.record(task=task["task"], run_id=task["run_id"],
+                      verdict="MERGED", decision=decide.ACCEPT_DECISION,
+                      note="", rendered_at=time.time(), decided_via="by_hand")
+        status = console.execute("SELECT status FROM tasks WHERE id=%s",
+                                 (task["task"]["id"],)).fetchone()["status"]
+        assert status == "MERGED"
+
+    def test_the_payload_can_name_a_discarded_commit(self, dsns, repo, task,
+                                                     console):
+        """A payload naming only the survivor reads as though the console
+        never merged. It did; the commit was built and thrown away."""
+        decide.record(task=task["task"], run_id=task["run_id"],
+                      verdict="MERGED", decision=decide.ACCEPT_DECISION,
+                      note="", rendered_at=time.time(), decided_via="by_hand",
+                      merge={"merge_commit": "a" * 40,
+                             "console_merge_commit": "b" * 40,
+                             "console_merge_discarded": True})
+        p = console.execute(
+            "SELECT payload FROM run_steps WHERE run_id=%s AND"
+            " step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["payload"]
+        assert p["merge"]["console_merge_commit"] == "b" * 40
+        assert p["merge"]["console_merge_discarded"] is True

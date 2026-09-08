@@ -526,6 +526,19 @@ CASES = [
      "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
      "test_count_itself_returns_none_when_git_fails"),
 
+    ("decided_via is validated, not taken on trust",
+     "console/decide.py",
+     "    if decided_via not in DECIDED_VIA:",
+     "    if False:",
+     "tests/test_console_decide.py::TestDecidedVia::test_an_unknown_value_is_refused"),
+
+    ("decided_via reaches the payload",
+     "console/decide.py",
+     '        "decided_via": decided_via,',
+     '        "decided_via": "console",',
+     "tests/test_console_decide.py::TestDecidedVia::"
+     "test_a_hand_merge_can_be_recorded_as_one"),
+
     ("a thin group is listed, not compared",
      "proposer/precedent.py",
      "        if len(rows) < floor:",

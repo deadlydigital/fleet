@@ -86,16 +86,38 @@ def _next_sequence(conn, run_id: int) -> int:
     return row["n"]
 
 
+#: How the decision was arrived at. Not a status and not a verdict: the task
+#: is MERGED either way, because it IS merged. This says who performed it.
+#:
+#: `by_hand` exists because a merge outside the console is a real event the
+#: record must be able to express. Task 26 was merged by hand on 8 Sep after
+#: the console refused a push into a stale base, and until this parameter
+#: existed the only supported writer asserted `console` -- so recording the
+#: truth meant either lying in this field or writing rows around the one
+#: function that keeps the step and the status transition in a transaction.
+DECIDED_VIA = ("console", "by_hand")
+
+
 def record(*, task: dict, run_id: int, verdict: str, decision: str,
            note: str | None, rendered_at: float,
-           merge: dict[str, Any] | None = None) -> dict[str, Any]:
+           merge: dict[str, Any] | None = None,
+           decided_via: str = "console") -> dict[str, Any]:
     """Move the task and write the step, in one transaction.
 
     `verdict` is the task status -- MERGED or REJECTED. `decision` is the
     run_steps vocabulary -- APPROVED or one of the REJECTED_* codes. They are
     separate because they answer different questions: what happened to the
     task, and why the person decided it.
+
+    `decided_via` is a third question again: WHO PERFORMED IT. A merge made
+    outside the console is still a merge, and the status should say so; the
+    provenance belongs here rather than in a new status that fourteen readers
+    would have to learn.
     """
+    if decided_via not in DECIDED_VIA:
+        raise VerdictNotRecorded(
+            f"{decided_via!r} is not a way a decision can be arrived at; "
+            f"known: {', '.join(DECIDED_VIA)}")
     if verdict not in ("MERGED", "REJECTED"):
         raise VerdictNotRecorded(f"{verdict} is not a task verdict")
     if decision != ACCEPT_DECISION and decision not in REJECT_REASONS:
@@ -106,7 +128,7 @@ def record(*, task: dict, run_id: int, verdict: str, decision: str,
         "decision": decision,
         "verdict": verdict,
         "note": (note or "").strip() or None,
-        "decided_via": "console",
+        "decided_via": decided_via,
         "decision_seconds": round(decision_seconds, 1),
         "task_id": task["id"],
     }

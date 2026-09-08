@@ -1735,30 +1735,68 @@ returns `None`, the caller refuses with *"that is not the same as them
 agreeing"*, and a repository with no remote-tracking ref is skipped explicitly
 with a note rather than by accident.
 
-## What was NOT done, and why
+## MERGED_OUTSIDE was proposed, does not exist, and was not added
 
-**`MERGED_OUTSIDE` does not exist.** It is in no migration, no Python, no
-template; the deployed CHECK on `tasks.status` allows exactly
+**Written down so the next person who reaches for it finds the reasoning
+rather than repeating it.**
+
+The obvious way to record task 26 was a new task status meaning "merged, but
+not by the console". It was proposed by name. It is in no migration, no Python
+file and no template, and the deployed CHECK on `tasks.status` allows exactly
 `QUEUED, RUNNING, READY_FOR_REVIEW, FAILED, ABANDONED, MERGED, REJECTED,
-REWORK`. So task 26 has not been recorded, and no note claiming that path
-"had never fired and now works" appears anywhere — it has never existed, so
-such a note would be a fabricated provenance claim in the record of a system
-whose whole argument is that its record can be trusted.
+REWORK`.
 
-Adding it is a real change, not a one-line migration. `MERGED` is read in
-**fourteen places** across eight files: the CHECK and `task_transitions` in
-003; `decision_outcomes`' `task_outcome` and `attempts_to_green` in 010 (a new
-status falls through to `IN_FLIGHT` and `NULL`, which would misreport it);
-`decide.py`'s verdict whitelist; four in `morning.py`; three templates;
-`outcomes.py` and `proposer/precedent.py`, which both define
-`_DELIVERED = ("MERGED",)`.
+**A note claiming it had fired and worked was also proposed, and refused.** A
+path that has never existed cannot have executed, and asserting otherwise
+would have put a fabricated provenance claim in the one record whose entire
+argument is that it can be trusted. That refusal is the point of this section
+as much as the design decision is.
 
-There is a cheaper design that expresses the same fact: record `MERGED` —
-which is **true**, the branch is in `origin/main` — and put the provenance in
-the `HUMAN_DECISION` payload (`decided_via`, the landed `merge_commit`
-`1a906d9`, and the console's discarded `39b7844`) plus a `decision_log` row.
-That touches no reader and needs no migration; its cost is that a query over
-`tasks.status` alone cannot distinguish the two, so anything that cares must
-read the step.
+**Why it was not added.** `MERGED` is read in **fourteen places across eight
+files**: the CHECK and `task_transitions` in 003; `decision_outcomes`'
+`task_outcome` *and* `attempts_to_green` in 010, where a new status falls
+through to `IN_FLIGHT` and `NULL` and would silently misreport a merged task;
+`decide.py`'s verdict whitelist; four in `morning.py`; three templates; and
+`outcomes.py` and `proposer/precedent.py`, which each define
+`_DELIVERED = ("MERGED",)`. A status every reader must learn is a large change
+to say something one payload field can say.
 
-Both are defensible. The choice is not one to make on someone's behalf.
+**What was done instead.** The task is MERGED, because it is merged — that is
+not a compromise, it is the true statement. The provenance lives in the
+`HUMAN_DECISION` payload:
+
+    decided_via            "by_hand"            (validated; console | by_hand)
+    merge_commit           1a906d9…             what landed
+    merge_commit_parents   [9c16d4c…, 76ae3e1…] the second is what was verified
+    console_merge_commit   39b7844…             what the console built
+    console_merge_base     7375d0a…             the stale base it built on
+    console_merge_discarded true
+
+The discarded commit is named deliberately: **a payload that lists only the
+survivor reads as though the console never merged.** It did, at 20:08, into a
+`main` two commits behind `origin/main`, and the push was refused.
+
+`decision_log` #24 carries the account in prose; #23 carries the
+analytics_1 verification gap against the same task.
+
+**`decided_via` is the mechanism, and it did not exist either.**
+`decide.record()` hardcoded `"console"`, so the only supported writer asserted
+the console had acted. Recording the truth meant either lying in that field or
+writing rows around the one function that keeps the step and the status
+transition in a single transaction. It is a validated parameter now.
+
+## A fix committed and not deployed is indistinguishable from a fix that does not work
+
+The console ran for the whole of 8 September as pid 570, started 12:58:51.
+Every change made that day — the outcome logging that would have made the
+first silent refusal loud, the preflight blocker that would have shown it
+before the button, the divergence check that would have refused the stale-base
+merge outright — was committed and not running.
+
+So the 20:08 accept failed silently for the *same* reason as the 19:25 one,
+after the fix for it had been written. The journal showed `POST … 303` twice,
+six hours apart, for two different underlying faults and one shared cause:
+**the repository had the fix and the process did not.**
+
+`systemctl restart fleet-console` is part of finishing a console change, not a
+separate errand.
