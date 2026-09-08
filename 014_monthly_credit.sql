@@ -169,9 +169,12 @@ BEGIN
                ('no credit pool reading recorded for ' || to_char(m, 'YYYY-MM')
                 || '. Nothing on this host can read the provider balance, so '
                 || 'the figure is recorded by hand and its absence is a '
-                || 'refusal rather than an assumption. Record one as '
-                || 'fleet_admin: INSERT INTO model_credit_pool (period_month, '
-                || 'pool_gbp, source, read_at) VALUES (''' || m
+                || 'refusal rather than an assumption. Record one with the '
+                || 'migration identity, which owns this table, or as any '
+                || 'member of fleet_admin -- NOT as fleet_console, which holds '
+                || 'SELECT here and nothing more: INSERT INTO '
+                || 'model_credit_pool (period_month, pool_gbp, source, '
+                || 'read_at) VALUES (''' || m
                 || ''', <gbp>, ''where you read it'', <when you read it>);')::text;
         RETURN;
     END IF;
