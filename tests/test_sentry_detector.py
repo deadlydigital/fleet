@@ -29,10 +29,19 @@ ORG = "deadly-digital"
 SUBJECT = f"sentry_project:{PROJECT}"
 
 
-def issue(n: int, *, events: int = 1, level: str = "error"):
+def issue(n: int, *, events: int = 1, level: str = "error",
+          project: str = PROJECT, lifetime: int | None = None):
+    """One issue as the ORGANIZATION endpoint returns it.
+
+    `project.slug` is what the detector groups on, and `count` is the
+    WINDOWED figure with `lifetime.count` beside it -- the project endpoint
+    returns neither, which is why it is not used.
+    """
     return {"id": str(1000 + n), "shortId": f"DD-API-{n}", "level": level,
             "title": f"an error {n}", "culprit": "app.py in thing",
             "count": str(events), "userCount": 0,
+            "project": {"slug": project},
+            "lifetime": {"count": str(lifetime if lifetime is not None else events)},
             "firstSeen": "2026-09-08T09:00:00Z",
             "lastSeen": "2026-09-08T09:30:00Z"}
 
@@ -44,10 +53,12 @@ def detector(payload=None, *, raises=None, token="tok", org=ORG,
         if raises is not None:
             raise raises
         if per_project is not None:
+            # ONE call returns every project; the detector groups by slug.
+            flat = []
             for slug, body in per_project.items():
-                if f"/{slug}/" in url:
-                    return body
-            raise AssertionError(f"no stub for {url}")
+                for i in body:
+                    flat.append({**i, "project": {"slug": slug}})
+            return flat
         return payload
     return SentryDetector(token=token, org=org, projects=list(projects),
                           api_base="https://sentry.io/api/0", fetch=fetch)
@@ -159,7 +170,10 @@ class TestEnumerationRefusesToBeEmpty:
         assert result.observations_created == 0
 
     def test_no_org_configured_is_an_error_too(self, fleet, admin, dsns):
-        result = run(fleet, detector([], org=None))
+        """`org=""`, not `org=None` -- the constructor reads None as "go and
+        look in the environment", and SENTRY_ORG is now set there. The same
+        ambiguity the token test hit the day the credential landed."""
+        result = run(fleet, detector([], org=""))
         assert result.status == base.STATUS_ERROR
 
     def test_the_refusal_says_why_rather_than_failing_obscurely(self):
@@ -201,6 +215,7 @@ class TestWhatASuccessfulReadRecords:
         assert rows[0]["unit"] == "events"
         assert rows[0]["evidence_sample"]["unresolved_issues"] == 2
         assert rows[0]["evidence_sample"]["total_events"] == 9001
+        assert rows[0]["evidence_sample"]["window"] == "24h"
         assert rows[0]["evidence_sample"]["worst_short_id"] == "DD-API-1"
 
     def test_severity_comes_from_routing_policy_not_from_the_detector(

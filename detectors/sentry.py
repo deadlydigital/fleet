@@ -68,6 +68,10 @@ OBSERVATION_TYPE = "SENTRY_UNRESOLVED_ISSUES"
 #: like a project that does not exist.
 DEFAULT_API_BASE = "https://sentry.io/api/0"
 
+#: The window the magnitude describes. Honoured by the ORGANIZATION issues
+#: endpoint and ignored by the project one -- see `_unresolved`.
+WINDOW = "24h"
+
 #: One page. Above this the count is reported CAPPED rather than as an exact
 #: number, the same way analytics `setup-status` caps its row counts: an
 #: understated total presented as exact is worse than a total that says it is
@@ -103,6 +107,9 @@ class SentryDetector(Detector):
         #: Injected in tests. The real one is _http_get; nothing else in this
         #: module knows what an HTTP response is.
         self._fetch = fetch or self._http_get
+        #: One org-wide read per run, grouped by project slug.
+        self._by_project: dict[str, list[dict[str, Any]]] | None = None
+        self._capped = False
 
     # ---- enumeration ------------------------------------------------------
 
@@ -155,6 +162,12 @@ class SentryDetector(Detector):
             worst_event_count=_int(worst.get("count")),
             worst_level=str(worst.get("level") or "")[:20],
             newest_last_seen=str(newest)[:40],
+            # The all-time figure, beside the windowed one. An issue at 24
+            # events today and 315 since August is a different thing from one
+            # at 24 events total, and magnitude cannot say which.
+            lifetime_events=sum(
+                _int((i.get("lifetime") or {}).get("count")) for i in issues),
+            window=WINDOW,
         )
 
         result = emit(ctx, Observation(
@@ -186,25 +199,52 @@ class SentryDetector(Detector):
     # ---- the read ---------------------------------------------------------
 
     def _unresolved(self, project: str) -> tuple[list[dict[str, Any]], bool]:
+        """This project's share of one org-wide read.
+
+        THE ORG ENDPOINT, NOT THE PROJECT ONE, AND THE DIFFERENCE IS THE
+        MEASUREMENT.
+
+        `/projects/{org}/{project}/issues/` ignores `statsPeriod` for
+        SELECTION -- 24h and 14d both returned 66 issues with lastSeen going
+        back a month -- and its `count` is the issue's LIFETIME total. A
+        magnitude built from it would be "every event ever recorded against
+        anything still unresolved", which only ever ratchets upward, and the
+        severity bands were sized for a daily figure.
+
+        `/organizations/{org}/issues/` filters by the window and returns
+        BOTH: `count` is the events in the period (24) and `lifetime.count`
+        is the all-time figure (315) for the same issue. Measured 8 Sep 2026.
+
+        One call for every project, grouped by the slug Sentry returns.
+        """
+        if self._by_project is None:
+            self._by_project = self._fetch_all()
+        capped = self._capped
+        return list(self._by_project.get(project, [])), capped
+
+    def _fetch_all(self) -> dict[str, list[dict[str, Any]]]:
         if not self._token:
             raise SentryUnavailable(
                 "SENTRY_AUTH_TOKEN is not set. The DSN in the app container "
-                "is an ingest key and cannot read; this needs an organisation "
-                "auth token with event:read")
+                "is an ingest key and cannot read; this needs a token "
+                "carrying event:read")
 
-        url = (f"{self._api_base}/projects/{urllib.parse.quote(self._org)}/"
-               f"{urllib.parse.quote(project)}/issues/?"
+        url = (f"{self._api_base}/organizations/"
+               f"{urllib.parse.quote(self._org)}/issues/?"
                + urllib.parse.urlencode({"query": "is:unresolved",
-                                         "statsPeriod": "24h",
+                                         "statsPeriod": WINDOW,
                                          "limit": PAGE_LIMIT}))
         payload = self._fetch(url)
         if not isinstance(payload, list):
             raise SentryUnavailable(
                 f"expected a list of issues from {self._api_base}, got "
                 f"{type(payload).__name__}")
-        # At the page limit the count is a floor, not a total. Said rather
-        # than silently truncated.
-        return payload, len(payload) >= PAGE_LIMIT
+        self._capped = len(payload) >= PAGE_LIMIT
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for issue in payload:
+            slug = ((issue.get("project") or {}).get("slug")) or "?"
+            grouped.setdefault(slug, []).append(issue)
+        return grouped
 
     def _http_get(self, url: str) -> Any:
         request = urllib.request.Request(url, method="GET")

@@ -1036,6 +1036,32 @@ DSN was set, and nothing had ever read it. Every error it holds has been
 invisible: `docker logs` shows a handled exception only if something logged it,
 and an unhandled one only until the buffer rolls.
 
+## The credential is a PERSONAL token, tied to one account
+
+`SENTRY_AUTH_TOKEN` is an `sntryu_` **user auth token** created under Settings
+→ Account, carrying `event:read` and `project:read`.
+
+**Organisation auth tokens (`sntrys_`) cannot do this job.** One was tried
+first. It authenticated and read `/organizations/{org}/releases/` (HTTP 200)
+while returning 403 on every issue endpoint, and Sentry named the reason in the
+response header rather than leaving it to be guessed:
+
+    WWW-Authenticate: Bearer error="insufficient_scope",
+                      scope="event:admin event:read event:write"
+
+The organisation token UI offers `org:ci` and not `event:read`, so that route
+is closed rather than merely unconfigured.
+
+**What that costs: this is a person's credential, not a service one.** It dies
+with the account, it carries whatever that account can see rather than a scope
+someone chose for a machine, and a leaver takes the detector with them.
+
+**The alternative that would not:** an **internal integration** under Settings
+→ Developer Settings, with Issue & Event: Read. Its token belongs to the
+organisation rather than to a person and survives a change of hands. **Worth
+revisiting if this account ever changes hands** — the detector needs no change
+for it, only a different string in `.env`.
+
 ## The DSN cannot read, and that is why this needed a new secret
 
 `SENTRY_DSN` in the app container is an **ingest key**. It authorises sending
@@ -1111,6 +1137,26 @@ one. The ERROR path already did this; only PARTIAL was silent.
   nothing here can tell them apart.
 - **Not more than one page.** At 100 issues the count is reported `capped`, a
   floor rather than a total.
+
+## The ORGANIZATION endpoint, because the project one does not window
+
+`/projects/{org}/{project}/issues/` **ignores `statsPeriod` for selection** —
+measured 8 Sep 2026, `24h` and `14d` both returned 66 issues with `lastSeen`
+going back to 10 August — and its `count` is the issue's **lifetime** total.
+Magnitude built from that is "every event ever recorded against anything still
+unresolved", which only ratchets upward, and the bands were sized for a daily
+figure.
+
+`/organizations/{org}/issues/` filters by the window and returns **both**: for
+one issue, `count` was `24` and `lifetime.count` was `315`. So the detector
+makes one org-wide call, groups by the `project.slug` Sentry returns, and
+carries `lifetime_events` beside the windowed magnitude — an issue at 24 events
+today and 315 since August is not the same as one at 24 events total, and a
+single number cannot say which.
+
+**This was caught by testing the endpoint the detector actually calls**, after
+a first check against the org endpoint had already passed. The two disagreed
+(20 issues versus 69), and the disagreement was the finding.
 
 ## Severity is on event volume, reversing what this file first argued
 
