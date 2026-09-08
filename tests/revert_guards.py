@@ -356,6 +356,50 @@ CASES = [
      "tests/test_aws_cost.py::TestTheBriefClaim::"
      "test_a_settle_lag_does_not_make_a_fresh_run_read_as_stale"),
 
+    # ---- candidate producer: re-verification, not re-reading --------------
+    ("a declared probe is re-executed at HEAD",
+     "contracts/checks/candidate_block_shape.py",
+     "            held, desc = run_probe(repo, probe)\n"
+     "            if not held:",
+     "            held, desc = run_probe(repo, probe)\n"
+     "            if False:",
+     "tests/test_candidate_block.py::TestAClaimIsReExecutedNotReRead::"
+     "test_a_stale_claim_is_refused_at_head"),
+
+    ("the probe vocabulary is closed",
+     "contracts/checks/candidate_block_shape.py",
+     '    return False, (f"{kind!r} is not in the probe vocabulary "',
+     '    return True, (f"{kind!r} is not in the probe vocabulary "',
+     "tests/test_candidate_block.py::TestAClaimIsReExecutedNotReRead::"
+     "test_a_probe_outside_the_vocabulary_is_refused"),
+
+    ("a block cannot express a disposition",
+     "contracts/checks/candidate_block_shape.py",
+     "    for field in FORBIDDEN:\n        if field in c:",
+     "    for field in FORBIDDEN:\n        if False:",
+     "tests/test_candidate_block.py::TestTheProhibitionsAreInTheShape::"
+     "test_a_forbidden_field_is_refused[disposition-APPROVED]"),
+
+    ("an hib_signal must carry its as_of",
+     "contracts/checks/candidate_block_shape.py",
+     '            if not isinstance(sig, dict) or not sig.get("value") or not sig.get("as_of"):',
+     '            if False:',
+     "tests/test_candidate_block.py::TestHibSignalIsAFactAndCarriesItsAge::"
+     "test_a_signal_without_an_as_of_is_refused"),
+
+    ("the block must declare itself unranked",
+     "contracts/checks/candidate_block_shape.py",
+     '    if block.get("ordering") != "unranked":',
+     "    if False:",
+     "tests/test_candidate_block.py::TestTheBlockDoesNotPretendToRank::"
+     "test_ordering_must_be_declared_unranked"),
+
+    ("the emitted ceiling is enforced",
+     "contracts/checks/candidate_block_shape.py",
+     "    if len(candidates) > args.max_candidates:",
+     "    if False:",
+     "tests/test_candidate_block.py::TestTheCeiling::test_over_the_cap_is_refused"),
+
     ("a thin group is listed, not compared",
      "proposer/precedent.py",
      "        if len(rows) < floor:",

@@ -65,6 +65,9 @@ GOVERNED_BY: Dict[str, Optional[str]] = {
     "dd_docs": None,
     "research": None,
     "draft_spec": None,
+    # A candidate producer emits a document of proposed work. Nothing of it
+    # runs anywhere, so there is no deployment to be behind.
+    "candidate_producer": None,
 }
 
 

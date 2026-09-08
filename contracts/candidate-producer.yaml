@@ -1,0 +1,123 @@
+# Task contract: turn a findings document into candidate rows.
+#
+# Candidates have existed only when a session was asked to write them by hand,
+# so the loop never started on its own. This is the producer §7 of
+# specs/approval-surface.md states the interface for and deliberately does not
+# solve.
+#
+# WHY THIS IS A TASK AND NOT A PARSER
+#
+# A parser over specs/metorik-gap.md yields 50 rows, 14 of them already
+# shipped, and -- worse -- the 34 marked Missing or Partial are 11 days old.
+# Probed against platform HEAD ebe016c on 8 Sep 2026, two of four Daily-band
+# rows were already wrong: order filtering now accepts payment_method,
+# country, coupon and has_discount where the document says "nothing else", and
+# the location report has the page the document says it lacks. Those are
+# exactly the two a person caught by hand when batch 8 was assembled.
+#
+# So parsing is trivial and RE-VERIFICATION IS THE WORK. Every candidate
+# declares predicates that candidate_block_shape.py re-executes at HEAD; a row
+# whose claim has stopped being true cannot be emitted.
+#
+# THE PROHIBITIONS ARE IN THIS FILE, NOT IN A PROMPT
+#
+# §7 forbids a producer to set a disposition, to write to `tasks`, and to
+# deduplicate against previous batches. Four things enforce that here, and
+# none of them is an instruction the agent could disregard:
+#
+#   * agent_tools has NO Bash, so there is no shell
+#   * .env is gitignored and therefore absent from a fresh worktree, so there
+#     is no credential and no route to the database at all
+#   * writable_paths is ONE file
+#   * candidate_block_shape.py REFUSES a block containing disposition,
+#     work_type, batch_id, spec_task_id or work_task_id -- the shape cannot
+#     express pre-approval
+#
+# The third prohibition follows from the second: the agent is given the
+# findings document and the platform repository, and never `candidates`. It
+# cannot deduplicate because it cannot see what came before -- which is what
+# keeps a reappearing candidate a signal.
+#
+# RE-RUN, DO NOT RECONCILE. A batch two weeks old is a new batch. This task is
+# run again against the same document; it does not update rows in place, for
+# the reason §5 keeps a NOT_NOW candidate's original batch_id -- a candidate
+# that reappears is signal, and quietly refreshing it erases that.
+#
+# NO WEB ACCESS, unlike research.yaml. This task re-verifies claims about a
+# repository, and the claims it cannot check -- whether Metorik still ships a
+# feature, whether merchants want one -- are not made more checkable by
+# fetching a marketing page. Dropping WebSearch and WebFetch removes the
+# reproducibility problem that contract has to manage rather than managing it.
+
+work_type: candidate_producer
+repo: fleet
+# The fleet repository has no `main`: the work lives on
+# track-2-foundation. A task's base branch is immutable once it
+# exists, so getting this wrong means abandoning the task rather
+# than editing it.
+base_branch: track-2-foundation
+contract_version: 1
+
+# ONE file. A producer emits one batch from one document.
+writable_paths:
+  - research/candidates-metorik-gap-2026-09-08.md
+
+protected_paths:
+  # the fleet floor, which the database requires by name
+  - contracts/**
+  - tests/**
+  - runner/**
+  - console/**
+  - detectors/**
+  - proposer/**
+  - systemd/**
+  - specs/**
+  - .env
+  - 001_v1_core.sql
+  - 001_v1_core_assertions.sql
+  - 001_v1_core_fixtures.sql
+  - 002_proposals.sql
+  - 002_proposals_assertions.sql
+  - 003_tasks.sql
+  - 003_tasks_assertions.sql
+  - 004_console_reader.sql
+  - 004_console_reader_assertions.sql
+  - 005_console_decisions.sql
+  - 005_console_decisions_assertions.sql
+  - 006_verdict_coverage.sql
+  - 006_verdict_coverage_assertions.sql
+  - 007_research_floor.sql
+  - 007_research_floor_assertions.sql
+
+# Read, never write. Snapshotted whole-tree before and after: --add-dir grants
+# read access and nothing makes it read-only, so a write here would land
+# outside the worktree's index and the derived diff would show nothing.
+readable_repos:
+  - deadly-digital-platform
+
+# No Bash, and no web. See the header: the absence of a shell is what makes
+# the §7 prohibitions structural rather than requested.
+agent_tools:
+  - Read
+  - Grep
+  - Glob
+  - Write
+  - Edit
+
+verification:
+  # The same floor every research document meets: it exists, is substantial,
+  # is dated, names evidence, states what it could not verify, and its cited
+  # paths resolve.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/research_document_shape.py
+  # And the block itself, with every probe re-executed at HEAD.
+  #
+  # --max-candidates IS THE CEILING AND IT LIVES HERE. Fifteen unshipped rows
+  # against an approval batch cap of 5 is fine, because listing is cheap and
+  # ticking is the work. A sixty-row findings document flooding the surface is
+  # not, and the limit belongs to the contract rather than to whoever writes
+  # the next document.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/candidate_block_shape.py --max-candidates 10
+
+max_diff_lines: 2000
+max_cost_gbp: 5.00
+timeout_seconds: 3600

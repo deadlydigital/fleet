@@ -65,15 +65,30 @@ def test_every_shipped_contract_matches_the_repo_it_names(cli, path):
     repo = Path.home() / contract["repo"]
     if not repo.exists():
         pytest.skip(f"{contract['repo']} not checked out")
-    # A research contract's writable path is the document it is about to
-    # write. Requiring it to exist first would require the output before the
-    # task that produces it. Protected paths must exist either way -- a floor
-    # naming a path that is not there protects nothing.
-    to_check = list(contract["protected_paths"])
-    if contract.get("work_type") != "research":
-        to_check += contract["writable_paths"]
-    missing = [g for g in to_check
+    # Protected paths must exist -- a floor naming a path that is not there
+    # protects nothing.
+    missing = [g for g in contract["protected_paths"]
                if not (repo / cli.config.glob_prefix(g)).exists()]
+
+    # Writable paths: exists, OR it is a single new FILE in a directory that
+    # does. A document-producing contract names the document it is about to
+    # write, and requiring that to exist first would require the output before
+    # the task that produces it.
+    #
+    # DERIVED, NOT A LIST OF WORK TYPES. This used to exempt
+    # `work_type == "research"` by name, which silently stopped covering the
+    # case the day a second document-producing work type existed
+    # (candidate_producer) and failed it for being new. The rule it meant is
+    # the one draft_spec_shape.py already states: a contract may create a new
+    # file, but not in a directory that is not there.
+    for g in contract["writable_paths"]:
+        target = repo / cli.config.glob_prefix(g)
+        if target.exists():
+            continue
+        if "*" not in g and target.suffix and target.parent.exists():
+            continue
+        missing.append(g)
+
     assert missing == [], f"{path.name} names paths that do not exist: {missing}"
 
 

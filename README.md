@@ -1300,3 +1300,134 @@ both — until then the detector cannot close a run OK and the brief reports the
 gap rather than a pass.
 
 Tests: `tests/test_aws_cost.py` (24), five reversion guards.
+
+---
+
+# The candidate producer — re-verification, not parsing
+
+Candidates existed only when a session was asked to write them by hand, so the
+loop never started on its own. This is the producer `specs/approval-surface.md`
+§7 states the interface for and deliberately does not solve.
+
+## Parsing is trivial. The document is the problem.
+
+`specs/metorik-gap.md` holds **50 data rows** — 26 Missing, 8 Partial, 14
+already `Has`. Filtering to Missing/Partial leaves 34, and **those 34 are 11
+days old**. Probed against platform HEAD `ebe016c` on 8 Sep 2026, four
+Daily-band rows:
+
+| row | document | HEAD |
+|---|---|---|
+| Order filtering — *"accepts start, end, exact status, search, sort_by, sort_dir. **Nothing else**"* | Partial | **wrong** — also `payment_method`, `country`, `coupon`, `has_discount` |
+| Location reports — *"built but unreachable ... there is no page"* | Partial | **wrong** — `geography/page.tsx` exists |
+| CSV export — *"the only `text/csv` is `/segments/{name}/export`"* | Missing | still true |
+| Net revenue — *"no aggregate nets it"* | Missing | still true |
+
+**Two of four**, and they are exactly the two a person caught by hand when
+batch 8 was assembled. A parser reproduces both as current candidates and
+nothing in the text says otherwise.
+
+## So the check re-executes the claim
+
+Every candidate declares predicates from a **closed vocabulary** —
+`path_exists`, `path_absent`, `grep_count` — and
+`candidate_block_shape.py` **re-runs them at HEAD**. A row whose claim has
+stopped being true cannot be emitted. Predicates are evaluated with `pathlib`
+and `re`; nothing is shelled out, so a probe cannot become an arbitrary
+command, and the agent that writes one has no shell to test it with anyway.
+
+Each row also carries `verified_sha`, checked to be a real commit. The probes
+are the guard; the sha is the receipt — which is what lets a batch approved a
+week later be checked against what moved rather than trusted.
+
+## The §7 prohibitions are in the contract, not a prompt
+
+| prohibition | enforced by |
+|---|---|
+| not set `disposition` | `agent_tools` has **no Bash**; `.env` is gitignored so absent from a fresh worktree — there is no route to the database at all |
+| not write to `tasks` | the same, plus `writable_paths` is **one file** |
+| not deduplicate against previous batches | the agent is given the document and the platform repo, and never `candidates` — it *cannot* see what came before |
+| — | the check **refuses a block containing** `disposition`, `work_type`, `batch_id`, `spec_task_id`, `work_task_id` — the shape cannot express pre-approval |
+
+`work_type` is refused for the reason `draft_spec_shape.py` records: `candidates`
+has no work_type column, because a producer reading a findings document would
+be guessing at what the draft-spec step exists to determine.
+
+**Re-run, do not reconcile.** A batch two weeks old is a new batch. The task is
+run again against the same document and never updates rows in place — the same
+reason §5 keeps a `NOT_NOW` candidate's original `batch_id`: a candidate that
+reappears is signal, and quietly refreshing it erases that.
+
+**The ceiling is `--max-candidates 10`, in the contract.** Fifteen unshipped
+rows against an approval batch cap of 5 is fine — listing is cheap and ticking
+is the work — but a sixty-row findings document must not be able to flood the
+surface, and the limit belongs to the contract rather than to whoever writes
+the next document.
+
+## `hib_relevant` does not exist
+
+Measured before anything was built on it: **zero hits across both
+repositories**, both gap documents and every research file. The only "HIB" in
+`metorik-gap.md` is the word *Hibernating*, an RFM segment name. The gap list
+ranks by agency-use frequency and carries no HIB column at all.
+
+So the mechanism is built and **reports the absence rather than inventing the
+data**. `hib_signal` is a required key on every candidate; `null` means the
+source document declares none, and a non-null one **must carry both `value` and
+`as_of`** — the age of that signal is what decides whether it can be leaned on.
+If a future findings document grows an HIB column, the producer carries it
+through with its date; until then every row says plainly that there is none.
+
+## It does not rank, and has to say so
+
+The document orders by agency-use frequency. `principles.md` ranks by what
+HIB's team would open daily and puts trust above parity. Batch 8 established
+that **candidate order is rank order**, so a list that looks ranked and is not
+is the failure.
+
+The block must declare `ordering: unranked`. `agency_use_band` travels inside
+`evidence` as *the document's claim*, not as the producer's ordering.
+`objective_ref` is where trust-versus-parity actually lands and is assigned per
+row with a justification — inheriting `dd-feature-parity` from the document
+header would be silently adopting the ranking the principles file rejects.
+
+**And the block must carry `unasked_question`:** nobody has asked HIB's team
+what they need. A candidate justified by an `hib_signal` is justified by what
+HIB *has*, not what its team *wants*. Said once, on the block, so a batch
+approved off it does not read as evidence-backed when it is inference-backed.
+
+## What it cannot verify
+
+Presence and absence in a repository, and nothing else. Not whether Metorik
+still ships a feature, not whether merchants want one, not whether the
+agency-use band is right — which is why this contract drops `WebSearch` and
+`WebFetch` that `research.yaml` carries: fetching a marketing page does not make
+a claim about the world checkable, it just adds a reproducibility problem to
+manage. It cannot prove a feature is *complete*: `payment_method` appearing in
+`orders.py` is not the filter working. It cannot tell whether a row marked
+Missing is missing for a good reason, nor whether a candidate's probes test the
+claim it made rather than something adjacent. Those are a read, and this exists
+to make that read smaller, not to replace it.
+
+## A test that named a work type by hand
+
+`test_every_shipped_contract_matches_the_repo_it_names` exempted
+`work_type == "research"` from the writable-path-must-exist rule, because a
+document-producing contract names the document it is about to write. It stopped
+covering that case the moment a second document-producing work type existed,
+and failed `candidate_producer` for being new. Now derived, using the rule
+`draft_spec_shape.py` already states: a contract may create a new **file**, but
+not in a directory that does not exist.
+
+## Not built: the ingest
+
+The producer emits a block. Turning it into `candidate_batches` +
+`candidates` rows needs `fleet_console`'s INSERT, and the producer's whole
+safety argument is that it cannot write. That step is a small CLI and is
+deliberately separate — until it exists the loop starts on its own and still
+needs one command to close, over a verified block rather than a session writing
+rows by hand.
+
+Files: `contracts/candidate-producer.yaml`,
+`contracts/checks/candidate_block_shape.py`, `tests/test_candidate_block.py`
+(41), six reversion guards.
