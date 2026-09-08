@@ -1686,3 +1686,79 @@ What actually blocked task 26 was environmental and one command wide:
 
 Tests: `tests/test_console_blocker.py` (6), three in `tests/test_console.py`,
 four reversion guards.
+
+---
+
+# The base must agree with its remote, before the merge
+
+Task 26 was merged by the console at 20:08 into a local `main` two commits
+behind `origin/main` — PR #3 had landed on GitHub at 15:37 and this checkout
+had never pulled. The merge produced `39b7844`, the push was refused
+non-fast-forward, and `accept()` recorded nothing, exactly as designed:
+*"main and origin/main now disagree, and that is worse than either failing
+alone — resolve it by hand before recording anything."*
+
+**The refusal was right and one step late.** `merge_and_push` verified the push
+against the remote *after* a merge commit existed, which is too late to prevent
+what it detects. `preflight` never consulted the remote at all — no fetch, no
+rev-list, no `origin/` reference anywhere in the function.
+
+It does now, and `merge_and_push` fetches before asking, so the write path
+compares against the remote as it is rather than as it was at the last fetch.
+
+## It refuses on *behind*, not on *ahead*
+
+Behind is the defect: merging into a base the remote has moved past builds a
+commit that cannot be pushed. **Ahead is the ordinary state of a checkout with
+unpushed work** — it is what the already-merged path looks like by
+construction, and refusing it would make recording a local merge impossible.
+The first version refused on `behind or ahead` and broke three existing tests,
+which is how the distinction was found.
+
+The count is still *reported* when both are non-zero, because "diverged" and
+"behind" are different states and the message should not flatten them. The
+message names the state rather than a direction:
+
+> `main and origin/main have diverged: origin/main has 2 commit(s) this
+> checkout does not. Merging into it would build a commit that cannot be
+> pushed, which is what happened to task 26 on 8 Sep.`
+
+## `_count` returns None on failure, never 0
+
+Found by `revert_guards.py` while proving the above: the ref-existence check
+was not load-bearing, because `_count` returned **0** when a range could not be
+resolved — making *"I could not look"* identical to *"they agree"*, and letting
+a merge proceed on a question nobody answered.
+
+That is the same silent default as the flash, one layer down. `_count` now
+returns `None`, the caller refuses with *"that is not the same as them
+agreeing"*, and a repository with no remote-tracking ref is skipped explicitly
+with a note rather than by accident.
+
+## What was NOT done, and why
+
+**`MERGED_OUTSIDE` does not exist.** It is in no migration, no Python, no
+template; the deployed CHECK on `tasks.status` allows exactly
+`QUEUED, RUNNING, READY_FOR_REVIEW, FAILED, ABANDONED, MERGED, REJECTED,
+REWORK`. So task 26 has not been recorded, and no note claiming that path
+"had never fired and now works" appears anywhere — it has never existed, so
+such a note would be a fabricated provenance claim in the record of a system
+whose whole argument is that its record can be trusted.
+
+Adding it is a real change, not a one-line migration. `MERGED` is read in
+**fourteen places** across eight files: the CHECK and `task_transitions` in
+003; `decision_outcomes`' `task_outcome` and `attempts_to_green` in 010 (a new
+status falls through to `IN_FLIGHT` and `NULL`, which would misreport it);
+`decide.py`'s verdict whitelist; four in `morning.py`; three templates;
+`outcomes.py` and `proposer/precedent.py`, which both define
+`_DELIVERED = ("MERGED",)`.
+
+There is a cheaper design that expresses the same fact: record `MERGED` —
+which is **true**, the branch is in `origin/main` — and put the provenance in
+the `HUMAN_DECISION` payload (`decided_via`, the landed `merge_commit`
+`1a906d9`, and the console's discarded `39b7844`) plus a `decision_log` row.
+That touches no reader and needs no migration; its cost is that a query over
+`tasks.status` alone cannot distinguish the two, so anything that cares must
+read the step.
+
+Both are defensible. The choice is not one to make on someone's behalf.

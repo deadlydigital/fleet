@@ -497,6 +497,35 @@ CASES = [
      "tests/test_console.py::TestTheRefusalIsShownBeforeTheButton::"
      "test_the_page_still_renders_when_preflight_cannot_run"),
 
+    # ---- the base must agree with its remote, before the merge ------------
+    ("a base behind its remote is refused before merging",
+     "console/merge.py",
+     "        if behind:",
+     "        if False:",
+     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
+     "test_a_base_behind_its_remote_refuses_before_merging"),
+
+    ("merge_and_push fetches before it asks",
+     "console/merge.py",
+     '    _git(repo, "fetch", remote, task["base_branch"])',
+     "    pass",
+     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
+     "test_merge_and_push_fetches_before_it_asks"),
+
+    ("an unresolved count refuses rather than proceeding",
+     "console/merge.py",
+     "        if behind is None or ahead is None:",
+     "        if False:",
+     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
+     "test_a_count_that_cannot_be_resolved_refuses_rather_than_reading_zero"),
+
+    ("_count reports failure as None, not as zero",
+     "console/merge.py",
+     "    if r.returncode != 0:\n        return None",
+     "    if r.returncode != 0:\n        return 0",
+     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
+     "test_count_itself_returns_none_when_git_fails"),
+
     ("a thin group is listed, not compared",
      "proposer/precedent.py",
      "        if len(rows) < floor:",

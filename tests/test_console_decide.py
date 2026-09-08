@@ -664,3 +664,131 @@ def test_the_runners_worktree_root_is_not_writable_under_that_sandbox():
     assert r.returncode != 0, (
         f"{runner_root} is writable under the console's sandbox -- the unit "
         f"has been widened, and console/config.py's reasoning is now stale")
+
+
+# ---------------------------------------------------------------------------
+# The base must agree with its remote, checked BEFORE the merge.
+#
+# merge_and_push already verified the push against the remote -- after a merge
+# commit existed, which is too late to prevent what it detects. Task 26 was
+# merged into a local main two commits behind origin/main, produced 39b7844,
+# could not push it, and correctly recorded nothing. The refusal was right and
+# one step late.
+# ---------------------------------------------------------------------------
+
+class TestTheBaseMustAgreeWithItsRemote:
+
+    @staticmethod
+    def advance_remote(repo: Path, origin: Path, tmp_path: Path) -> None:
+        """Someone else merges a PR: the remote moves, this checkout does not."""
+        other = tmp_path / "elsewhere"
+        sh_clone = subprocess.run(["git", "clone", "-q", str(origin), str(other)],
+                                  capture_output=True)
+        assert sh_clone.returncode == 0, sh_clone.stderr
+        # The bare origin's HEAD may name a branch that does not exist, so a
+        # clone lands detached with no local `main` to push.
+        sh(other, "git", "checkout", "-q", "-B", "main", "origin/main")
+        sh(other, "git", "config", "user.email", "t@t")
+        sh(other, "git", "config", "user.name", "t")
+        (other / "unrelated.txt").write_text("someone else's work\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-q", "-m", "PR #3")
+        sh(other, "git", "push", "-q", "origin", "main")
+
+    def test_a_base_behind_its_remote_refuses_before_merging(
+            self, dsns, repo, origin, task, tmp_path):
+        self.advance_remote(repo, origin, tmp_path)
+        sh(repo, "git", "fetch", "-q", "origin", "main")
+        r = merge.preflight(repo, task["task"], task["branch"],
+                            task["base_sha"], task["tip"])
+        assert not r.ok
+        assert "diverged" in r.reason
+        assert "origin/main has 1 commit(s) this checkout does not" in r.reason
+        assert any("pull --ff-only" in d for d in r.detail)
+        # AND NOTHING WAS MERGED. That is the whole point of moving it earlier.
+        assert sh(repo, "git", "rev-parse", "HEAD").strip() == \
+               sh(repo, "git", "rev-parse", "origin/main~1").strip()
+
+    def test_a_base_merely_AHEAD_of_its_remote_is_not_refused(
+            self, dsns, repo, task):
+        """Ahead is unpushed work, not a defect.
+
+        It is what the already-merged path looks like by construction -- the
+        branch was merged locally and the console is recording it -- so
+        refusing here would make that flow impossible. The first version of
+        this check refused on `behind or ahead` and broke three existing
+        tests, which is how the distinction was found.
+        """
+        (repo / "local-only.txt").write_text("not pushed\n")
+        sh(repo, "git", "add", "-A")
+        sh(repo, "git", "commit", "-q", "-m", "local work")
+        r = merge.preflight(repo, task["task"], task["branch"],
+                            task["base_sha"], task["tip"])
+        assert "diverged" not in (r.reason or "")
+
+    def test_a_diverged_base_names_both_sides(self, dsns, repo, origin, task,
+                                              tmp_path):
+        self.advance_remote(repo, origin, tmp_path)
+        sh(repo, "git", "fetch", "-q", "origin", "main")
+        (repo / "local-only.txt").write_text("not pushed\n")
+        sh(repo, "git", "add", "-A")
+        sh(repo, "git", "commit", "-q", "-m", "local work")
+        r = merge.preflight(repo, task["task"], task["branch"],
+                            task["base_sha"], task["tip"])
+        assert "origin/main has 1 commit(s)" in r.reason
+        assert "this checkout has 1 commit(s)" in r.reason
+        assert "behind" not in r.reason.lower()      # the state, not "behind"
+        assert any("both ways" in d for d in r.detail)
+
+    def test_a_base_in_sync_is_not_refused_for_it(self, dsns, repo, task):
+        r = merge.preflight(repo, task["task"], task["branch"],
+                            task["base_sha"], task["tip"])
+        assert "diverged" not in (r.reason or "")
+
+    def test_a_repo_with_no_remote_tracking_ref_is_not_refused(
+            self, dsns, repo, task):
+        """fleet's own branches have no remote. A check that cannot resolve
+        the ref must skip, not refuse -- refusing would make every task in a
+        remoteless repository unmergeable."""
+        sh(repo, "git", "update-ref", "-d", "refs/remotes/origin/main")
+        r = merge.preflight(repo, task["task"], task["branch"],
+                            task["base_sha"], task["tip"])
+        assert r.ok
+        assert any("no remote to" in n for n in r.detail)
+
+    def test_a_count_that_cannot_be_resolved_refuses_rather_than_reading_zero(
+            self, dsns, repo, task, monkeypatch):
+        """"I could not look" must not be identical to "they agree".
+
+        _count returned 0 on failure, so an unresolvable range read as a base
+        in sync and the merge proceeded on a question nobody answered. That is
+        the silent default this whole thread has been about.
+        """
+        real = merge._count
+        monkeypatch.setattr(merge, "_count", lambda *a, **k: None)
+        r = merge.preflight(repo, task["task"], task["branch"],
+                            task["base_sha"], task["tip"])
+        assert not r.ok
+        assert "could not determine" in r.reason
+        assert "not the same as them agreeing" in r.reason
+
+    def test_count_itself_returns_none_when_git_fails(self, repo):
+        """The internals, since the test above monkeypatches over them.
+
+        Pointed out by revert_guards.py: a guard on _count's body could not
+        be proven by a test that replaces _count.
+        """
+        assert merge._count(repo, "no-such-ref..also-missing") is None
+        assert merge._count(repo, "HEAD..HEAD") == 0
+
+    def test_merge_and_push_fetches_before_it_asks(self, dsns, repo, origin,
+                                                   task, tmp_path):
+        """The page may compare against a stale tracking ref and says so; the
+        write path must not. Here the remote moves and this checkout has NOT
+        fetched -- merge_and_push must still refuse."""
+        self.advance_remote(repo, origin, tmp_path)
+        # deliberately no fetch
+        r = merge.merge_and_push(repo, task["task"], task["branch"],
+                                 task["base_sha"], task["tip"])
+        assert not r.ok and "diverged" in r.reason
+        assert not r.merged and not r.pushed

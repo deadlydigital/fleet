@@ -61,8 +61,26 @@ def _sha(repo: Path, ref: str) -> str:
     return out.stdout.strip()
 
 
+def _count(repo: Path, spec: str) -> int | None:
+    """`git rev-list --count`, or None when the range could not be resolved.
+
+    NOT 0 ON FAILURE. Returning zero would make "I could not look" identical
+    to "they agree", and the caller would proceed into a merge on the
+    strength of a question that was never answered -- the same silent default
+    that made a refused merge invisible one layer up.
+    """
+    r = _git(repo, "rev-list", "--count", spec)
+    if r.returncode != 0:
+        return None
+    try:
+        return int(r.stdout.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
-              recorded_patch: str, branch_point: str = "") -> MergeOutcome:
+              recorded_patch: str, branch_point: str = "",
+              remote: str = "origin") -> MergeOutcome:
     """Everything that must hold before a merge is attempted.
 
     Returns an outcome whose `ok` says whether to proceed; `already_merged`
@@ -105,6 +123,71 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
                     "The console will not switch it for you: another process "
                     "may be working in this checkout, and moving a branch "
                     "under someone is worse than refusing to."])
+
+    # THE BASE MUST AGREE WITH ITS REMOTE, AND THIS IS CHECKED BEFORE THE
+    # MERGE RATHER THAN AFTER THE PUSH.
+    #
+    # `merge_and_push` already verifies the push against the remote -- but
+    # that fires after a merge commit exists, which is too late to prevent
+    # the thing it detects. On 8 Sep 2026 a local `main` sat two commits
+    # behind `origin/main` because PR #3 had been merged on GitHub and never
+    # pulled. The console merged into it, produced 39b7844, could not push
+    # it, and correctly refused to record anything -- leaving a merge commit
+    # to be cleaned up by hand. The refusal was right and it happened one
+    # step too late.
+    #
+    # Compared against the remote-TRACKING ref, not the network:
+    # `merge_and_push` fetches before calling this, so the write path sees
+    # the truth, while the task page can ask the same question on a GET for
+    # the cost of two rev-lists.
+    remote_ref = f"{remote}/{base}"
+    if _git(repo, "rev-parse", "--verify", "--quiet", remote_ref).returncode != 0:
+        # No remote to disagree with. fleet's own branches are like this, and
+        # refusing here would make every task in a remoteless repository
+        # unmergeable. Noted rather than skipped silently.
+        r.note(f"there is no {remote_ref}, so the base has no remote to "
+               f"disagree with and none was checked")
+    else:
+        behind = _count(repo, f"{base}..{remote_ref}")
+        ahead = _count(repo, f"{remote_ref}..{base}")
+        if behind is None or ahead is None:
+            return MergeOutcome(
+                False,
+                f"could not determine whether {base} agrees with {remote_ref}. "
+                f"That is not the same as them agreeing, and a merge on the "
+                f"strength of an unanswered question is how task 26 produced "
+                f"a commit that could not be pushed.",
+                detail=[f"try: git -C {repo} fetch {remote} {base}"])
+        # REFUSES ON *BEHIND*, NOT ON AHEAD.
+        #
+        # Behind is the defect: merging into a base the remote has moved past
+        # builds a commit that cannot be pushed. Ahead is the ordinary state
+        # of a checkout with work not yet pushed -- it is what the
+        # already-merged path looks like by construction, and refusing it
+        # would make recording a local merge impossible. The count is still
+        # REPORTED when it co-occurs, because "diverged" and "behind" are
+        # different states and the message should not flatten them.
+        if behind:
+            # NAMED AS THE STATE, NOT AS "BEHIND". "Behind" describes one of
+            # the two and reads as though the fix is always a pull; when the
+            # checkout holds commits the remote does not, it is not.
+            what = []
+            if behind:
+                what.append(f"{remote_ref} has {behind} commit(s) this "
+                            f"checkout does not")
+            if ahead:
+                what.append(f"this checkout has {ahead} commit(s) "
+                            f"{remote_ref} does not")
+            return MergeOutcome(
+                False,
+                f"{base} and {remote_ref} have diverged: " + "; and ".join(what)
+                + ". Merging into it would build a commit that cannot be "
+                  "pushed, which is what happened to task 26 on 8 Sep.",
+                detail=([f"fix: git -C {repo} pull --ff-only"] if not ahead
+                        else ["Diverged both ways. Resolve by hand: the "
+                              "checkout also holds work the remote does not, "
+                              "and the console will not decide what should "
+                              "happen to it."]))
 
     dirty = _git(repo, "status", "--porcelain").stdout.strip()
     if dirty:
@@ -196,7 +279,13 @@ def merge_and_push(repo: Path, task: dict, branch: str, recorded_base: str,
     BEFORE this, because a merge that only verifies afterwards has already
     happened by the time it is refused.
     """
-    r = preflight(repo, task, branch, recorded_base, recorded_patch, branch_point)
+    # Fetch BEFORE preflight, so its divergence check compares against the
+    # remote as it is now rather than as it was at the last fetch. The page
+    # asks the same question without this and says so; the write path must
+    # not guess.
+    _git(repo, "fetch", remote, task["base_branch"])
+    r = preflight(repo, task, branch, recorded_base, recorded_patch, branch_point,
+                  remote=remote)
     if not r.ok:
         return r
     if reverification is not None and not reverification.ok:
@@ -259,7 +348,7 @@ def merge_and_push(repo: Path, task: dict, branch: str, recorded_base: str,
     r.pushed = True
 
     # Verified, not trusted: exit 0 is a claim about what happened.
-    _git(repo, "fetch", remote, base)
+    _git(repo, "fetch", remote, task["base_branch"])
     r.remote_sha = _sha(repo, f"{remote}/{base}")
     r.push_verified = bool(r.remote_sha) and r.remote_sha == r.base_sha_after
     if not r.push_verified:
