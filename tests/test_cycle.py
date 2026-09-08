@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from datetime import timedelta
 
 import pytest
 
@@ -17,7 +18,7 @@ from proposer import cycle as cycle_module
 from proposer.findings import KIND_OBSERVATION, KIND_RISK
 from proposer.objectives import load as load_objectives
 from support_proposals import (HEARTBEAT, RECONCILIATION, arrange_issue,
-                               arrange_observations, arrange_runs,
+                               arrange_observations, arrange_run, arrange_runs,
                                insert_proposal, slot_ends)
 
 OBJECTIVES_FILE = config.PROJECT_ROOT / "objectives-2026-Q4.yaml"
@@ -454,3 +455,111 @@ def test_the_cycle_says_nothing_when_nothing_crossed_a_threshold(
     result = run(dsns, cycle_config, objectives)
     assert result.proposed == []
     assert "Nothing crossed a threshold" in cycle_module.report(result, objectives)
+
+
+class TestHealthyIsHealthyAtEveryMinute:
+    """The guard on the flake this suite had for nine minutes of every hour.
+
+    THE BUG, because a fixed test with no record of what it was is a test
+    somebody deletes. `arrange_run` defaulted `completed_at` to the slot end.
+    `slot_ends` returns SETTLED slots, so with reconciliation's cadence 1h and
+    settle_lag 15m the newest settled slot at HH:MM is:
+
+        MM >= 15  ->  HH:00        age = MM
+        MM <  15  ->  (HH-1):00    age = 60 + MM
+
+    and the silence budget is cadence + grace = 65m. So `healthy()` produced a
+    STALE reading whenever 60 + MM > 65 -- minutes :06 to :14 -- the readings
+    the whole cycle rests on were dropped, and fifteen tests failed. Measured
+    failing at :11, :12, :13 and passing at :16 and :35.
+
+    A wall-clock-dependent test passes in CI most of the time and fails in the
+    ten minutes somebody happens to push, which is the worst shape available.
+
+    So this asserts the property directly, for all sixty minutes, using the
+    registry's own geometry rather than a restatement of it. It is arithmetic
+    on the schedule and does not run a cycle, so it cannot itself be flaky --
+    and it fails loudly if anyone narrows `grace` far enough to reopen the gap.
+    """
+
+    #: The schedule geometry only. arrange_run()'s contribution -- how long
+    #: after window_end it says a run completed -- is MEASURED from a real
+    #: insert below rather than restated here. A guard that copied the formula
+    #: would pass whether or not the fixture still used it, which is the one
+    #: way this test could be worthless.
+    GEOMETRY = """
+    WITH reg AS (
+        SELECT detector_key, schedule_epoch, cadence, settle_lag,
+               cadence + grace AS budget
+          FROM detector_registry WHERE retired_at IS NULL
+    ), at AS (
+        SELECT reg.*, date_trunc('hour', now()) + (mm || ' min')::interval AS fake_now, mm
+          FROM reg, generate_series(0, 59) AS mm
+    ), slot AS (
+        SELECT at.*,
+               schedule_epoch + floor(
+                   extract(epoch FROM (fake_now - settle_lag - schedule_epoch))
+                   / extract(epoch FROM cadence))::bigint * cadence AS slot_end
+          FROM at
+    )
+    SELECT detector_key, mm, budget, fake_now, slot_end FROM slot
+     ORDER BY detector_key, mm
+    """
+
+    def _offsets(self, admin):
+        """What arrange_run ACTUALLY puts in completed_at, per detector.
+
+        Inserted and read back, so this tracks the fixture rather than
+        describing it. Revert arrange_run's default and these become zero and
+        the sweep below fails, which is the whole point of measuring.
+        """
+        offsets = {}
+        for key in (RECONCILIATION, HEARTBEAT):
+            slot = slot_ends(admin, key, 1)[0]
+            run_id = arrange_run(admin, key, slot)
+            row = admin.execute(
+                "SELECT completed_at - window_end AS offset FROM detector_runs"
+                " WHERE id = %s", (run_id,)).fetchone()
+            offsets[key] = row["offset"]
+        return offsets
+
+    def _ages(self, admin):
+        offsets = self._offsets(admin)
+        out = []
+        for r in admin.execute(self.GEOMETRY).fetchall():
+            offset = offsets.get(r["detector_key"])
+            if offset is None:
+                continue
+            out.append({**r, "age": r["fake_now"] - (r["slot_end"] + offset)})
+        return out
+
+    def test_no_minute_of_the_hour_leaves_a_detector_stale(self, admin):
+        rows = self._ages(admin)
+        assert rows, "no active detectors in the registry to check"
+
+        stale = [(r["detector_key"], r["mm"], r["age"], r["budget"])
+                 for r in rows if r["age"] > r["budget"]]
+        assert not stale, (
+            "healthy() leaves a detector STALE at these minutes past the hour, "
+            "so the proposer suite is flaky by wall clock: "
+            + "; ".join(f"{k} at :{mm:02d} age {age} > budget {b}"
+                        for k, mm, age, b in stale))
+
+    def test_the_margin_is_stated_rather_than_assumed(self, admin):
+        """How much room the fix actually has, made visible.
+
+        The worst case is a slot that closed 59 minutes ago against a 65-minute
+        budget. Six minutes is not much, and a reader tightening `grace` should
+        find that out from this assertion rather than from a flaky suite.
+        """
+        rows = self._ages(admin)
+        worst = max(rows, key=lambda r: r["age"] - r["budget"])
+        margin = worst["budget"] - worst["age"]
+        assert margin > timedelta(0), (
+            f"{worst['detector_key']} at :{worst['mm']:02d} has no margin: "
+            f"age {worst['age']} against budget {worst['budget']}")
+        assert margin >= timedelta(minutes=5), (
+            f"the freshest arrangement healthy() can make is only {margin} "
+            f"inside {worst['detector_key']}'s silence budget "
+            f"({worst['budget']}). That is too thin to rely on: widen the "
+            f"budget, or make healthy() arrange a more recent completed_at.")

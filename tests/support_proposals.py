@@ -57,6 +57,31 @@ def arrange_run(admin, detector_key: str, slot_end: datetime, *,
                 status: str = "OK", subjects: Sequence[str] | None = None,
                 failed: Sequence[str] | None = None,
                 completed_at: datetime | None = None) -> int:
+    """One scheduled run for one slot.
+
+    `completed_at` DEFAULTS TO slot_end + settle_lag, NOT to slot_end.
+
+    A run cannot complete at the instant its window closes: the settle lag is
+    exactly the period the detector must wait out before the window is
+    judgeable, so slot_end is the one moment it is guaranteed NOT to have
+    finished. Measured on the deployed fleet across 3,337 scheduled runs,
+    `completed_at = window_end` has happened zero times, and the real lag is
+    the settle lag plus the timer offset plus execution:
+
+        dd_analytics_reconciliation   settle_lag 15m, median lag 20m13s
+        fleet_heartbeat               settle_lag  0,  median lag    34s
+
+    Defaulting to slot_end arranged a history the real detector cannot
+    produce, which is the thing the subjects_evaluated comment below already
+    refuses to do -- and it made the proposer suite fail for nine minutes of
+    every hour. See TestHealthyIsHealthyAtEveryMinute in test_cycle.py, which
+    holds this property directly rather than leaving it to arithmetic nobody
+    re-does.
+
+    settle_lag alone, not the timer offset as well: it is the one component
+    derivable from the registry, and inventing a constant for the rest would
+    put a number here that no test needs and nothing checks.
+    """
     reg = registry(admin, detector_key)
     # An ENUMERATED run that closes OK must carry the subjects it evaluated;
     # the constraint in 001 says so, and a test that worked around it would
@@ -73,7 +98,7 @@ def arrange_run(admin, detector_key: str, slot_end: datetime, *,
              completed_at, status)
         VALUES (%(k)s, %(dv)s, %(v)s, %(p)s, %(sem)s, 'SCHEDULED', %(cov)s,
                 %(subj)s, %(failed)s, %(ws)s, %(we)s, %(we)s,
-                coalesce(%(done)s, %(we)s), %(status)s)
+                coalesce(%(done)s, %(we)s + %(settle)s), %(status)s)
         RETURNING id
         """,
         {"k": detector_key, "dv": reg["current_detector_version"],
@@ -82,6 +107,7 @@ def arrange_run(admin, detector_key: str, slot_end: datetime, *,
          "subj": list(subjects) if subjects is not None else None,
          "failed": list(failed) if failed is not None else None,
          "ws": slot_end - reg["evaluation_window"], "we": slot_end,
+         "settle": reg["settle_lag"],
          "done": completed_at, "status": status}).fetchone()
     return row["id"]
 
