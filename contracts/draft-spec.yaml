@@ -35,8 +35,17 @@
 
 work_type: draft_spec
 repo: fleet
-# Same as research: the fleet repository has no `main`.
-base_branch: track-2-foundation
+# `master` since 9 Sep 2026, when track-2-foundation and spec/daily-brief were
+# consolidated into it. This said track-2-foundation until 9 Sep 2026, copying a
+# line research.yaml wrote before the consolidation; the two refs are the same
+# commit today, so nothing queued from here has branched wrongly yet.
+#
+# It is corrected now rather than when it breaks because a task's base branch is
+# immutable once the row exists: the morning master moves, every task already
+# queued against the stale ref is repaired by ABANDONING it, not by editing it.
+# console/approve.py reads this key rather than carrying its own literal, so
+# there is one place to change and it is this one.
+base_branch: master
 contract_version: 1
 
 # ONE FILE. A draft spec is a document; anything else in the diff is something

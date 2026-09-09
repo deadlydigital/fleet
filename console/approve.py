@@ -37,7 +37,7 @@ class ApprovalRefused(Exception):
     """The batch was not written. The message is shown to the reviewer."""
 
 
-def _draft_spec_contract() -> tuple[Dict[str, Any], float, int]:
+def _draft_spec_contract() -> tuple[Dict[str, Any], float, int, str]:
     """The stored contract for a draft-spec task, and the limits beside it.
 
     Read from contracts/draft-spec.yaml at approval time rather than embedded,
@@ -51,6 +51,16 @@ def _draft_spec_contract() -> tuple[Dict[str, Any], float, int]:
     -- and max_cost_gbp is no longer only a per-task cap. Since 014 it is the
     number the monthly ceiling reserves against, so a copy that drifts low
     would let a batch through against a pool it cannot actually afford.
+
+    base_branch comes from the contract for the same reason and a sharper one.
+    It was the literal 'track-2-foundation' in the INSERT below. A task's base
+    branch is IMMUTABLE once the row exists -- contracts/candidate-producer.yaml
+    says so where it records the trunk -- so the repair for a wrong one is
+    abandoning the task, not editing it. The literal and the trunk happen to be
+    the same commit today; the morning master moves and the literal does not,
+    every task queued here branches from a stale base and nothing reports it.
+    tests/revert_guards.py already guards this shape elsewhere: a constant
+    answers wrongly.
     """
     import yaml
     from . import config
@@ -64,7 +74,8 @@ def _draft_spec_contract() -> tuple[Dict[str, Any], float, int]:
         "worktree_links": data.get("worktree_links", {}),
         "max_diff_lines": data["max_diff_lines"],
     }
-    return contract, float(data["max_cost_gbp"]), int(data["timeout_seconds"])
+    return (contract, float(data["max_cost_gbp"]),
+            int(data["timeout_seconds"]), str(data["base_branch"]))
 
 
 def _spec_md(cand: Dict[str, Any]) -> str:
@@ -253,7 +264,7 @@ def approve_batch(*, reason: str, approve_ids: List[int],
                 "queue deliberately. Let some drain, or raise the depth in a "
                 "migration.")
 
-        contract, task_max_cost, task_timeout = _draft_spec_contract()
+        contract, task_max_cost, task_timeout, base_branch = _draft_spec_contract()
 
         # THE THIRD CEILING (spec section 6, ceiling 2; built in 014).
         #
@@ -322,11 +333,11 @@ def approve_batch(*, reason: str, approve_ids: List[int],
             conn.execute(
                 "INSERT INTO tasks (title, spec_md, repo, base_branch,"
                 " acceptance_contract, max_cost_gbp, timeout_seconds,"
-                " objective_ref) VALUES (%s,%s,'fleet','track-2-foundation',"
+                " objective_ref) VALUES (%s,%s,'fleet',%s,"
                 " %s,%s,%s,%s)",
                 (f"Draft spec: {c['title']}"[:200], _spec_md(c),
-                 json.dumps(contract), task_max_cost, task_timeout,
-                 c.get("objective_ref")))
+                 base_branch, json.dumps(contract), task_max_cost,
+                 task_timeout, c.get("objective_ref")))
             task_id = conn.execute(
                 "SELECT currval('tasks_id_seq') AS id").fetchone()["id"]
             conn.execute(

@@ -60,6 +60,34 @@ class TestATickMakesADraftSpec:
         assert "does not resolve" in task["spec_md"]
         assert "You choose the `work_type`" in task["spec_md"]
 
+    def test_the_base_branch_is_the_contract_trunk_and_not_a_literal(
+            self, console):
+        """The queued task branches from whatever the contract calls the trunk.
+
+        It was the literal 'track-2-foundation' here, copied from a contract
+        written before the 9 Sep 2026 consolidation onto master. A task's base
+        branch is immutable once the row exists, so a stale one is repaired by
+        abandoning the task -- and the two refs were the same commit, so nothing
+        would have reported it until the morning master moved.
+
+        Asserted against the contract file rather than against 'master', so
+        moving the trunk again is one edit in one place and this test follows it
+        rather than having to be found.
+        """
+        import yaml
+        from console import config
+        want = yaml.safe_load(
+            (config.PROJECT_ROOT / "contracts" / "draft-spec.yaml").read_text()
+        )["base_branch"]
+
+        b = _batch(console)
+        cid = _cand(console, b)
+        out = approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                                    not_now_ids=[], decided_by="test")
+        row = console.execute("SELECT base_branch FROM tasks WHERE id=%s",
+                              (out["queued_task_ids"][0],)).fetchone()
+        assert row["base_branch"] == want
+
     def test_the_candidate_records_which_task_it_produced(self, console):
         b = _batch(console)
         cid = _cand(console, b)
