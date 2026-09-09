@@ -27,6 +27,13 @@ than a convention.
 message that names the file, and again by the database, which is what
 actually decides: a contract that fails to protect the test suite or the
 migrations cannot be stored, so no runner can be pointed at one.
+
+deadly-digital-platform HAS NO contracts/<repo>.yaml, so --contract is
+required for it. The file that was there declared platform/app/**,
+platform/components/** and platform/lib/** writable -- auth, roles, csrf,
+impersonation and billing checkout -- and was deleted with
+023_platform_floor.sql rather than narrowed. A default contract is the one
+nobody chooses, which makes it the one a task gets by forgetting.
 """
 from __future__ import annotations
 
@@ -502,7 +509,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--title", required=True)
     a.add_argument("--spec", required=True, help="path to the spec markdown")
     a.add_argument("--repo", default="deadly-digital-platform")
-    a.add_argument("--contract", help="contract yaml (default: contracts/<repo>.yaml)")
+    a.add_argument("--contract",
+                   help="contract yaml (default: contracts/<repo>.yaml; "
+                        "deadly-digital-platform has none, so name one)")
     a.add_argument("--base-branch", help="override the contract's base branch")
     a.add_argument("--objective", help="objective id from the quarter's file")
     a.add_argument("--max-cost", type=float, help="£ ceiling for this task")

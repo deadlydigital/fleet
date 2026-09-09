@@ -33,18 +33,44 @@
 # after has discriminated between two trees; whether it discriminated on the
 # property the spec asked for is a question only the spec and a reader can
 # answer. This closes the vacuous case, not the wrong-assertion case.
+#
+# WHAT CHANGED WHEN THE FRONTEND GOT A CONTRACT (9 Sep 2026)
+#
+# This was written for `api` and pytest and is now used by `platform` and
+# vitest too. Three things moved, and only the third is a behaviour change:
+#
+#   the project directory and the suite directory are arguments, because the
+#   frontend suite is platform/__tests__/ rather than <project>/tests/
+#
+#   the interpreter precondition is gone. It checked
+#   api/.venv/bin/python without ever invoking it, and
+#   pytest_unit_per_file.sh checks the same interpreter and reports 2 itself.
+#   Duplicating it here meant a second runner had to satisfy a precondition
+#   belonging to the first.
+#
+#   COULD-NOT-RUN IS NO LONGER READ AS "THE TEST BITES". Step 4 asked the
+#   runner to fail against the pre-change tree and took ANY non-zero exit as
+#   proof. A runner that cannot start also exits non-zero -- and the
+#   pre-change tree is materialised with `git archive`, which for the frontend
+#   contains no node_modules, so vitest could not have started there at all.
+#   That would have passed this check on every frontend task while proving
+#   nothing: this file's own fifth check-that-could-not-fail, built by the
+#   file that exists to stop them. Runners report 2 for could-not-run, and
+#   both invocations below now distinguish it.
 set -uo pipefail
 
-API_DIR="${1:-api}"
+PROJECT_DIR="${1:-api}"
 PATTERN="${2:-tests/analytics/test_fleet_*.py}"
+# Where the protected suite lives, relative to PROJECT_DIR. Step 2 refuses any
+# change to it beyond the one added file.
+SUITE_DIR="${3:-tests}"
 
-PY_BIN="${FLEET_API_PYTHON:-/home/ubuntu/deadly-digital-platform/api/.venv/bin/python}"
 BASE="${FLEET_BASE_SHA:-}"
 
-# The thing that actually runs one test file. Overridable so this check can be
-# tested without the docker stack -- the default is the same per-file harness
-# every other gate uses, and api/CLAUDE.md's rules about suite runs on this
-# host are its rules, not ones re-implemented here.
+# The thing that actually runs one test file, and the thing that decides what
+# an exit code means. Overridable so this check can be tested without the
+# docker stack, and so the frontend can hand it vitest_one_file.sh. Whatever
+# it is, the contract is the same: 0 passed, 1 failed, 2 COULD NOT RUN.
 RUNNER="${FLEET_TEST_RUNNER:-$(cd "$(dirname "$0")" && pwd)/pytest_unit_per_file.sh}"
 [ -x "$RUNNER" ] || { echo "FAIL: no test runner at $RUNNER"; exit 2; }
 
@@ -55,7 +81,7 @@ RUNNER="${FLEET_TEST_RUNNER:-$(cd "$(dirname "$0")" && pwd)/pytest_unit_per_file
 # left alone it pays two start/stop cycles for two runs of one file. Bringing
 # them up here means both inner runs find them already up and leave them alone,
 # and this script puts them back exactly as it found them.
-COMPOSE="$API_DIR/tests/docker-compose.test.yml"
+COMPOSE="$PROJECT_DIR/$SUITE_DIR/docker-compose.test.yml"
 SERVICES_STARTED=0
 if [ -f "$COMPOSE" ] && ! docker exec deadly-digital-test-db pg_isready >/dev/null 2>&1; then
     if docker compose -f "$COMPOSE" up -d >/dev/null 2>&1; then
@@ -73,7 +99,6 @@ stop_services() {
 }
 trap stop_services EXIT
 
-[ -x "$PY_BIN" ] || { echo "FAIL: no interpreter at $PY_BIN"; exit 2; }
 [ -n "$BASE" ]   || { echo "FAIL: FLEET_BASE_SHA is not set, so there is no "\
                            "pre-change tree to test against"; exit 2; }
 [ -d .git ] || [ -f .git ] || { echo "FAIL: not a git worktree"; exit 2; }
@@ -83,10 +108,10 @@ trap stop_services EXIT
 # before this runs, and asking git for the status again here means this check
 # does not depend on that having happened.
 mapfile -t ADDED < <(git diff --diff-filter=A --name-only "$BASE..HEAD" \
-                     -- "$API_DIR/$PATTERN" | sort)
+                     -- "$PROJECT_DIR/$PATTERN" | sort)
 
 if [ "${#ADDED[@]}" -eq 0 ]; then
-    echo "FAIL: the change adds no test matching $API_DIR/$PATTERN"
+    echo "FAIL: the change adds no test matching $PROJECT_DIR/$PATTERN"
     echo "      A task that changes behaviour must add a test that fails"
     echo "      without the change. specs/unattended-operation.md §3.2."
     exit 1
@@ -99,11 +124,11 @@ if [ "${#ADDED[@]}" -gt 1 ]; then
     exit 1
 fi
 NEW_TEST="${ADDED[0]}"
-REL_TEST="${NEW_TEST#"$API_DIR"/}"
+REL_TEST="${NEW_TEST#"$PROJECT_DIR"/}"
 echo "the added test: $NEW_TEST"
 
 # ---- 2. anything else under the suite is a refusal ----------------------
-mapfile -t OTHER < <(git diff --name-only "$BASE..HEAD" -- "$API_DIR/tests/" \
+mapfile -t OTHER < <(git diff --name-only "$BASE..HEAD" -- "$PROJECT_DIR/$SUITE_DIR/" \
                      | grep -v -F -x "$NEW_TEST" | sort)
 if [ "${#OTHER[@]}" -gt 0 ]; then
     echo "FAIL: the change touches the suite beyond the one added test:"
@@ -113,9 +138,16 @@ fi
 
 # ---- 3. it must pass HERE ------------------------------------------------
 echo "--- against the change"
-if ! "$RUNNER" "$API_DIR" "$REL_TEST" >/tmp/nb_after.$$ 2>&1; then
+"$RUNNER" "$PROJECT_DIR" "$REL_TEST" >/tmp/nb_after.$$ 2>&1
+AFTER=$?
+if [ "$AFTER" -ne 0 ]; then
     tail -20 /tmp/nb_after.$$
     rm -f /tmp/nb_after.$$
+    if [ "$AFTER" -eq 2 ]; then
+        echo "FAIL: the runner could not run the added test at all, so nothing"
+        echo "      is established about it. Reported as 'could not run' (2)."
+        exit 2
+    fi
     echo "FAIL: the added test does not pass against its own change"
     exit 1
 fi
@@ -140,7 +172,30 @@ cp "$NEW_TEST" "$SCRATCH/$NEW_TEST"
 
 echo "--- against the tree before it ($BASE)"
 cd "$SCRATCH" || { echo "FAIL: could not enter the scratch tree"; exit 2; }
-if "$RUNNER" "$API_DIR" "$REL_TEST" >/tmp/nb_before.$$ 2>&1; then
+"$RUNNER" "$PROJECT_DIR" "$REL_TEST" >/tmp/nb_before.$$ 2>&1
+BEFORE=$?
+
+# 2 IS NOT 1, AND CONFLATING THEM IS HOW THIS CHECK STOPS WORKING.
+#
+# What must be established is that the test FAILED here -- that it ran, and
+# disagreed with the old code. A runner that never started also exits
+# non-zero, and reading that as a failure turns every task in a tree the
+# runner cannot start in into a PASS. The scratch tree is a `git archive`, so
+# it is missing exactly the gitignored things a runner needs: this is not a
+# hypothetical, it is the frontend's default state.
+if [ "$BEFORE" -eq 2 ]; then
+    tail -20 /tmp/nb_before.$$
+    rm -f /tmp/nb_before.$$
+    cat <<'EOF'
+FAIL: the runner could not run against the pre-change tree, so it is NOT
+      established that the added test fails without the change. This is
+      reported as 'could not run' (2) and never as a pass -- a non-zero exit
+      from a runner that never started is not evidence of anything.
+EOF
+    exit 2
+fi
+
+if [ "$BEFORE" -eq 0 ]; then
     echo "    PASSES — and that is the failure"
     tail -10 /tmp/nb_before.$$
     rm -f /tmp/nb_before.$$

@@ -38,7 +38,7 @@ FLOOR = PLATFORM_FLOOR
 def contract(repo: str = REPO) -> str:
     return json.dumps({
         "work_type": "dd_feature", "repo": repo, "base_branch": "main",
-        "writable_paths": ["platform/app/**"], "protected_paths": list(FLOOR),
+        "writable_paths": ["platform/app/(dashboard)/analytics/orders/**"], "protected_paths": list(FLOOR),
         "verification": ["pytest api/tests/"], "max_diff_lines": 800,
     })
 

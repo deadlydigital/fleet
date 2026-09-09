@@ -164,6 +164,36 @@ protected_paths:
   # 019: the rest of the erasure path.
   - api/services/gdpr_identity.py
   - api/services/gdpr_replay_scrub.py
+  # 023: the platform floor. Auth and session, billing, the frontend half of
+  # the email platform, the storefront ingest, GDPR, and the intervention
+  # surface inside the analytics tree. Listed verbatim because the database
+  # refuses a contract that omits one -- not because this contract is about
+  # any of them.
+  - platform/middleware.ts
+  - platform/lib/auth.ts
+  - platform/lib/api-auth.ts
+  - platform/lib/roles.ts
+  - platform/lib/csrf.ts
+  - platform/app/api/auth/**
+  - platform/app/api/billing/**
+  - platform/app/api/admin/billing/**
+  - platform/app/(dashboard)/settings/billing/**
+  - platform/app/api/campaigns/**
+  - platform/app/api/flows/**
+  - platform/app/api/domains/**
+  - platform/app/api/suppression/**
+  - platform/app/api/scheduled-campaigns/**
+  - platform/app/api/inline-css/**
+  - platform/app/api/listmonk/**
+  - platform/app/(dashboard)/campaigns/**
+  - platform/app/(dashboard)/flows/**
+  - platform/app/(dashboard)/settings/domains/**
+  - platform/app/api/track/**
+  - platform/app/api/gdpr/**
+  - platform/app/(dashboard)/settings/privacy/**
+  - platform/app/api/analytics/churn/intervene/**
+  - platform/app/api/analytics/interventions/**
+  - platform/app/(dashboard)/analytics/interventions/**
 
 # ONE new test may be ADDED, and no existing test may be touched.
 #

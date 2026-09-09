@@ -105,6 +105,23 @@ def test_the_same_branch_passes_when_the_base_has_not_moved(repo, wt_root):
     assert r.merged_sha and r.merged_sha != r.base_sha
 
 
+def test_the_re_verification_gets_the_frozen_contract_too(repo, wt_root):
+    """A check that can read its contract on the first run and not here is a
+    check that reports could-not-run at exactly the moment auto-merge consults
+    it -- and console.automerge treats could-not-run as a refusal, so the
+    symptom would be tasks that verify green and never merge.
+    """
+    point, _ = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+    read_it = (
+        'test "$(printf %s "$FLEET_CONTRACT" | python3 -c '
+        "\"import json,sys; print(json.load(sys.stdin)['work_type'])\")\" "
+        "= dd_feature")
+    r = reverify.run(repo, wt_root, task_for(repo),
+                     contract(verification=[read_it]), "fleet/task-1",
+                     recorded_base=point, changed_files=["api/provides.txt"])
+    assert r.ok, r.reason
+
+
 def test_it_verifies_the_merged_tree_not_the_branch(repo, wt_root):
     """A check that passes on the branch and fails on the merge must fail.
 

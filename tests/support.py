@@ -37,6 +37,40 @@ PLATFORM_FLOOR = [
     # 019: the rest of the erasure path
     "api/services/gdpr_identity.py",
     "api/services/gdpr_replay_scrub.py",
+    # 023: the platform floor, added when the frontend got a contract.
+    # Auth and session. middleware.ts is not under app/, components/ or lib/,
+    # so the retired wide contract missed it by accident.
+    "platform/middleware.ts",
+    "platform/lib/auth.ts",
+    "platform/lib/api-auth.ts",
+    "platform/lib/roles.ts",
+    "platform/lib/csrf.ts",
+    "platform/app/api/auth/**",
+    # Billing.
+    "platform/app/api/billing/**",
+    "platform/app/api/admin/billing/**",
+    "platform/app/(dashboard)/settings/billing/**",
+    # Email: the frontend half of what 017 floored on the api side.
+    "platform/app/api/campaigns/**",
+    "platform/app/api/flows/**",
+    "platform/app/api/domains/**",
+    "platform/app/api/suppression/**",
+    "platform/app/api/scheduled-campaigns/**",
+    "platform/app/api/inline-css/**",
+    "platform/app/api/listmonk/**",
+    "platform/app/(dashboard)/campaigns/**",
+    "platform/app/(dashboard)/flows/**",
+    "platform/app/(dashboard)/settings/domains/**",
+    # The storefront event ingest.
+    "platform/app/api/track/**",
+    # GDPR: the frontend half of 018 and 019.
+    "platform/app/api/gdpr/**",
+    "platform/app/(dashboard)/settings/privacy/**",
+    # The intervention surface, inside the analytics tree -- 017's E3 case at
+    # the frontend, and why dd-analytics-frontend.yaml enumerates.
+    "platform/app/api/analytics/churn/intervene/**",
+    "platform/app/api/analytics/interventions/**",
+    "platform/app/(dashboard)/analytics/interventions/**",
 ]
 
 

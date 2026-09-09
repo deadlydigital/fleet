@@ -372,8 +372,8 @@ The spec's example contract named `alembic/**`, `docker-compose.yml` and
 `dd/detectors/**`. None of the three exists at those paths: migrations are
 `api/alembic/**` and `api/analytics/migrations/**`, there is no compose file
 at the repo root, and the detectors are in this repo, which a task against
-the platform cannot reach. `contracts/deadly-digital-platform.yaml` names
-what is actually there, and a test asserts every glob in it resolves.
+the platform cannot reach. The shipped contracts name what is actually
+there, and a test asserts every glob in each of them resolves.
 
 ## Stage 2 is the runner
 
@@ -469,18 +469,59 @@ not a live rate. Treat every cost in the database as accurate to about that.
 
 ## Contracts are scoped to what can actually verify them
 
-`contracts/deadly-digital-platform.yaml` is the frontend, and that is the
-whole design rather than a limitation to fix later. **Verification scope and
-writable scope must match.** A contract declaring `api/**` writable while
-verifying with vitest would accept a backend change on the strength of tests
-that never executed it, and hand back a PASS with full provenance attached.
-That is worse than no gate, because the provenance makes it convincing.
+**Verification scope and writable scope must match.** A contract declaring
+`api/**` writable while verifying with vitest would accept a backend change on
+the strength of tests that never executed it, and hand back a PASS with full
+provenance attached. That is worse than no gate, because the provenance makes
+it convincing.
 
-    deadly-digital-platform.yaml      platform/{app,components,lib} —
-                                      tsc --noEmit and vitest run, both green
-    deadly-digital-platform-api.yaml  api/{app.py,services,analytics} —
-                                      compile, and a lint ratchet. No test gate,
-                                      and it says so.
+    dd-analytics-frontend.yaml        the analytics proxies and pages,
+                                      enumerated, plus four named components —
+                                      tsc --noEmit, vitest run, the bite check
+                                      and a paired-paths check
+    deadly-digital-platform-api.yaml  api/analytics/{routes,services}, enumerated —
+                                      compile, a lint ratchet, tests/unit and
+                                      tests/analytics per file, and the bite check
+
+### There is no default contract for deadly-digital-platform
+
+`contracts/deadly-digital-platform.yaml` was it, and it is **deleted**. It
+declared `platform/app/**`, `platform/components/**` and `platform/lib/**`
+writable, which reaches `lib/auth.ts`, `lib/roles.ts`, `lib/csrf.ts`,
+`app/api/auth/impersonate/route.ts`, `app/api/billing/checkout/route.ts` and
+the campaign send route.
+
+It was retired rather than narrowed. A wide contract standing beside a narrow
+one makes the narrow one a convention rather than a boundary, because anybody
+may queue a task under either -- and this one was reachable by *omission*,
+since `fleet task add` fell back to `contracts/<repo>.yaml` when no
+`--contract` was given. So `--contract` is now required for this repo, and
+`load_contract` says why rather than reporting a missing file.
+
+`023_platform_floor.sql` is the other half, and it is what makes the deletion a
+decision rather than a tidy-up: those paths are on `protected_path_floor` now,
+so restoring the file would not restore the reach. Two independent refusals for
+one mistake, on the argument 018 and 019 were written with -- **unreachable by
+contract is not the same as unreachable by floor.**
+
+### Both files or neither
+
+`paired_paths` is a contract key: within a group, every path is in the diff or
+none is. `specs/dashboard-comparison-windows.md` needs it -- widening
+`platform/app/api/analytics/dashboard/route.ts` without changing the label at
+`platform/app/(dashboard)/analytics/page.tsx` lets the overview render
+"vs previous 366 days" over a year-on-year comparison, which is worse than the
+unqualified sentence task 28 exists to fix.
+
+`024_paired_paths.sql` refuses a group that could not bite -- fewer than two
+paths, no `why`, or a path outside `writable_paths`, which the task can never
+change and so can never fail on. `contracts/checks/paired_paths.py` reads the
+frozen contract out of `$FLEET_CONTRACT` and the diff out of git.
+
+It establishes that both files moved. It cannot establish that the label is
+right, and that is the only thing the pairing is for -- so
+`dd-analytics-frontend.yaml` carries `auto_merge: false` until this has run a
+few times.
 
 Neither backend command was lowered to make it pass, because neither can be
 made to pass (measured 30 Aug 2026 at `921e22b`):

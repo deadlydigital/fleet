@@ -1,0 +1,330 @@
+# The analytics frontend, enumerated.
+#
+# Three parity features have shipped in the API and reach nobody: order
+# filters (task 2), net revenue after refunds (task 26) and comparison
+# windows (task 28) all exist behind /api/analytics and none of them is on a
+# page. This is the contract under which a page changes.
+#
+# It replaces contracts/deadly-digital-platform.yaml, which is deleted rather
+# than narrowed. That contract declared platform/app/**, platform/components/**
+# and platform/lib/** writable, which reaches platform/lib/auth.ts, roles.ts,
+# csrf.ts, app/api/auth/impersonate/route.ts, app/api/billing/checkout/route.ts
+# and the campaign send route. A wide contract left standing beside a narrow one
+# makes the narrow one a convention rather than a boundary -- anybody may queue
+# a task under either -- and the wide one reached impersonation and billing.
+#
+# 023_platform_floor.sql is what makes that deletion a decision rather than a
+# tidy-up: the paths above are on protected_path_floor now, so the retired
+# contract cannot be reinstated by restoring the file.
+#
+# ============================================================================
+# WHY THE WRITABLE PATHS ARE ENUMERATED
+# ============================================================================
+#
+# Two reasons, and the first is not a choice.
+#
+# 023 floors the intervention surface -- platform/app/api/analytics/interventions,
+# churn/intervene, and the page -- for the reason 017 floored
+# api/analytics/routes/interventions.py: it sits INSIDE the tree the fleet owns
+# and it is the door analytics grows into the email platform through. The floor
+# is checked against writable_paths as well as protected_paths, so
+# `platform/app/api/analytics/**` writable and one of its subdirectories floored
+# is a contradiction the database refuses, correctly. The glob therefore has to
+# go, exactly as `api/analytics/services/**` had to go from the api contract.
+#
+# The second is the api contract's own argument, which holds here: this list IS
+# the statement of what an unattended fleet may write on the frontend, in one
+# place, with no wildcard hiding a file nobody thought about.
+#
+# THE PRICE. A new report page in a directory not named below needs a line
+# added here, by the person queueing the task. That is not friction to be
+# engineered away -- it is the review this contract's narrowness is made of, and
+# it is one line in a file a person already has open to queue the work.
+#
+# ============================================================================
+# WHAT VERIFICATION CAN AND CANNOT ESTABLISH
+# ============================================================================
+#
+# Measured on a worktree of main at 4619a76 on 9 Sep 2026, with node_modules
+# linked in as `worktree_links` does it:
+#
+#   tsc --noEmit                 exits 0 in 29s   (COLD, in a fresh worktree;
+#                                                  8s in the checkout is a warm
+#                                                  tsconfig.tsbuildinfo and is
+#                                                  not the number that applies)
+#   vitest run                   21 files, 319 tests, 65s, all green
+#   one file under vitest        3.2s
+#
+# No database and no docker: the suite mocks HTTP with MSW. That makes this
+# cheaper than the api gate and able to gate a task the same way
+# pytest_unit_per_file.sh does.
+#
+# TEN of the 21 files are analytics render tests, and that is what makes a
+# frontend gate worth having here rather than a formality.
+#
+# WHAT CANNOT GATE, MEASURED RATHER THAN ASSUMED
+#
+#   `next lint` drops into "How would you like to configure ESLint?" and waits
+#   on a TTY forever. There is no .eslintrc, no eslint dependency and no eslint
+#   binary in node_modules. This is CI-001 in the platform's docs/TODO.md and
+#   it is not something a contract can work around.
+#
+#   `playwright test` has baseURL http://localhost:3000, and on this box that
+#   port is the deadly-digital-platform container -- production. Its specs
+#   submit registration, request password resets and send team invites. It is
+#   logged as CI-004 in the platform's docs/TODO.md. Nothing here runs it.
+#
+# ============================================================================
+# WHAT THIS CONTRACT IS FOR, AND WHAT IT IS NOT
+# ============================================================================
+#
+# A green run here establishes that the tree typechecks, that 319 tests still
+# pass, that the ONE test the change added fails without the change, and that no
+# paired group landed in half. It does not establish that the page says a true
+# thing. See auto_merge below, which is `false` for exactly that reason.
+
+work_type: dd_frontend
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 3
+
+# ---------------------------------------------------------------------------
+# WRITABLE
+#
+# The analytics proxies, minus the two the floor takes. Directory globs rather
+# than file lists: a task that adds a route under an area it already owns is
+# ordinary work, and enumerating to the file would make every new file a
+# contract edit for no gain -- the floor is what draws the line, and it draws
+# it between directories.
+# ---------------------------------------------------------------------------
+writable_paths:
+  - platform/app/api/analytics/campaign-revenue/**
+  # churn: customers and dashboard, NOT intervene, which is floored
+  - platform/app/api/analytics/churn/customers/**
+  - platform/app/api/analytics/churn/dashboard/**
+  - platform/app/api/analytics/customers/**
+  - platform/app/api/analytics/dashboard/**
+  - platform/app/api/analytics/geography/**
+  - platform/app/api/analytics/orders/**
+  - platform/app/api/analytics/products/**
+  - platform/app/api/analytics/revenue/**
+  - platform/app/api/analytics/segments/**
+  - platform/app/api/analytics/setup-status/**
+  - platform/app/api/analytics/sources/**
+  - platform/app/api/analytics/sync/**
+  # the pages. page.tsx and layout.tsx are named because the interventions
+  # directory beside them is floored, so the tree cannot be globbed.
+  - platform/app/(dashboard)/analytics/page.tsx
+  - platform/app/(dashboard)/analytics/layout.tsx
+  - platform/app/(dashboard)/analytics/churn/**
+  - platform/app/(dashboard)/analytics/customers/**
+  - platform/app/(dashboard)/analytics/geography/**
+  - platform/app/(dashboard)/analytics/orders/**
+  - platform/app/(dashboard)/analytics/products/**
+  - platform/app/(dashboard)/analytics/revenue/**
+  - platform/app/(dashboard)/analytics/segments/**
+  - platform/app/(dashboard)/analytics/sources/**
+  # NAMED COMPONENTS, NOT components/analytics/** AND CERTAINLY NOT
+  # components/ui/**.
+  #
+  # These four are the ones the analytics pages import and nothing else does.
+  # A fifth, AnalyticsSetupWizard.tsx, is deliberately absent: it is the
+  # onboarding path a tenant connects a store through, not a report, and a
+  # parity feature has no business in it.
+  #
+  # components/ui/** is out for the reason the retired contract's own header
+  # gives about verification scope: data-table.tsx, stat-card.tsx and button.tsx
+  # render on the campaigns, subscribers and billing pages too, and ten
+  # analytics render tests would not show what a change there did to them. A
+  # task that genuinely needs a shared primitive is a task a person widens this
+  # file for.
+  - platform/components/analytics/ChurnRiskBadge.tsx
+  - platform/components/analytics/DateRangePicker.tsx
+  - platform/components/analytics/SegmentCard.tsx
+  - platform/components/analytics/TimeSeriesChart.tsx
+
+# ---------------------------------------------------------------------------
+# PROTECTED
+#
+# Every glob on protected_path_floor for this repo appears here verbatim: the
+# database refuses a contract that omits one, and the omission is refused at
+# INSERT rather than discovered later.
+# ---------------------------------------------------------------------------
+protected_paths:
+  # the suite and its configuration, on the floor since 003 and 007
+  - api/tests/**
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  - platform/playwright.config.ts
+  # 017: the email floor, api side
+  - api/app.py
+  - api/services/email_sender.py
+  - api/worker.py
+  - api/analytics/routes/interventions.py
+  - api/analytics/services/trigger_router.py
+  # 018 and 019: erasure. Reverting the commit does not bring the rows back
+  - api/analytics/services/gdpr.py
+  - api/services/gdpr_identity.py
+  - api/services/gdpr_replay_scrub.py
+  # 023: auth and session. middleware.ts is here because it is NOT under app/,
+  # components/ or lib/ -- the retired wide contract missed it by accident
+  - platform/middleware.ts
+  - platform/lib/auth.ts
+  - platform/lib/api-auth.ts
+  - platform/lib/roles.ts
+  - platform/lib/csrf.ts
+  - platform/app/api/auth/**
+  # 023: billing
+  - platform/app/api/billing/**
+  - platform/app/api/admin/billing/**
+  - platform/app/(dashboard)/settings/billing/**
+  # 023: email, the frontend half of 017
+  - platform/app/api/campaigns/**
+  - platform/app/api/flows/**
+  - platform/app/api/domains/**
+  - platform/app/api/suppression/**
+  - platform/app/api/scheduled-campaigns/**
+  - platform/app/api/inline-css/**
+  - platform/app/api/listmonk/**
+  - platform/app/(dashboard)/campaigns/**
+  - platform/app/(dashboard)/flows/**
+  - platform/app/(dashboard)/settings/domains/**
+  # 023: the storefront event ingest
+  - platform/app/api/track/**
+  # 023: GDPR, the frontend half of 018 and 019
+  - platform/app/api/gdpr/**
+  - platform/app/(dashboard)/settings/privacy/**
+  # 023: the intervention surface. INSIDE the analytics tree, which is why the
+  # writable paths above are enumerated rather than globbed
+  - platform/app/api/analytics/churn/intervene/**
+  - platform/app/api/analytics/interventions/**
+  - platform/app/(dashboard)/analytics/interventions/**
+
+  # The backend is not this contract's business. Nothing here can verify a
+  # change to it, so nothing here may make one.
+  - api/**
+  # Build, deploy and dependency manifests: a feature that needs one of these
+  # is a change that needs a person, not a wider glob.
+  - .github/**
+  - platform/next.config.js
+  - platform/package.json
+  - platform/package-lock.json
+  - platform/docker-compose.yml
+  - platform/Dockerfile
+  - platform/tsconfig.json
+
+# ---------------------------------------------------------------------------
+# ONE new test may be ADDED, and no existing test may be touched.
+#
+# platform/__tests__/** is floored as the suite that judges the work, and that
+# argument is about MODIFICATION: an agent that edits an existing test can make
+# it pass, and one that adds a file cannot weaken a test that already exists.
+# Without this a frontend feature lands with nothing covering it and a green
+# suite means "broke nothing" while reading as "verified" --
+# specs/unattended-operation.md §3.2, and the hole
+# contracts/dd-acquiring-page.yaml had to admit to in its own header.
+#
+# `.test.tsx`, NOT `.tsx`. vitest.config.ts includes
+# `./__tests__/unit/**/*.{test,spec}.{ts,tsx}`, so a file named
+# `test_fleet_foo.tsx` is created, committed, and never collected. That would
+# not pass silently -- vitest_one_file.sh reports "no test file matched" as
+# could-not-run -- but a glob that can only name a file the suite runs is
+# better than a glob that fails clearly afterwards.
+#
+# 020 refuses any creatable glob not already inside a protected one, so this
+# can only narrow protected_paths and never widen writable_paths. What stops
+# the added test being vacuous is new_test_bites.sh below, not this -- the two
+# are a pair.
+# ---------------------------------------------------------------------------
+creatable_paths:
+  - platform/__tests__/unit/analytics/test_fleet_*.test.tsx
+
+# ---------------------------------------------------------------------------
+# BOTH FILES OR NEITHER.
+#
+# specs/dashboard-comparison-windows.md §"What the page will and will not see"
+# requires that the follow-up frontend task land the proxy change and the label
+# change together. Widening the proxy alone lets the overview render
+# "vs previous 366 days" over a year-on-year comparison -- a page confidently
+# describing a window it did not compare, which is worse than the unqualified
+# sentence task 28 exists to fix.
+#
+# 024_paired_paths.sql refuses a group that cannot bite: fewer than two paths,
+# no `why`, or a path outside writable_paths. contracts/checks/paired_paths.py
+# is what reads it against the diff.
+# ---------------------------------------------------------------------------
+paired_paths:
+  - why: >-
+      task 28 shipped the comparison modes behind
+      platform/app/api/analytics/dashboard/route.ts, which forwards only start
+      and end. Widening that proxy without changing the label lets the page
+      render "vs previous 366 days" over a year-on-year comparison. The label
+      is built from the top-level span_days at
+      app/(dashboard)/analytics/page.tsx; the response carries
+      comparison.span_days for it to use instead.
+    paths:
+      - platform/app/api/analytics/dashboard/route.ts
+      - platform/app/(dashboard)/analytics/page.tsx
+
+# node_modules is gitignored, so a fresh worktree has none and neither tsc nor
+# vitest can start. The runner links the checkout's own tree in AFTER the diff
+# is derived and the boundary judged, so the agent never sees it.
+#
+# new_test_bites.sh needs the same thing in a tree the runner never touches --
+# it materialises the pre-change tree with `git archive`, which contains no
+# gitignored directory at all -- so vitest_one_file.sh links it there itself and
+# removes the link afterwards. Before that, the bite check read "vitest could
+# not start" as "the test failed, as it must" and would have passed every
+# frontend task while running nothing.
+worktree_links:
+  platform/node_modules: /home/ubuntu/deadly-digital-platform/platform/node_modules
+
+# THE ORDER IS THE ONE THE WORK WAS SPECIFIED IN. verify.run stops at the first
+# failure, so a cheap check placed late is wall clock spent before a verdict
+# that was available immediately: paired_paths.py is a git diff and a set
+# comparison, and moving it first would cost nothing and answer sooner. It is
+# left last because the sequence "does it compile, does it pass, does the new
+# test bite, did both halves land" is the order a reader reasons in, and 95
+# seconds is not enough to buy a different one.
+verification:
+  - cd platform && ./node_modules/.bin/tsc --noEmit
+  - cd platform && ./node_modules/.bin/vitest run --reporter=dot
+  # The added test must FAIL against the tree before the change. The runner is
+  # vitest rather than pytest, the suite directory is __tests__ rather than
+  # tests, and the pattern is the creatable glob above.
+  - FLEET_TEST_RUNNER=/home/ubuntu/fleet/contracts/checks/vitest_one_file.sh /home/ubuntu/fleet/contracts/checks/new_test_bites.sh platform '__tests__/unit/analytics/test_fleet_*.test.tsx' '__tests__'
+  - python3 /home/ubuntu/fleet/contracts/checks/paired_paths.py
+
+# NOT ELIGIBLE FOR UNATTENDED MERGE, AND THE REASON IS NARROWER THAN "FRONTEND
+# WORK IS RISKY".
+#
+# Every other gate here is a fact about the tree. paired_paths.py establishes
+# that both files moved; it cannot establish that the label the page renders
+# describes the window the proxy asked for. Only a render test asserting that
+# behaviour can, and the agent chooses what its test asserts -- new_test_bites.sh
+# then proves the test discriminates between two trees, not that it
+# discriminates on the property the spec asked for.
+#
+# So the one thing this contract exists to prevent is the one thing it cannot
+# check, and a green run that reads as "the comparison label is right" would be
+# the sixth check-that-could-not-fail in this codebase.
+#
+# REVISIT ONCE IT HAS RUN A FEW TIMES. If the added tests that arrive under this
+# contract do assert the rendered sentence, the argument above weakens and this
+# becomes a default worth inverting -- the same way
+# contracts/deadly-digital-platform-api.yaml's `true` is scoped to the parity
+# push rather than stated as a design.
+auto_merge: false
+
+# 600 rather than the retired contract's 800. A page, its proxy and one render
+# test is a few hundred lines; a frontend diff approaching 800 under a contract
+# this narrow is a task that found something the spec did not describe.
+max_diff_lines: 600
+max_cost_gbp: 3.00
+# tsc 29s + vitest 65s + the bite check ~9s (two single-file runs) + paired
+# paths ~0s = ~105s of verification, out of one clock shared with the agent.
+timeout_seconds: 1800

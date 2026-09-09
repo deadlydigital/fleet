@@ -40,6 +40,7 @@ runner.worktree.create_trial_clone.
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,11 +166,16 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         change = boundary.derive(trial, base_sha)
         verdict = boundary.enforce(change, contract)
 
+        # The SAME facts the original run was given, including the frozen
+        # contract. A check that can read its contract on the first run and not
+        # on the re-verification is a check that reports could-not-run at
+        # exactly the moment auto-merge consults it.
         result = verify.run(
             trial, commands, DEADLINE_SECONDS,
             changed=changed_files,
             facts={"FLEET_BASE_SHA": base_sha, "FLEET_HEAD_SHA": head,
-                   "FLEET_TASK_ID": str(task["id"])})
+                   "FLEET_TASK_ID": str(task["id"]),
+                   "FLEET_CONTRACT": json.dumps(contract)})
 
         checks = [{"command": c.command, "expanded": c.expanded,
                    "exit_code": c.exit_code, "duration_ms": c.duration_ms,

@@ -62,9 +62,35 @@ def glob_prefix(glob: str) -> str:
 
 
 def load_contract(repo: str, path: Path | None = None) -> dict[str, Any]:
-    """The contract for a repo: an explicit file, or the repo's default."""
+    """The contract for a repo: an explicit file, or the repo's default.
+
+    THERE IS NO LONGER A DEFAULT FOR deadly-digital-platform, AND THAT IS THE
+    POINT. contracts/deadly-digital-platform.yaml was it, and it declared
+    platform/app/**, platform/components/** and platform/lib/** writable --
+    reaching lib/auth.ts, lib/roles.ts, lib/csrf.ts, the impersonation route
+    and the billing checkout route. It was deleted rather than narrowed in the
+    same change as 023_platform_floor.sql.
+
+    A default contract is the one nobody has to choose, so it is the one a task
+    gets by omission. The narrow contracts are per-piece-of-work and each is
+    named on the command line; falling back to a wide one when no name is given
+    is the opposite of that. So the fallback is kept -- a repo may still have a
+    <repo>.yaml -- and its absence is reported as a thing to decide rather than
+    as a missing file.
+    """
+    default = path is None
     path = path or CONTRACT_DIR / f"{repo}.yaml"
     if not path.exists():
+        if default:
+            available = sorted(
+                p.name for p in CONTRACT_DIR.glob("*.yaml")
+                if (yaml.safe_load(p.read_text()) or {}).get("repo") == repo)
+            raise RuntimeError(
+                f"{repo} has no default contract at {path}, and that is "
+                f"deliberate: the wide one was deleted with 023_platform_floor"
+                f".sql. Name the contract this task is scoped to with "
+                f"--contract. For this repo: "
+                + (", ".join(available) if available else "none found"))
         raise RuntimeError(f"no acceptance contract at {path}")
     contract = yaml.safe_load(path.read_text())
     if not isinstance(contract, dict):

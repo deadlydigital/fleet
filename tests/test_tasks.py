@@ -23,7 +23,11 @@ def contract(**over) -> str:
         "work_type": "dd_feature",
         "repo": REPO,
         "base_branch": "main",
-        "writable_paths": ["platform/app/**", "docs/**"],
+        # NOT platform/app/** -- 023 floors auth, billing, email, the
+        # storefront ingest and the intervention surface under it, so the
+        # wide glob is refused as self-contradictory. A narrow one is what
+        # a contract looks like now.
+        "writable_paths": ["platform/app/(dashboard)/analytics/orders/**", "docs/**"],
         "protected_paths": list(FLOOR),
         "verification": ["pytest api/tests/"],
         "max_diff_lines": 800,
@@ -197,7 +201,8 @@ def test_contract_is_frozen_once_running(console, runner):
     tid = add_task(console)
     runner.execute("SELECT claim_task(NULL)")
     runner.commit()
-    wide = contract(writable_paths=["platform/app/**", "docs/**", "scripts/**"])
+    wide = contract(writable_paths=[
+        "platform/app/(dashboard)/analytics/orders/**", "docs/**", "scripts/**"])
     with pytest.raises(psycopg.errors.RaiseException, match="frozen"):
         console.execute(
             "UPDATE tasks SET acceptance_contract=%s WHERE id=%s", (wide, tid))
@@ -207,7 +212,7 @@ def test_contract_may_be_corrected_while_queued(console):
     tid = add_task(console)
     console.execute(
         "UPDATE tasks SET acceptance_contract=%s WHERE id=%s",
-        (contract(writable_paths=["platform/app/**"]), tid))
+        (contract(writable_paths=["platform/app/(dashboard)/analytics/orders/**"]), tid))
     console.commit()
 
 

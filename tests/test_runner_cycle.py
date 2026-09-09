@@ -35,7 +35,8 @@ FILES = {
     "api/ruff.toml": "line-length = 100\n",
     "api/alembic/env.py": "# migrations\n",
     "api/analytics/migrations/001.sql": "-- migration\n",
-    "platform/app/page.tsx": "export default () => null\n",
+    "platform/app/(dashboard)/analytics/orders/page.tsx":
+        "export default () => null\n",
     "platform/__tests__/a.test.ts": "test('x', () => {})\n",
     "platform/vitest.config.ts": "export default {}\n",
     "platform/playwright.config.ts": "export default {}\n",
@@ -93,7 +94,7 @@ def contract(**over) -> dict:
         "base_branch": "main",
         "contract_version": 1,
         "writable_paths": ["api/analytics/services/analytics_engine.py",
-                           "platform/app/**"],
+                           "platform/app/(dashboard)/analytics/orders/**"],
         "protected_paths": list(FLOOR),
         "verification": ["true"],
         "max_diff_lines": 200,
@@ -495,6 +496,26 @@ def test_checks_are_given_the_derived_change_not_the_agents_account(
     result = run_tick(monkeypatch, fake_agent(
         {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
         reported=[]))                      # the agent claims it changed nothing
+    assert result.outcome == "READY_FOR_REVIEW", result.reason
+
+
+def test_checks_are_given_the_frozen_contract(dsns, settings, console,
+                                              monkeypatch):
+    """$FLEET_CONTRACT is the contract from the ROW, not contracts/*.yaml.
+
+    contracts/checks/paired_paths.py reads its groups from it. Reading the yaml
+    on disk instead would judge this task against whatever that file says at the
+    moment the check runs, which is the drift guard_task_immutability exists to
+    remove -- the contract is frozen once the task leaves QUEUED precisely so
+    that what judges the work cannot move under it.
+    """
+    read_it = (
+        'test "$(printf %s "$FLEET_CONTRACT" | python3 -c '
+        "\"import json,sys; print(json.load(sys.stdin)['max_diff_lines'])\")\" = 200")
+    queue_task(console, contract=contract(verification=[read_it]))
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/analytics/services/analytics_engine.py":
+         "def app():\n    '''new'''\n    return 1\n"}))
     assert result.outcome == "READY_FOR_REVIEW", result.reason
 
 

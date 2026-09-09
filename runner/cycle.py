@@ -25,6 +25,7 @@ explicit task-branch refspec.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
@@ -389,9 +390,14 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 wt_path, contract["verification"], remaining,
                 changed=[p for p in change.paths
                          if change.status.get(p) != "D"],
+                # FLEET_CONTRACT is the FROZEN contract from the row, not the
+                # yaml on disk. A check that read contracts/*.yaml would be
+                # judging this task against whatever that file says now, which
+                # is the drift guard_task_immutability exists to remove.
                 facts={"FLEET_BASE_SHA": base_sha,
                        "FLEET_HEAD_SHA": change.head_sha,
-                       "FLEET_TASK_ID": str(task["id"])})
+                       "FLEET_TASK_ID": str(task["id"]),
+                       "FLEET_CONTRACT": json.dumps(contract)})
         finally:
             worktree.unlink_dependencies(links)
         result.verification = verification

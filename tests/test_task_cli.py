@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONTRACT = PROJECT_ROOT / "contracts" / "deadly-digital-platform.yaml"
+
+#: The narrow frontend contract, which replaced the wide default.
+#: contracts/deadly-digital-platform.yaml is GONE -- it declared
+#: platform/{app,components,lib}/** writable, reaching auth, roles, csrf,
+#: impersonation and billing checkout -- so this repo has no default and every
+#: `task add` for it must name a contract. test_the_repo_has_no_default_contract
+#: below is what keeps that true.
+CONTRACT = PROJECT_ROOT / "contracts" / "dd-analytics-frontend.yaml"
 
 
 def load_cli():
@@ -41,7 +49,8 @@ def spec_file(tmp_path) -> Path:
 
 def test_add_queues_a_task(cli, spec_file, console, capsys):
     assert cli.main(["task", "add", "--title", "Refund reporting",
-                     "--spec", str(spec_file), "--max-cost", "3.00",
+                     "--spec", str(spec_file), "--contract", str(CONTRACT),
+                     "--max-cost", "3.00",
                      "--objective", "dd-feature-parity"]) == 0
     row = console.execute(
         "SELECT title, status, repo, base_branch, objective_ref, max_cost_gbp,"
@@ -100,7 +109,7 @@ def test_every_shipped_contract_links_only_to_things_that_exist(cli, path):
     assert missing == [], f"{path.name} links to missing sources: {missing}"
 
 
-def test_the_default_contract_verifies_what_it_makes_writable(cli):
+def test_the_frontend_contract_verifies_what_it_makes_writable(cli):
     """Verification scope and writable scope must match.
 
     A contract declaring api/** writable while verifying with vitest would
@@ -110,8 +119,55 @@ def test_the_default_contract_verifies_what_it_makes_writable(cli):
     commands = " ".join(contract["verification"])
     assert "vitest" in commands and "tsc" in commands
     assert all(g.startswith("platform/") for g in contract["writable_paths"]), \
-        "the default contract verifies the frontend, so only the frontend may be writable"
+        "this contract verifies the frontend, so only the frontend may be writable"
     assert "api/**" in contract["protected_paths"]
+
+
+def test_the_repo_has_no_default_contract(cli):
+    """The wide contract is gone, and its absence is the boundary.
+
+    contracts/deadly-digital-platform.yaml declared platform/app/**,
+    platform/components/** and platform/lib/** writable -- lib/auth.ts,
+    lib/roles.ts, lib/csrf.ts, app/api/auth/impersonate and
+    app/api/billing/checkout. Restoring a file at that path restores all of it
+    to anybody who types `task add` without --contract, which is why this test
+    is about the PATH and not about the contents of a file that is not there.
+
+    023_platform_floor.sql is the other half: those paths are on
+    protected_path_floor now, so the restored file could not create a task
+    either. Two independent refusals for one mistake, deliberately.
+    """
+    assert not (PROJECT_ROOT / "contracts" / "deadly-digital-platform.yaml").exists()
+    with pytest.raises(RuntimeError, match="no default contract"):
+        cli.config.load_contract("deadly-digital-platform")
+
+
+def test_no_shipped_contract_makes_the_platform_floor_writable(cli):
+    """Every floor glob for a repo must be protected by every contract naming
+    it -- the database enforces that at INSERT, and this says which file is
+    wrong before a task is queued.
+
+    Derived from the migrations rather than typed: a hand-kept list here would
+    go stale the first time the floor moved, which is the defect
+    schema-drift-check.sh and tests/conftest.py were both fixed for.
+    """
+    floor = set()
+    for sql in sorted(PROJECT_ROOT.glob("[0-9][0-9][0-9]_*.sql")):
+        if sql.name.endswith(("_assertions.sql", "_fixtures.sql")):
+            continue
+        body = sql.read_text()
+        for m in re.finditer(
+                r"\('deadly-digital-platform',\s*'([^']+)'", body):
+            floor.add(m.group(1))
+    assert "platform/middleware.ts" in floor, \
+        "023's floor did not parse out of the migrations; this test is blind"
+
+    for path in CONTRACTS:
+        contract = yaml.safe_load(path.read_text())
+        if contract.get("repo") != "deadly-digital-platform":
+            continue
+        missing = sorted(floor - set(contract["protected_paths"]))
+        assert missing == [], f"{path.name} does not protect {missing}"
 
 
 def test_add_refuses_a_contract_that_leaves_the_suite_writable(cli, spec_file,
@@ -139,20 +195,23 @@ def test_add_refuses_an_empty_spec(cli, tmp_path):
     empty = tmp_path / "empty.md"
     empty.write_text("")
     assert cli.main(["task", "add", "--title", "x", "--spec", str(empty),
-                     "--max-cost", "1.00"]) == 2
+                     "--contract", str(CONTRACT), "--max-cost", "1.00"]) == 2
 
 
 def test_add_refuses_a_timeout_over_the_ceiling(cli, spec_file, console):
     assert cli.main(["task", "add", "--title", "forever", "--spec", str(spec_file),
+                     "--contract", str(CONTRACT),
                      "--timeout", "99999", "--max-cost", "1.00"]) == 1
     assert console.execute("SELECT count(*) AS n FROM tasks").fetchone()["n"] == 0
 
 
 def test_list_orders_by_status_then_priority(cli, spec_file, capsys):
     cli.main(["task", "add", "--title", "low", "--spec", str(spec_file),
-              "--priority", "200", "--max-cost", "1.00"])
+              "--contract", str(CONTRACT), "--priority", "200",
+              "--max-cost", "1.00"])
     cli.main(["task", "add", "--title", "urgent", "--spec", str(spec_file),
-              "--priority", "10", "--max-cost", "1.00"])
+              "--contract", str(CONTRACT), "--priority", "10",
+              "--max-cost", "1.00"])
     capsys.readouterr()
     assert cli.main(["task", "list"]) == 0
     out = capsys.readouterr().out
@@ -162,7 +221,7 @@ def test_list_orders_by_status_then_priority(cli, spec_file, capsys):
 def test_status_shows_the_contract_and_what_may_happen_next(cli, spec_file,
                                                             capsys):
     cli.main(["task", "add", "--title", "t", "--spec", str(spec_file),
-              "--max-cost", "1.00"])
+              "--contract", str(CONTRACT), "--max-cost", "1.00"])
     capsys.readouterr()
     assert cli.main(["task", "status", "1"]) == 0
     out = capsys.readouterr().out
@@ -184,7 +243,7 @@ def test_the_cli_cannot_reach_a_reviewed_state_it_has_no_command_for(cli,
     QUEUED anyway. Both halves matter: the missing command is convention, the
     refusal is enforcement."""
     cli.main(["task", "add", "--title", "t", "--spec", str(spec_file),
-              "--max-cost", "1.00"])
+              "--contract", str(CONTRACT), "--max-cost", "1.00"])
     import psycopg
     with pytest.raises(psycopg.errors.RaiseException, match="may not move"):
         console.execute("UPDATE tasks SET status='MERGED' WHERE id=1")
