@@ -396,9 +396,12 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             worktree.unlink_dependencies(links)
         result.verification = verification
         for check in verification.checks:
-            mark = "skip" if not check.ran else "ok  " if check.passed else "FAIL"
+            mark = ("NORUN" if check.unresolved_reason
+                    else "skip" if not check.ran
+                    else "ok  " if check.passed else "FAIL")
+            why = check.unresolved_reason or check.skipped_reason
             log(f"  {mark} {check.command} ({check.duration_ms}ms)"
-                + (f"  -- {check.skipped_reason}" if not check.ran else ""))
+                + (f"  -- {why}" if why else ""))
             if not check.passed:
                 log("        " + check.output_tail.strip().splitlines()[-1][:150]
                     if check.output_tail.strip() else "")
@@ -408,7 +411,14 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
 
         if not verification.passed:
             result.outcome = "FAILED"
-            result.reason = "verification failed"
+            # "could not be verified" is not "verification failed", and the
+            # reason is what the brief and the console print. The status is
+            # FAILED either way because `tasks.status` has no third terminal
+            # value -- adding one is a schema change and does not belong
+            # riding along here -- so the sentence is doing the work.
+            result.reason = (
+                f"could not be verified: {verification.unresolved_summary()}"
+                if verification.unresolved else "verification failed")
             return
 
         # ---- the branch, and nothing beyond it ----
@@ -614,8 +624,13 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
         "checks": [{"command": c.command, "expanded": c.expanded,
                     "exit_code": c.exit_code, "duration_ms": c.duration_ms,
                     "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
+                    "unresolved_reason": c.unresolved_reason,
                     "output_tail": c.output_tail} for c in verification.checks],
         "verification_skipped": verification.skipped_reason,
+        # Recorded on the run itself: a FAIL whose checks never opened is a
+        # different fact from a FAIL whose checks ran, and reading it back off
+        # the payload should not require inferring it from exit codes.
+        "verification_unresolved": verification.unresolved_summary() or None,
         "boundary_violations": {
             "protected": verdict.protected_hits,
             "outside_writable": verdict.outside_writable,

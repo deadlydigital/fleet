@@ -385,7 +385,7 @@ def accept(request: Request, task_id: int,
     again = None
     if check.ok and not check.already_merged:
         again = reverify.run(
-            repo, config.trial_worktree_root(), task, contract, branch,
+            repo, config.trial_root(), task, contract, branch,
             recorded_base=recorded_base,
             changed_files=[p for p in (patch or {}).get("files_changed", [])
                            if (patch or {}).get("file_status", {}).get(p) != "D"])

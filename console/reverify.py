@@ -22,10 +22,21 @@ nothing new. The merge is made in a throwaway worktree first, verified there,
 and only then made for real.
 
 A FAILURE RECORDS NOTHING AND LEAVES NOTHING. The trial merge happens where it
-can be deleted; on conflict or on a failing check the worktree is removed, the
+can be deleted; on conflict or on a failing check the trial is removed, the
 real checkout is never touched, and no verdict is written -- the same rule a
 conflicting merge already follows, because a merge that could not be verified
 is not a decision either.
+
+THE TRIAL IS A CLONE, AND THAT IS WHAT MAKES THE PARAGRAPH ABOVE TRUE. It was
+a linked worktree until 2026-09-09, and for as long as it was, the paragraph
+above was false: a worktree's merge writes its objects into the SOURCE
+repository's shared object store, and `git worktree remove` does not take them
+back. Every Accept that reached re-verification left an unreferenced merge
+commit and tree in the real repository. Nothing downstream read them and no
+verdict depended on them, so the damage was litter rather than corruption --
+but "leaves nothing" was a claim this module did not keep, and it was not
+noticed until the same write failed loudly for a different reason. See
+runner.worktree.create_trial_clone.
 """
 from __future__ import annotations
 
@@ -72,10 +83,10 @@ class Reverification:
                 "could_not_run": self.could_not_run}
 
 
-def run(repo: Path, worktree_root: Path, task: dict[str, Any],
+def run(repo: Path, trial_root: Path, task: dict[str, Any],
         contract: dict[str, Any], branch: str, *,
         recorded_base: str, changed_files: list[str]) -> Reverification:
-    """Trial-merge into a scratch worktree, verify there, throw it away."""
+    """Trial-merge into a scratch clone, verify there, throw it away."""
     started = time.monotonic()
     base = task["base_branch"]
     commands = list(contract.get("verification") or [])
@@ -91,13 +102,13 @@ def run(repo: Path, worktree_root: Path, task: dict[str, Any],
     # Accept: the same shape as any other rarely-taken path with no handler,
     # and indistinguishable to the reviewer from the app being broken.
     try:
-        worktree_root.mkdir(parents=True, exist_ok=True)
-        trial, base_sha = worktree.create_detached(repo, worktree_root, name, base)
+        trial_root.mkdir(parents=True, exist_ok=True)
+        trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, base)
     except (boundary.GitError, OSError) as exc:
         return Reverification(
             ok=False, could_not_run=True,
-            reason=(f"the trial worktree could not be created under "
-                    f"{worktree_root}, so the merge into {base} was NOT "
+            reason=(f"the trial clone could not be created under "
+                    f"{trial_root}, so the merge into {base} was NOT "
                     f"re-verified and has not been made. This is not a failing "
                     f"check and not a conflict -- the trial never ran: {exc}"),
             duration_s=time.monotonic() - started)
@@ -108,10 +119,14 @@ def run(repo: Path, worktree_root: Path, task: dict[str, Any],
         # print that word -- a read-only filesystem said "cannot lock ref
         # 'ORIG_HEAD'" once and was reported as a conflict for exactly that
         # mistake.
+        # `origin/<branch>`, not `<branch>`: in a clone the source's branches
+        # arrive as remote-tracking refs and only the source's HEAD branch
+        # exists locally, so the bare name would resolve to nothing -- or, in
+        # the one case where it did resolve, to the wrong commit.
         merged = subprocess.run(
             ["git", "-C", str(trial), "-c", "user.name=fleet-console",
              "-c", "user.email=console@fleet.local",
-             "merge", "--no-ff", "--no-edit", branch],
+             "merge", "--no-ff", "--no-edit", f"origin/{branch}"],
             capture_output=True, text=True, timeout=120)
         if merged.returncode != 0:
             output = (merged.stdout or "") + (merged.stderr or "")
@@ -144,6 +159,7 @@ def run(repo: Path, worktree_root: Path, task: dict[str, Any],
         checks = [{"command": c.command, "expanded": c.expanded,
                    "exit_code": c.exit_code, "duration_ms": c.duration_ms,
                    "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
+                   "unresolved_reason": c.unresolved_reason,
                    "output_tail": c.output_tail[-800:]} for c in result.checks]
 
         if not verdict.clean:
@@ -155,6 +171,23 @@ def run(repo: Path, worktree_root: Path, task: dict[str, Any],
                             "over_diff_limit": verdict.over_diff_limit},
                 reason=("merged into the current base, this change lands "
                         "outside its contract: " + "; ".join(verdict.reasons())),
+                duration_s=time.monotonic() - started)
+
+        # BEFORE the failure branch below, because it is the branch that would
+        # otherwise tell the wrong story. A contract naming a checker that is
+        # not on disk produces exactly the shape of a failing check, and the
+        # sentence below -- "the branch verifies on its own and FAILS when
+        # merged" -- would send the reviewer to read a diff that is fine.
+        # Nothing about the change is known here; that is `could_not_run`.
+        if result.unresolved:
+            return Reverification(
+                ok=False, could_not_run=True, base_sha=base_sha, merged_sha=head,
+                checks=checks,
+                reason=(f"the merge into {base} was NOT re-verified and has "
+                        f"not been made: {result.unresolved_summary()}. This "
+                        f"is not a failing check and says nothing about "
+                        f"{branch} -- the contract names a checker that is not "
+                        f"there. Nothing was recorded."),
                 duration_s=time.monotonic() - started)
 
         if not result.passed:
@@ -172,4 +205,4 @@ def run(repo: Path, worktree_root: Path, task: dict[str, Any],
                               verification=result, checks=checks,
                               duration_s=time.monotonic() - started)
     finally:
-        worktree.remove(repo, trial)
+        worktree.discard_trial_clone(trial)

@@ -133,3 +133,69 @@ def test_a_link_will_not_replace_an_existing_path(tmp_path):
     (root / "platform" / "node_modules").mkdir(parents=True)
     with pytest.raises(GitError, match="already exists"):
         worktree.link_dependencies(root, {"platform/node_modules": str(src)})
+
+
+# ---- a checker that is not on disk ----------------------------------------
+#
+# Contracts name checkers by absolute path into a tree that is NOT the one
+# under verification -- an interpreter, and a script in another repository.
+# Those paths can stop resolving without anybody touching the task, and when
+# they do the command exits non-zero exactly like a failing check. Reported as
+# one, it sends a reviewer to read a diff that is fine.
+
+def test_a_missing_checker_is_unresolved_not_failed(tmp_path):
+    """The distinction step 1 exists to draw."""
+    result = verify.run(tmp_path, ["/nonexistent/python /nonexistent/check.py"], 30)
+    assert result.unresolved
+    assert not result.passed
+    check = result.checks[0]
+    assert check.unresolved_reason and "/nonexistent/python" in check.unresolved_reason
+    assert not check.passed          # and NOT treated as a skip
+    assert not check.ran
+
+
+def test_a_missing_checker_never_reads_as_a_pass(tmp_path):
+    """The failure mode the branch ordering in Check.passed guards against.
+
+    An unresolved check has `ran` False, and the skip branch returns True for
+    anything that did not run. Were the branches the other way round, a
+    checker that had gone missing would PASS -- worse than either other
+    reading, because it merges unverified work.
+    """
+    result = verify.run(tmp_path, ["/nonexistent/check.py"], 30)
+    assert result.checks[0].passed is False
+    assert result.passed is False
+
+
+def test_nothing_runs_when_any_checker_is_missing(tmp_path):
+    """Resolution is checked up front, over the whole contract.
+
+    The resolvable check must not run: its result could not change the
+    outcome, and reporting its exit code would answer a question nobody asked
+    while the real answer is "this could not be judged".
+    """
+    marker = tmp_path / "ran"
+    result = verify.run(
+        tmp_path,
+        [f"touch {marker}", "/nonexistent/python /nonexistent/check.py"], 30)
+    assert not marker.exists(), "a check ran despite the contract being unresolvable"
+    assert result.unresolved and not result.passed
+    assert len(result.checks) == 2               # the whole contract is reported
+    assert result.checks[0].skipped_reason and not result.checks[0].unresolved_reason
+    assert result.checks[1].unresolved_reason
+
+
+def test_a_relative_path_is_not_treated_as_a_missing_checker(tmp_path):
+    """Relative paths resolve inside the worktree -- the task's own business.
+
+    Only absolute paths reach out of the tree under verification, and only
+    those can go missing for reasons unrelated to the change.
+    """
+    result = verify.run(tmp_path, ["test -f does/not/exist.py"], 30)
+    assert not result.unresolved
+    assert result.checks[0].ran and not result.checks[0].passed   # a real failure
+
+
+def test_an_unparseable_command_is_not_called_unresolved(tmp_path):
+    """A command this cannot split is one it has no opinion about."""
+    assert verify.unresolved_paths("echo 'unbalanced") == []

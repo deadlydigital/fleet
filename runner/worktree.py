@@ -119,20 +119,64 @@ def create(repo: Path, root: Path, branch: str, base_branch: str) -> tuple[Path,
     return path, base_sha
 
 
-def create_detached(repo: Path, root: Path, name: str, at: str) -> tuple[Path, str]:
-    """A throwaway worktree at a commit, on no branch.
+def create_trial_clone(repo: Path, root: Path, name: str, at: str) -> tuple[Path, str]:
+    """A throwaway CLONE at a commit, for a merge that must leave no trace.
 
-    Detached because the base branch is already checked out in the main
-    working copy and git will not check the same branch out twice. This is
-    where a merge is tried before it is made: the trial happens somewhere that
-    can be deleted, so a merge that should not have happened leaves nothing.
+    A CLONE AND NOT A WORKTREE, which is the opposite of the choice this
+    module makes everywhere else, so the reason is worth stating.
+
+    `git worktree add` writes into the repository it links FROM, in two
+    places, and only one of them is the worktree's own directory:
+
+      * an admin directory at `<repo>/.git/worktrees/<name>/`, holding HEAD,
+        the index, ORIG_HEAD and MERGE_* -- created before any file of the
+        worktree is written; and
+      * every object the trial merge creates, into `<repo>/.git/objects`,
+        which is SHARED with the source. `git worktree remove` does not
+        delete them, so each trial left an unreferenced merge commit and tree
+        behind in the real repository, for as long as it went uncollected.
+
+    Both are fatal to what the trial is for. The first is why Accept failed
+    outright on a task in a repository the console may only read. The second
+    is quieter and worse: "the trial leaves nothing" was simply not true on
+    the path where the trial did run.
+
+    A clone reads the source and writes only to the destination, so both go
+    away. Measured under the console's own sandbox: 0.13s and 42 MB for the
+    platform checkout, 0.27s and 6 MB for the fleet one, per Accept, into a
+    directory systemd destroys when the service stops.
+
+    `--no-hardlinks` because the source may be on a read-only mount: linking
+    an object would change the link count on the source inode, which is a
+    write to that filesystem. Git falls back to copying on its own, but the
+    fallback is not the thing being relied on -- and a full copy is what
+    makes the clone self-contained, with no alternates pointing at objects
+    the source could garbage-collect out from under a running trial.
+
+    Returns the clone and the resolved sha, so everything downstream compares
+    against a sha rather than a name that could move mid-trial.
     """
     sha = git(repo, "rev-parse", at).strip()
     path = root / name
     if path.exists():
         shutil.rmtree(path)
-    git(repo, "worktree", "add", "--quiet", "--detach", str(path), sha)
+    root.mkdir(parents=True, exist_ok=True)
+    git(repo, "clone", "--quiet", "--no-checkout", "--no-hardlinks",
+        str(repo), str(path))
+    git(path, "checkout", "--quiet", "--detach", sha)
     return path, sha
+
+
+def discard_trial_clone(path: Path) -> None:
+    """Delete a trial clone.
+
+    Deliberately not `remove()`: that runs `git worktree remove` and `git
+    worktree prune` against the SOURCE repository, which is both unnecessary
+    for a clone -- the source has no registration to prune -- and a write the
+    console may not be allowed to make. A clone is a directory and nothing
+    else, so removing it is removing the directory.
+    """
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def remove(repo: Path, path: Path, keep_branch: bool = True) -> None:

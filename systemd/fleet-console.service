@@ -41,9 +41,18 @@ RestartSec=5s
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/ubuntu/deadly-digital-platform
-# Load-bearing for Accept: re-verification builds its trial worktree in
+# Load-bearing for Accept: re-verification builds its trial clone in
 # /tmp/fleet-console-trials, which is writable only because this is private.
-# Removing it breaks Accept. A static test guards this.
+# Removing it breaks Accept.
+#
+# It is NOT, on its own, what makes Accept work, and the comment here used to
+# imply that it was. A trial built as a linked worktree writes into the
+# repository it links from as well as into its own directory, so this setting
+# fixed the write that was never the problem while leaving the one that was.
+# The trial is a clone for that reason; see console/reverify.py. The tests
+# below the sandbox comment in tests/test_console_decide.py now run the real
+# operation under this unit's real confinement rather than a mkdir that only
+# ever exercised the half that worked.
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectKernelTunables=true
