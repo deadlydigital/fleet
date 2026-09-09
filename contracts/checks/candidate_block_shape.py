@@ -83,6 +83,12 @@ PER_CANDIDATE_SHA = "verified_sha"
 MIN_RATIONALE_WORDS = 12
 MIN_UNASKED_WORDS = 20
 
+#: The closed probe vocabulary, named once. run_probe() below dispatches on
+#: these and console/load_candidates.py refuses a block carrying anything else,
+#: so the loader can check the vocabulary without holding a second copy of it
+#: that drifts. Adding a predicate means adding it here AND in run_probe.
+PROBE_KINDS = ("path_exists", "path_absent", "grep_count")
+
 
 def fail(msg: str) -> int:
     print(f"FAIL: {msg}")
@@ -138,7 +144,7 @@ def run_probe(repo: Path, probe: dict) -> tuple[bool, str]:
         return n == expected, f"grep_count {glob} /{pattern}/ = {n}, expected {expected}"
 
     return False, (f"{kind!r} is not in the probe vocabulary "
-                   f"(path_exists, path_absent, grep_count)")
+                   f"({', '.join(PROBE_KINDS)})")
 
 
 # ---- the block -------------------------------------------------------------
