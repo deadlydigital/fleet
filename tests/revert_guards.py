@@ -143,6 +143,15 @@ CASES = [
      '        if False:\n            return False',
      "tests/test_verify_scoping.py::test_a_missing_checker_never_reads_as_a_pass"),
 
+    # A unit that fails to START writes nothing to the brief, so the brief
+    # cannot report its own absence. Removing this makes the fleet silent
+    # about exactly the failure it cannot otherwise notice.
+    ("every fleet unit reports its own failure",
+     "systemd/fleet-brief.service",
+     'OnFailure=fleet-unit-failed@%n.service',
+     '# OnFailure removed',
+     "tests/test_unit_failure_notice.py::test_every_fleet_unit_declares_onfailure"),
+
     # ---- the decision log's half of review.py ---------------------------
     ("a verdict needs a reason in words, not only a code",
      "review.py",

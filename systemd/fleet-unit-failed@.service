@@ -1,0 +1,59 @@
+# The handler every fleet unit points its OnFailure= at.
+#
+# %i, NOT %I. `OnFailure=fleet-unit-failed@%n.service` puts the failed unit's
+# full name in the instance position verbatim, so %i returns it unchanged:
+# `fleet-detector@dd_aws_cost.service`. %I additionally UNESCAPES it, and
+# unescaping turns every `-` into `/` -- the first version of this file used
+# %I and reported `fleet/detector@dd_aws_cost.service`, a unit name that does
+# not exist and that systemctl cannot look up.
+#
+# WHY THIS EXISTS
+# On 2026-09-09 a branch switch in /home/ubuntu/fleet -- a correct action,
+# taken deliberately to accept a task -- removed run_brief.py and two detector
+# modules. fleet-sentry failed every fifteen minutes for the rest of the
+# morning, and fleet-brief and fleet-aws-cost would have failed at their next
+# slots. Nothing said so. A unit that fails to START writes nothing to the
+# brief, so the brief could not report its own absence; the failures were
+# found by a sweep run by hand, hours later.
+#
+# systemd knew the whole time. Nothing asked it.
+#
+# IT HAS NO OnFailure= OF ITS OWN, deliberately: a handler that triggered
+# itself on failure would loop. Its own failures go to the journal under the
+# tag `fleet-unit-failed`, and the script is written not to fail -- see
+# tools/unit-failed.sh.
+#
+# ExecStart names /usr/local/lib/fleet, NOT the git working tree. That is the
+# whole point: the notifier must survive the repository being the broken
+# thing. tests/test_unit_failure_notice.py asserts the installed copy still
+# matches tools/unit-failed.sh, so "outside the tree" does not become
+# "silently different from the tree".
+[Unit]
+Description=Report that %i failed
+# Not Requires/After on anything: this must be able to run when the rest of
+# the fleet cannot.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/fleet/unit-failed.sh %i
+
+# RuntimeDirectory and LogsDirectory, NOT ReadWritePaths. systemd creates
+# these before the unit starts; ReadWritePaths only GRANTS access to a path
+# that already exists, and naming one that does not exist fails the unit with
+# 226/NAMESPACE before ExecStart is reached. The first version of this file
+# did exactly that, and the handler-that-reports-failures failed silently --
+# which is the whole defect this unit exists to fix, reproduced inside the
+# fix. Caught by firing a real failure rather than by reading the unit.
+RuntimeDirectory=fleet-unit-failed
+# Without this the throttle stamps are deleted the moment this oneshot exits,
+# every failure looks like the first, and a unit failing every fifteen minutes
+# sends every fifteen minutes.
+RuntimeDirectoryPreserve=yes
+LogsDirectory=fleet
+
+# It reads .env, writes its two directories, and reaches Telegram.
+ProtectSystem=full
+NoNewPrivileges=true
+PrivateDevices=true
+# A handler that hangs is a handler that stops being one.
+TimeoutStartSec=60

@@ -4,6 +4,12 @@ Documentation=file:/home/ubuntu/fleet/specs/approval-surface.md
 After=network-online.target
 Wants=network-online.target
 
+# Every fleet unit reports its own failure. Without this a unit that fails
+# to start is silent: systemd knows, the brief cannot say so, and the
+# failure waits for somebody to run a sweep. See
+# systemd/fleet-unit-failed@.service.
+OnFailure=fleet-unit-failed@%n.service
+
 [Service]
 Type=oneshot
 User=ubuntu
