@@ -31,17 +31,34 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Every migration, in order. 015, 016 and 017 were missing from this list
-# until 9 Sep 2026 -- so the comparison was being made against a schema three
-# migrations behind, and drift in anything they touched was invisible to the
-# check whose whole job is finding drift.
-MIGRATIONS=(001_v1_core 002_proposals 003_tasks 004_console_reader
-            005_console_decisions 006_verdict_coverage 007_research_floor
-            008_task_reclaim 009_task_reclaims 010_decision_log
-            011_proposal_product 012_daily_brief 013_approval_surface
-            014_monthly_credit 015_sentry_detector 016_aws_cost_detector
-            017_email_floor 018_gdpr_floor 019_gdpr_services_floor
-            020_creatable_paths)
+# EVERY MIGRATION, DERIVED. Not a typed list.
+#
+# This was a hand-maintained array and it went stale twice in two days: 015,
+# 016 and 017 were missing on 9 Sep, then 018, 019 and 020 the same afternoon.
+# So the check whose entire purpose is finding drift between the files and
+# production was itself comparing against a schema four migrations behind --
+# and it did not fail while doing it. A stale list produces a CLEAN
+# comparison, not an error, because the objects those migrations create are
+# absent from both sides of a diff that never loaded them.
+#
+# The same defect, twice fixed elsewhere: tests/conftest.py carried an
+# eleven-file list and built a template two migrations behind, and the
+# analytics table tally was hand-maintained until a migration moved it. Both
+# are globbed now. This is the third.
+#
+# `_assertions.sql` and `_fixtures.sql` are excluded for the reason
+# conftest.py excludes them: assertions run against a built schema, and 001's
+# fixtures are data rather than structure.
+mapfile -t MIGRATIONS < <(
+    find . -maxdepth 1 -name '[0-9][0-9][0-9]_*.sql' \
+        ! -name '*_assertions.sql' ! -name '*_fixtures.sql' \
+        -printf '%f\n' | sed 's/\.sql$//' | sort)
+
+if [ "${#MIGRATIONS[@]}" -eq 0 ]; then
+    echo "REFUSING: no migration files matched. An empty list would build an" >&2
+    echo "empty database and report every production object as drift." >&2
+    exit 2
+fi
 SCRATCH="${TMPDIR:-/tmp}/fleet-drift-$$"
 LOCAL_DB="fleet_fromfiles"
 SOCKET="${PGHOST:-/var/run/postgresql}"
