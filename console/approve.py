@@ -179,21 +179,67 @@ Read the tree; do not write paths from memory.
 REPEAT_FAILURE_STOP = 2
 
 
+#: How a batch decision was arrived at. 026's vocabulary and console/decide.py's,
+#: and the same word for the same reason: "unattended" says NOBODY WAS WATCHING,
+#: where "auto" would only say a machine did it.
+DECIDED_VIA = ("console", "by_hand", "unattended")
+
+
 def approve_batch(*, reason: str, approve_ids: List[int],
                   reject: Dict[int, str], not_now_ids: List[int],
-                  decided_by: str,
-                  repeat_overrides: Dict[int, str] | None = None) -> Dict[str, Any]:
+                  decided_by: str | None,
+                  repeat_overrides: Dict[int, str] | None = None,
+                  decided_via: str = "console",
+                  mechanics: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Record one batch decision and queue its draft-spec tasks.
 
     Raises ApprovalRefused with a reviewer-facing message rather than letting a
     constraint violation reach the page as a 500 -- the ceilings are a designed
     answer, not an error.
+
+    `decided_via` and `mechanics` default to the console's values, so every
+    existing caller is unchanged. console/autoapprove.py is the only thing that
+    passes anything else, and it ADDS NO CEILING OF ITS OWN AND BYPASSES NONE:
+    the repeat-failure stop, the batch cap, the queue depth, the credit check
+    and the one-transaction ordering are all already here, and were put here on
+    the grounds that auto-approval would have to meet them.
     """
     if not reason or not reason.strip():
         raise ApprovalRefused(
             "A batch needs a reason, and it is about the SELECTION rather than "
             "each row. Ten paraphrases of 'yes' would satisfy the NOT NULL "
             "while emptying the column.")
+
+    if decided_via not in DECIDED_VIA:
+        raise ApprovalRefused(
+            f"{decided_via!r} is not a way a decision can be arrived at; "
+            f"known: {', '.join(DECIDED_VIA)}")
+
+    if decided_via == "unattended":
+        # 026's constraint refuses this at the database too. It is checked here
+        # as well so the refusal is a sentence rather than a check violation --
+        # and because the caller that would get this wrong is a cron job whose
+        # stderr somebody reads in the morning.
+        if not mechanics:
+            raise ApprovalRefused(
+                "an unattended approval must carry its mechanics. `reason` is "
+                "NOT NULL on every decision_log row, so a machine writing prose "
+                "into it with nothing to check the prose against is exactly how "
+                "010's UNRECORDED problem returns by a new route.")
+        if repeat_overrides:
+            # An override is a person saying "it is different this time". There
+            # is no such sentence when nobody is there, and a machine that can
+            # write one has removed the only ceiling that stops it buying the
+            # same failure at the same price, repeatedly.
+            raise ApprovalRefused(
+                "an unattended approval cannot carry repeat_overrides. An "
+                "override is a person saying it is different this time; with "
+                "nobody there, the repeat stop is the answer and it stands.")
+    elif mechanics:
+        raise ApprovalRefused(
+            f"a {decided_via!r} decision cannot carry mechanics: a person's "
+            f"reasons belong in `reason`, and a mechanics object on a row a "
+            f"person decided would read as a machine having decided it.")
 
     # db.writer(), NOT db.connect(). The latter is the read-only session the
     # render path uses, and pointing this at it would fail at the first INSERT
@@ -311,12 +357,22 @@ def approve_batch(*, reason: str, approve_ids: List[int],
 
         if approve_ids:
             conn.execute(
+                # decided_by falls back to `current_user` -- the identity that
+                # is WRITING this row -- when the caller passes None. That is
+                # what the unattended path passes, so the login is recorded by
+                # construction rather than typed: console/app.py defaults this
+                # field to "eamonn", and a machine inheriting that default would
+                # produce a log that reads as a person's decision, which is the
+                # one thing this record exists to prevent.
                 "INSERT INTO decision_log (product, subject, decision, reason,"
-                " decided_by, evidence) VALUES (%s,%s,'APPROVED',%s,%s,%s)",
+                " decided_by, evidence, decided_via, mechanics)"
+                " VALUES (%s,%s,'APPROVED',%s,coalesce(%s, current_user),%s,%s,%s)",
                 ("fleet",
                  f"Approve {len(approve_ids)} candidate(s) for draft specs",
                  reason.strip(), decided_by,
-                 json.dumps([{"kind": "candidate", "id": i} for i in approve_ids])))
+                 json.dumps([{"kind": "candidate", "id": i} for i in approve_ids]),
+                 decided_via,
+                 json.dumps(mechanics) if mechanics else None))
             decision_id = conn.execute(
                 "SELECT currval('decision_log_id_seq') AS id").fetchone()["id"]
 
