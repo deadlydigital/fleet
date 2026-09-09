@@ -1,0 +1,33 @@
+# Merge what may be merged with nobody watching.
+#
+# specs/unattended-operation.md §6.1. A SEPARATE unit from fleet-runner on
+# purpose: stopping unattended merging must not mean stopping the runner, and
+# at 3am on a bad night the thing you want to stop is this one.
+#
+# It runs the same three steps the Accept route runs -- preflight, then
+# re-verification, then merge_and_push -- and adds ONE question between the
+# second and third: may this task merge with nobody watching? It removes
+# nothing. Every refusal Accept makes, this makes.
+[Unit]
+Description=Fleet auto-merge (unattended)
+After=network-online.target
+Wants=network-online.target
+# Every fleet unit reports its own failure. See systemd/fleet-unit-failed@.service.
+OnFailure=fleet-unit-failed@%n.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_automerge.py
+
+# It merges and pushes, so it needs what the console needs and nothing more:
+# a trial clone in its own PrivateTmp, and no write to any checkout.
+# See console/merge.py -- the merge is published from the trial, not made here.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M

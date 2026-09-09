@@ -118,3 +118,33 @@ def test_the_section_constant_matches_the_schema():
     assert f"'{OVERNIGHT}'" in sql
     for other in (CHANGED, UNCOMPUTED):
         assert f"'{other}'" in sql, f"021 dropped {other} from the vocabulary"
+
+
+# ---- unattended merges must not read like reviewed ones -------------------
+
+def test_an_unattended_merge_is_named_on_the_rollup():
+    """'2 merged' reads the same whether a person looked or nobody did."""
+    md = _render([_ov("overnight.runs",
+                      "3 run(s) finished: 2 merged (1 unattended), 1 failed")])
+    assert "(1 unattended)" in md
+
+
+def test_an_unattended_merge_carries_its_revert_command():
+    """The posture is 'read the brief and revert anything wrong'. The command
+    should be copy-paste at the moment somebody is annoyed, not a lookup."""
+    md = _render([_ov(
+        "overnight.task.30",
+        "task 30 (deadly-digital-platform) — merged UNATTENDED, test bit: "
+        "coupon report — GBP 2.41\n"
+        "      revert: git -C ~/deadly-digital-platform revert -m 1 6afabc62d348")])
+    assert "merged UNATTENDED" in md
+    assert "revert: git -C ~/deadly-digital-platform revert -m 1 6afabc62d348" in md
+
+
+def test_a_reviewed_merge_gets_no_revert_line():
+    """A merge a person made is one they can find. The line is for the ones
+    nobody saw."""
+    md = _render([_ov("overnight.task.28",
+                      "task 28 (deadly-digital-platform) — merged: windows — GBP 2.31")])
+    assert "revert:" not in md
+    assert "UNATTENDED" not in md

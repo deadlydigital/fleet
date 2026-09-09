@@ -252,6 +252,41 @@ surface today and to auto-approval in §6.1 tomorrow, because both go through
 the new test present and bitten. Everything else refuses, and refusing records
 nothing — the existing behaviour.
 
+**ELIGIBILITY IS BY DEFAULT, AND THAT DEFAULT IS SCOPED TO THIS PUSH.** A code
+task merges unattended unless something says otherwise; a spec that wants a
+person to see it sets `auto_merge: false`.
+
+This was designed as an opt-in and inverted on 9 Sep 2026. The opt-in argument —
+that only a person reading a spec can judge whether the work is worth doing —
+is right in general and wrong for the next three weeks: the rows are already
+agreed, there are no customers, and reading every spec puts a person back in
+the loop twice per feature, which is the thing this posture removes. A bad spec
+costs a revert.
+
+**§7 lists reversing it.** `auto_merge: true` is a statement about this body of
+work on this product at this moment. It is not a design, and the same sentence
+is in `console/automerge.py` and in the contract, because a default is
+inherited by whoever reads the code next and they may read neither spec.
+
+**`draft_spec` and `research` are never eligible, whatever a contract says.**
+They exist to be read, and under this posture that reading is the ONLY
+remaining human gate. It is a hard rule keyed on work_type, not a default.
+
+Refusals no flag overrides: no `creatable_paths` (the agent could not have
+added a test, so a green suite shows only that nothing broke), re-verification
+skipped or `could_not_run`, the bite check absent or failing, `already_merged`.
+
+**The record.** `decided_via` gains `"unattended"` — the word that matters is
+that nobody was watching. `decision_seconds` is **NULL**, because it measures a
+review and there was none; `0.0` would read as "decided instantly", a claim
+about a person who does not exist. `note` stays NULL, and a `gates` payload
+carries what the checks reported instead. `decision` stays `APPROVED`, because
+provenance belongs in `decided_via` and a fourth status would be the
+`MERGED_OUTSIDE` mistake again.
+
+**The brief names them and prints the revert**, since the posture is "read the
+brief and revert anything wrong" and that should be copy-paste.
+
 **6.2 Auto-deploy is a timer, and it is the most conditional thing here.** It
 deploys only when ALL of:
 
@@ -278,6 +313,9 @@ whichever is first.** Then:
 
 - auto-deploy off; deploys become a person running `deploy.sh`;
 - auto-merge off; Accept returns to the console;
+- **`auto_merge: true` comes out of the api contract and eligibility goes back
+  to opt-in.** This is the one item here that is a default rather than a
+  switch, so it is the one most likely to be inherited silently;
 - the pool ceiling returns to a number chosen for a product with customers;
 - `api/app.py` may return to `writable_paths` — **but the email floor does
   not come off.** It was correct before this posture and stays correct after.

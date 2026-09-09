@@ -112,7 +112,16 @@ _OVERNIGHT_RUNS_SQL = """
              ORDER BY s.id DESC LIMIT 1) AS unresolved,
            (SELECT s.payload->'boundary_violations' FROM run_steps s
              WHERE s.run_id = r.id AND s.step_type = 'VERIFICATION_RUN'
-             ORDER BY s.id DESC LIMIT 1) AS violations
+             ORDER BY s.id DESC LIMIT 1) AS violations,
+           (SELECT s.payload->>'decided_via' FROM run_steps s
+             WHERE s.run_id = r.id AND s.step_type = 'HUMAN_DECISION'
+             ORDER BY s.id DESC LIMIT 1) AS decided_via,
+           (SELECT s.payload->'merge'->>'merge_commit' FROM run_steps s
+             WHERE s.run_id = r.id AND s.step_type = 'HUMAN_DECISION'
+             ORDER BY s.id DESC LIMIT 1) AS merge_commit,
+           (SELECT s.payload->'gates'->>'test_bit' FROM run_steps s
+             WHERE s.run_id = r.id AND s.step_type = 'HUMAN_DECISION'
+             ORDER BY s.id DESC LIMIT 1) AS test_bit
       FROM runs r JOIN tasks t ON t.id = r.task_id
      WHERE r.completed_at > %(since)s
      ORDER BY r.completed_at
@@ -168,11 +177,17 @@ def _overnight_claims(r: S.Reader, since) -> List[Claim]:
         return out
 
     merged = [x for x in rows if x["task_status"] == "MERGED"]
+    unattended = [x for x in merged if x["decided_via"] == "unattended"]
     failed = [x for x in rows if x["task_status"] == "FAILED"]
     waiting = [x for x in rows if x["task_status"] == "READY_FOR_REVIEW"]
     spent = sum((x["committed_gbp"] or 0) for x in rows)
 
-    parts = [f"{len(merged)} merged", f"{len(failed)} failed"]
+    merged_part = f"{len(merged)} merged"
+    if unattended:
+        # Named on the roll-up line, not left to be inferred from the detail.
+        # "2 merged" reads the same whether a person looked or nobody did.
+        merged_part += f" ({len(unattended)} unattended)"
+    parts = [merged_part, f"{len(failed)} failed"]
     if waiting:
         parts.append(f"{len(waiting)} waiting for review")
     out.append(Claim.overnight(
@@ -183,11 +198,24 @@ def _overnight_claims(r: S.Reader, since) -> List[Claim]:
     # One line per run, so a bad night is legible without opening the console.
     for x in rows:
         verdict = x["task_status"]
-        detail = _failure_class(x) if x["task_status"] == "FAILED" else verdict.lower()
+        if verdict == "FAILED":
+            detail = _failure_class(x)
+        elif x["decided_via"] == "unattended":
+            detail = "merged UNATTENDED"
+            if x["test_bit"] == "true":
+                detail += ", test bit"
+        else:
+            detail = verdict.lower()
+        line = (f"task {x['task_id']} ({x['repo']}) — {detail}: "
+                f"{(x['title'] or '')[:70]} — GBP {x['committed_gbp']}")
+        # THE REVERT, SPELLED OUT. The whole posture is "read the brief and
+        # revert anything wrong", so the command to do that should be
+        # copy-paste rather than a lookup at the moment somebody is annoyed.
+        if x["decided_via"] == "unattended" and x["merge_commit"]:
+            line += (f"\n      revert: git -C ~/{x['repo']} revert -m 1 "
+                     f"{x['merge_commit'][:12]}")
         out.append(Claim.overnight(
-            f"overnight.task.{x['task_id']}",
-            f"task {x['task_id']} ({x['repo']}) — {detail}: "
-            f"{(x['title'] or '')[:70]} — GBP {x['committed_gbp']}",
+            f"overnight.task.{x['task_id']}", line,
             source="fleet:runs", as_of=x["completed_at"] or now,
             value_text=verdict, query_key="overnight_task", query_version=1))
 

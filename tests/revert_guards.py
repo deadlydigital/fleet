@@ -181,6 +181,30 @@ CASES = [
      "tests/test_approval_surface.py::TestTheRepeatFailureStop"
      "::test_a_candidate_that_failed_twice_is_refused"),
 
+    # AUTO-MERGE. The failure mode of an eligibility rule is to be
+    # accidentally permissive, so both halves are guarded: the hard rule that
+    # no flag can reach, and the evidence that the new behaviour works.
+    ("a draft spec never merges unattended",
+     "console/automerge.py",
+     '    if work_type in NEVER_UNATTENDED:',
+     '    if False:',
+     "tests/test_automerge.py::test_a_draft_spec_is_refused_even_with_auto_merge_true"),
+
+    ("an unattended merge needs a test that bit",
+     "console/automerge.py",
+     "    if bite.get(\"exit_code\") != 0:",
+     "    if False:",
+     "tests/test_automerge.py::test_a_test_that_did_not_bite_is_refused"),
+
+    # An unattended decision has no reviewer, so decision_seconds must be NULL
+    # rather than a duration measured against a page nobody rendered.
+    ("an unattended decision records no review duration",
+     "console/decide.py",
+     '        if rendered_at is not None:',
+     '        if False:',
+     "tests/test_console_decide.py::TestDecidedVia::"
+     "test_an_unattended_decision_cannot_claim_a_review"),
+
     # ---- the decision log's half of review.py ---------------------------
     ("a verdict needs a reason in words, not only a code",
      "review.py",

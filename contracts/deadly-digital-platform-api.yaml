@@ -209,6 +209,23 @@ verification:
   # whole of specs/unattended-operation.md §3.2.
   - /home/ubuntu/fleet/contracts/checks/pytest_unit_per_file.sh api tests/analytics
 
+# ELIGIBLE FOR UNATTENDED MERGE, AND THIS IS SCOPED TO THE PARITY PUSH.
+#
+# A task under this contract merges without anybody looking, provided every
+# gate above passed AND the test it added fails without the change. A spec that
+# wants a person to see it sets `auto_merge: false` in its fleet-spec block.
+#
+# THE DEFAULT IS THE WAY ROUND IT IS BECAUSE OF WHEN THIS WAS WRITTEN, NOT
+# BECAUSE UNATTENDED MERGING IS SAFE IN GENERAL. Deadly Digital has no
+# customers, HIB is not using it, the parity rows are already agreed, and a bad
+# spec costs a revert. Reading every spec would put a person back in the loop
+# twice per feature, which is the thing the posture exists to remove.
+#
+# REVERSE THIS ONCE THERE ARE CUSTOMERS. specs/unattended-operation.md §7 lists
+# it with the rest of what goes back. `true` here is a statement about this
+# body of work on this product at this moment; it is not a design.
+auto_merge: true
+
 max_diff_lines: 400
 max_cost_gbp: 3.00
 # 3600, not 1800. timeout_seconds is ONE clock for the agent and for

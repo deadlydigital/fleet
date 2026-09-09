@@ -1040,3 +1040,49 @@ class TestDecidedVia:
             " step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["payload"]
         assert p["merge"]["console_merge_commit"] == "b" * 40
         assert p["merge"]["console_merge_discarded"] is True
+
+    def test_an_unattended_decision_cannot_claim_a_review(self, dsns, repo, task):
+        """decision_seconds is how long a REVIEW took. There was no review, so
+        a rendered_at would be a duration measured against a page nobody
+        rendered — the same defect as sent_at on a row nothing sent."""
+        with pytest.raises(decide.VerdictNotRecorded) as e:
+            decide.record(task=task["task"], run_id=task["run_id"],
+                          verdict="MERGED", decision="APPROVED", note=None,
+                          rendered_at=time.time(), decided_via="unattended",
+                          gates={"test_bit": True})
+        assert "no page and no review" in str(e.value)
+
+    def test_an_unattended_decision_must_carry_its_gates(self, dsns, repo, task):
+        """A merge nobody watched with no record of what was checked is
+        unreviewable afterwards."""
+        with pytest.raises(decide.VerdictNotRecorded) as e:
+            decide.record(task=task["task"], run_id=task["run_id"],
+                          verdict="MERGED", decision="APPROVED", note=None,
+                          rendered_at=None, decided_via="unattended", gates=None)
+        assert "must carry its gates" in str(e.value)
+
+    def test_an_unattended_decision_cannot_carry_a_note(self, dsns, repo, task):
+        """`note` is where a person says why. Nobody did."""
+        with pytest.raises(decide.VerdictNotRecorded):
+            decide.record(task=task["task"], run_id=task["run_id"],
+                          verdict="MERGED", decision="APPROVED",
+                          note="looks fine to me", rendered_at=None,
+                          decided_via="unattended", gates={"test_bit": True})
+
+    def test_an_unattended_merge_records_null_seconds_and_its_gates(
+            self, dsns, repo, task, console):
+        out = decide.record(
+            task=task["task"], run_id=task["run_id"], verdict="MERGED",
+            decision="APPROVED", note=None, rendered_at=None,
+            decided_via="unattended",
+            gates={"test_bit": True, "reviewed_by_a_person": False})
+        assert out["decided_via"] == "unattended"
+        assert out["decision_seconds"] is None
+        assert out["note"] is None
+        row = console.execute(
+            "SELECT payload FROM run_steps WHERE run_id=%s AND"
+            " step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()
+        assert row["payload"]["gates"]["reviewed_by_a_person"] is False
+        assert row["payload"]["decision_seconds"] is None
+        # waited_seconds is REAL — the task did sit there.
+        assert row["payload"]["waited_seconds"] > 1700

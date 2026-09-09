@@ -95,13 +95,17 @@ def _next_sequence(conn, run_id: int) -> int:
 #: existed the only supported writer asserted `console` -- so recording the
 #: truth meant either lying in this field or writing rows around the one
 #: function that keeps the step and the status transition in a transaction.
-DECIDED_VIA = ("console", "by_hand")
+#: "unattended" and not "auto": the word that matters is that NOBODY WAS
+#: WATCHING, not that a machine did it. A reader who sees "auto" asks which
+#: automation; a reader who sees "unattended" knows what to check.
+DECIDED_VIA = ("console", "by_hand", "unattended")
 
 
 def record(*, task: dict, run_id: int, verdict: str, decision: str,
-           note: str | None, rendered_at: float,
+           note: str | None, rendered_at: float | None,
            merge: dict[str, Any] | None = None,
-           decided_via: str = "console") -> dict[str, Any]:
+           decided_via: str = "console",
+           gates: dict[str, Any] | None = None) -> dict[str, Any]:
     """Move the task and write the step, in one transaction.
 
     `verdict` is the task status -- MERGED or REJECTED. `decision` is the
@@ -113,6 +117,24 @@ def record(*, task: dict, run_id: int, verdict: str, decision: str,
     outside the console is still a merge, and the status should say so; the
     provenance belongs here rather than in a new status that fourteen readers
     would have to learn.
+
+    AN UNATTENDED MERGE RECORDS TWO FIELDS DIFFERENTLY, AND BOTH MATTER
+    --------------------------------------------------------------------
+    `decision_seconds` is `now - rendered_at`, which is how long a REVIEW took.
+    An unattended merge had no review, so `rendered_at` is None and the field
+    is NULL. Writing 0.0 would read as "decided instantly", which is a claim
+    about a person who does not exist -- the same defect as `sent_at` on a row
+    nothing sent.
+
+    `note` is where a person types why, so it stays NULL too. `gates` carries
+    the machine record instead: which checks ran, what they exited, whether the
+    added test bit, and the sha that landed. "Why" stays answerable without
+    fabricating prose that nobody wrote.
+
+    `decision` is still APPROVED. It is 001's vocabulary and fourteen readers
+    know it; provenance belongs in `decided_via`, which is the argument this
+    module already makes for `by_hand`. A fourth status would be the
+    MERGED_OUTSIDE mistake again.
     """
     if decided_via not in DECIDED_VIA:
         raise VerdictNotRecorded(
@@ -123,17 +145,41 @@ def record(*, task: dict, run_id: int, verdict: str, decision: str,
     if decision != ACCEPT_DECISION and decision not in REJECT_REASONS:
         raise VerdictNotRecorded(f"{decision} is not a reason the database accepts")
 
-    decision_seconds = max(0.0, time.time() - rendered_at)
+    if decided_via == "unattended":
+        if rendered_at is not None:
+            raise VerdictNotRecorded(
+                "an unattended decision cannot carry a rendered_at: there was "
+                "no page and no review, and a duration derived from one would "
+                "be a measurement of nobody")
+        if (note or "").strip():
+            raise VerdictNotRecorded(
+                "an unattended decision cannot carry a note. `note` is where a "
+                "person says why; use `gates` for what the checks reported")
+        if not gates:
+            raise VerdictNotRecorded(
+                "an unattended decision must carry its gates. A merge nobody "
+                "watched, with no record of what was checked, is unreviewable "
+                "afterwards -- which is the whole thing the brief has to be "
+                "able to show")
+    elif rendered_at is None:
+        raise VerdictNotRecorded(
+            f"a {decided_via!r} decision needs a rendered_at; only an "
+            f"unattended one has no review to measure")
+
+    decision_seconds = (None if rendered_at is None
+                        else round(max(0.0, time.time() - rendered_at), 1))
     payload: dict[str, Any] = {
         "decision": decision,
         "verdict": verdict,
         "note": (note or "").strip() or None,
         "decided_via": decided_via,
-        "decision_seconds": round(decision_seconds, 1),
+        "decision_seconds": decision_seconds,
         "task_id": task["id"],
     }
     if merge:
         payload["merge"] = merge
+    if gates:
+        payload["gates"] = gates
 
     try:
         with db.writer() as conn:
