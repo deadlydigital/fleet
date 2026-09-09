@@ -1,0 +1,20 @@
+[Unit]
+Description=fleet auto-approval, nightly
+Documentation=file:/home/ubuntu/fleet/specs/auto-approval.md
+
+[Timer]
+Unit=fleet-autoapprove.service
+# BEFORE the runner's 02:00 slot, so the night's work is queued when the first
+# fire lands. The runner window runs 02:00 to 04:40 with nine fires for a queue
+# that holds five; approving after it opened would waste the night's fires on
+# an empty queue and land the specs a day late.
+OnCalendar=*-*-* 01:30:00
+AccuracySec=1m
+# NOT Persistent, for the reason fleet-automerge.timer gives: a missed slot is
+# a night nobody approved, which is the safe direction, and the next slot ranks
+# the same candidates anyway. There is no backlog to catch up on -- the pool is
+# finite and unfed until there is a producer timer.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

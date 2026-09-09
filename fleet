@@ -496,6 +496,20 @@ def cmd_decision_backfill(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_candidates_undo(args) -> int:
+    """Undo one approval. The implementation is console/undo.py; this is the
+    name the brief prints, so the two must not drift."""
+    from console import undo
+    try:
+        return undo.main(
+            [str(args.decision_id)]
+            + (["--reason", args.reason] if args.reason else [])
+            + (["--dry-run"] if args.dry_run else []))
+    except undo.UndoRefused as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
+
+
 # ---- entry ----------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -565,6 +579,21 @@ def build_parser() -> argparse.ArgumentParser:
     db.add_argument("--execute", action="store_true",
                     help="write them; without this it is a dry run")
     db.set_defaults(fn=cmd_decision_backfill)
+
+    # `candidates undo` exists because the morning brief PRINTS it beside every
+    # unattended approval, and a copy-paste undo that is not a real command is
+    # worse than no line at all -- it is read as a safety net right up until
+    # somebody needs it. specs/auto-approval.md §5, correction 4.
+    cand = sub.add_parser(
+        "candidates", help="the approval surface, from the outside"
+    ).add_subparsers(dest="command", required=True)
+    cu = cand.add_parser(
+        "undo", help="abandon an approval's unclaimed spec tasks and return "
+                     "its candidates to PENDING")
+    cu.add_argument("decision_id", type=int)
+    cu.add_argument("--reason", help="why; recorded on the follow-up decision")
+    cu.add_argument("--dry-run", action="store_true")
+    cu.set_defaults(fn=cmd_candidates_undo)
     return p
 
 

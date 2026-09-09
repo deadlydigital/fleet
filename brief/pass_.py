@@ -150,6 +150,164 @@ def _failure_class(row) -> str:
     return "failed before verification"
 
 
+_APPROVALS_SQL = """
+    SELECT d.id, d.decided_at, d.reason, d.mechanics,
+           (SELECT coalesce(jsonb_agg(jsonb_build_object(
+                       'candidate_id', c.id, 'title', c.title, 'band', c.band,
+                       'hib_signal', c.hib_signal, 'task_id', c.spec_task_id)
+                   ORDER BY c.id), '[]'::jsonb)
+              FROM candidates c
+             WHERE c.approval_decision_id = d.id) AS approved
+      FROM decision_log d
+     WHERE d.decided_via = 'unattended'
+       AND d.product = 'fleet'
+       AND d.decided_at > %(since)s
+     ORDER BY d.id
+"""
+
+
+def _approval_claims(r: S.Reader, since) -> List[Claim]:
+    """What the machine ticked while nobody was watching.
+
+    specs/auto-approval.md §4. An approval produces NO RUN, so without this a
+    night where auto-approval queued four wrong specs and the runner then ran
+    them reads as four ordinary failures with no clue where they came from.
+
+    Four properties, each here for a reason:
+
+      1. THE RESERVED SPEND against the pool and the 60% line, in the shape the
+         runs section already uses -- "a number that only becomes alarming on
+         the last day is not a control".
+      2. hib_signal VERBATIM. §2.2 established the ranker cannot read it; this
+         is where it goes instead, in front of the one reader who can, on the
+         morning the work has not been built yet. "refund_total non-zero on 1
+         of 2,844,177 orders" under an approved net-revenue candidate is a line
+         that stops a wrong number before it ships.
+      3. THE LINE BELOW THE LINE. A ranking is wrong in what it PASSED OVER,
+         and a list of what it took cannot show that.
+      4. THE PROBE COUNT, because a night where a gate silently stopped running
+         reads identically to a night where everything held.
+
+    AND IT IS A REVIEW, NOT A GATE. This renders at 07:45 and the approval
+    window closes at 04:40, so by the time it is read the specs are written.
+    Nothing here stops a bad batch; §5's corrections do. The undo line is
+    printed for that reason.
+    """
+    out: List[Claim] = []
+    key = "overnight.approvals"
+    label = "what was approved with nobody watching"
+
+    if since is None:
+        return []
+
+    rows = r.probe("fleet:decision_log/approvals",
+                   S.rows(_APPROVALS_SQL, {"since": since}))
+    if rows is None:
+        return [Claim.uncomputed(key, label, reason=(
+            r.failed("fleet:decision_log/approvals")
+            or "decision_log could not be read, so whether anything was "
+               "approved unattended is unknown. That is not the same as "
+               "nothing having been"))]
+
+    now = _utcnow()
+    if not rows:
+        # Said explicitly rather than omitted. A silent section reads as "the
+        # feature is off" on a morning when it is on and simply found nothing
+        # it could defend -- and refusing to approve is the designed behaviour
+        # when no key separates the top two, so it will happen.
+        return [Claim.overnight(
+            key, "nothing was auto-approved since the last brief",
+            source="fleet:decision_log", as_of=now, value_num=0,
+            query_key="overnight_approvals", query_version=1)]
+
+    approved_total = sum(len(x["approved"]) for x in rows)
+    reserved = 0.0
+    probes_run = probes_held = 0
+    rank_versions = set()
+
+    for x in rows:
+        m = x["mechanics"] or {}
+        rank_versions.add(m.get("rank_version"))
+        probes_run += (m.get("probes") or {}).get("run", 0)
+        probes_held += (m.get("probes") or {}).get("held", 0)
+        reserved += float((m.get("credit") or {}).get("reserved", 0) or 0)
+
+    credit = r.probe("fleet:model_credit_pool",
+                     S.row("SELECT * FROM fleet_month_credit()"))
+    # Positional: `row` returns a tuple. remaining_gbp is 6 and the 60% figure
+    # is 8, appended by 026 at the END precisely so these indexes did not move.
+    remaining = credit[6] if credit and credit[1] == "COMPUTED" else None
+    autonomous = credit[8] if credit and credit[1] == "COMPUTED" else None
+
+    versions = ", ".join(f"rank_v{v}" for v in sorted(rank_versions) if v)
+    statement = (f"{approved_total} candidate(s) auto-approved in "
+                 f"{len(rows)} decision(s) ({versions or 'unknown ranking'})"
+                 f" — GBP {reserved:.2f} reserved")
+    if remaining is not None:
+        statement += f", GBP {remaining:.2f} remains of the pool"
+        if autonomous is not None:
+            statement += (f", of which GBP {autonomous:.2f} is reachable "
+                          f"unattended before the 60% stop")
+    out.append(Claim.overnight(
+        key, statement, source="fleet:decision_log", as_of=now,
+        value_num=approved_total, query_key="overnight_approvals",
+        query_version=1))
+
+    for x in rows:
+        m = x["mechanics"] or {}
+        sha = (m.get("platform_sha") or "")[:7]
+        for a in x["approved"]:
+            line = (f"c{a['candidate_id']} -> task {a['task_id']} "
+                    f"— {(a['band'] or 'no band')}: {(a['title'] or '')[:70]}")
+            sig = a["hib_signal"]
+            if sig:
+                # VERBATIM. The value is a sentence and the ranker is forbidden
+                # to read it; the reader who can is the point of printing it.
+                line += (f"\n      hib_signal: {sig.get('value')} "
+                         f"(as of {sig.get('as_of')}"
+                         f"{', ' + sig['source'] if sig.get('source') else ''})")
+            else:
+                line += "\n      hib_signal: none stated in the source document"
+            out.append(Claim.overnight(
+                f"overnight.approval.{a['candidate_id']}", line,
+                source="fleet:candidates", as_of=x["decided_at"] or now,
+                value_text=str(a["candidate_id"]),
+                query_key="overnight_approval", query_version=1))
+
+        # THE TOP ROW IT PASSED OVER, with the rule that held it.
+        held = [rr for rr in (m.get("ranked") or []) if not rr.get("eligible")]
+        if held:
+            top = held[0]
+            out.append(Claim.overnight(
+                f"overnight.approval.{x['id']}.held",
+                f"passed over c{top.get('candidate_id')} "
+                f"({(top.get('detail') or top.get('rule') or 'no rule recorded')})"
+                f" — {len(held)} row(s) held in total",
+                source="fleet:decision_log", as_of=x["decided_at"] or now,
+                value_num=len(held), query_key="overnight_approval_held",
+                query_version=1))
+
+        # THE UNDO, COPY-PASTE, on the same argument as the revert line.
+        out.append(Claim.overnight(
+            f"overnight.approval.{x['id']}.undo",
+            f"probes re-executed at platform {sha or 'unknown'}: "
+            f"{(m.get('probes') or {}).get('held', 0)} of "
+            f"{(m.get('probes') or {}).get('run', 0)} held"
+            # Across the rows that REACHED gate 4. The gates short-circuit, so
+            # a row held for overlapping a live task never had its probes rerun
+            # -- and "18 of 18" without this reads as the whole pool.
+            f" (across {(m.get('probes') or {}).get('reached_gate_4', '?')} of "
+            f"{(m.get('probes') or {}).get('of_candidates', '?')} candidates)"
+            f"\n      undo: ./fleet candidates undo {x['id']}"
+            f"   # abandons the unclaimed spec task(s) and returns the "
+            f"candidate(s) to PENDING",
+            source="fleet:decision_log", as_of=x["decided_at"] or now,
+            value_text=str(x["id"]), query_key="overnight_approval_undo",
+            query_version=1))
+
+    return out
+
+
 def _overnight_claims(r: S.Reader, since) -> List[Claim]:
     out: List[Claim] = []
     key = "overnight.runs"
@@ -729,6 +887,8 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
             "SELECT max(generated_at) FROM brief_runs"))
         previous = reader.probe("fleet:brief_claims",
                                 lambda c: _previous_values(c)) or {}
+        # Approvals BEFORE runs, because the approval is what CAUSED them.
+        claims += _approval_claims(reader, last)
         claims += _overnight_claims(reader, last)
         claims += _fleet_claims(reader, last)
         claims += _sentry_claims(reader)

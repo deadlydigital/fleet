@@ -72,8 +72,22 @@ def render(claims: List[Claim], *, generated_at, compares_since,
                   if c.metric_key.startswith("overnight.task.")]
         deploys = [c for c in overnight
                    if c.metric_key.startswith("overnight.deployed.")]
+        # THE APPROVALS GO ABOVE THE RUNS, because the approval is what caused
+        # them. A night where auto-approval queued four wrong specs and the
+        # runner then ran them reads, in the other order, as four ordinary
+        # failures with no clue where they came from.
+        approvals = [c for c in overnight
+                     if c.metric_key == "overnight.approvals"]
+        approval_detail = [c for c in overnight
+                           if c.metric_key.startswith("overnight.approval.")]
         rest = [c for c in overnight
-                if c not in runs and c not in detail and c not in deploys]
+                if c not in runs and c not in detail and c not in deploys
+                and c not in approvals and c not in approval_detail]
+
+        for c in approvals:
+            out.append(_bullet(c))
+        for c in sorted(approval_detail, key=lambda c: c.metric_key):
+            out.append(f"  - {c.statement}")
 
         for c in runs:
             out.append(_bullet(c))

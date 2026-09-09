@@ -1,7 +1,11 @@
 # Auto-approval — ranking candidates and ticking them with nobody watching
 
-**Status: APPROVED 9 Sep 2026, at pace 1. STEP 1 IS BUILT** — the loader and the
-three columns (§2.1, §6). Steps 2 through 6 are specified and not built. Reads:
+**Status: APPROVED 9 Sep 2026, at pace 1. BUILT AND INSTALLED, RUNNING
+`--dry-run`.** All six steps of §6 have landed; `fleet-autoapprove.timer` is
+enabled for 01:30 with `--dry-run` in the unit, so the mechanism runs on
+schedule, the brief reports what it *would* have done, and nothing is spent.
+Taking the flag out is a separate, deliberate edit after several nights of
+reading. §10 records what the first real dry run over the live pool did. Reads:
 `console/approve.py`, `013_approval_surface.sql`,
 `022_repeat_failure_stop.sql`, `010_decision_log.sql`, `console/decide.py`,
 `console/automerge.py`, `contracts/candidate-producer.yaml`,
@@ -16,9 +20,11 @@ out to be auto-merge. Auto-approval was never written down. This is it.
 version that was read and approved; the decisions that were open in §7 are now
 settled and are marked where they sit. The pace is 1 (§2.4). Key 1 is labelled
 a guess at the key itself and not only in §7 (§2.2). Cost does not rank and
-`hib_signal` is displayed rather than ranked (§2.2). §8 and §9 are new: §8 is
-what removing this step does and does not do, and §9 records three defects
-found while tracing the chain that are deliberately **not** being fixed here.
+`hib_signal` is displayed rather than ranked (§2.2). §8, §9 and §10 are new:
+§8 is what removing this step does and does not do, §9 records three defects
+found while tracing the chain that are deliberately **not** being fixed here,
+and §10 is the first dry run over the live pool — including the five things it
+established that this document had wrong or unsaid.
 
 ---
 
@@ -517,7 +523,7 @@ first nights should use."*
 
 ---
 
-## 3. What an auto-approval records — **APPROVED AS SPECIFIED**
+## 3. What an auto-approval records — **BUILT** (026, `console/autoapprove.py`)
 
 An approval is not a run step, so `decide.py`'s `decided_via` cannot carry it —
 that column lives in `run_steps.payload` and belongs to a task verdict. The
@@ -563,7 +569,7 @@ one, unchanged.
 
 ---
 
-## 4. What the morning brief shows — **APPROVED AS SPECIFIED**
+## 4. What the morning brief shows — **BUILT** (`brief/pass_.py`, `brief/render.py`)
 
 `brief/pass_.py` builds `overnight.runs` from `runs` completed since the last
 brief. An approval produces no run, so today it would be invisible; a night
@@ -589,7 +595,12 @@ the approval is what caused them. `dd_detector_login` can already read
         c22  HELD  same file, same task
         c23  next  new-route class, daily — would be first tomorrow
 
-      probes re-executed at platform 6fd8ddd: 32 of 32 held
+      probes re-executed at platform 6fd8ddd: 18 of 18 held
+        (across the 5 of 12 candidates that reached gate 4 — the gates
+         short-circuit, so a row held for overlapping a live task never has
+         its probes rerun. This example said "32 of 32" before the code
+         existed, which would have been the whole pool; §10.1 has the
+         correction.)
 
 Four properties, each there for a reason:
 
@@ -656,6 +667,13 @@ title.
    unclaimed spec tasks, return the candidates to `PENDING`, leave the
    `decision_log` row in place with a follow-up row saying why. Complete before
    the task is claimed; after that it costs the £2 and the branch.
+
+   **BUILT, and it had to be** (`console/undo.py`). §4 prints this command in
+   the brief, and no such subcommand existed when that was written — a
+   copy-paste undo that is not a real command is worse than no line at all,
+   because it reads as a safety net right up until somebody needs it. Past the
+   claim it refuses and says which task stopped it, rather than reporting a
+   clean undo over a task that is already running.
 5. **Stop it.** `systemctl disable --now fleet-autoapprove.timer`. A separate
    unit, so this does not touch the runner, the merge or the deploy.
 
@@ -674,6 +692,18 @@ sentence as §0, arriving from the other end.
 ## 6. Build order
 
 Each step runs `--dry-run` for a night before the next lands.
+
+**All six are done.** What each landed as:
+
+| step | landed as |
+|---|---|
+| 0 | `console/approve.py`, `contracts/draft-spec.yaml` |
+| 1 | `025_candidate_load.sql` (+assertions), `console/load_candidates.py` |
+| 2 | `026_unattended_approval.sql` (+assertions) — pace, 60% stop, `decided_via`, `mechanics` |
+| 3 | `console/rank.py` |
+| 4 | `console/autoapprove.py`, `approve_batch`'s two parameters |
+| 5 | `brief/pass_.py` `_approval_claims`, `brief/render.py` ordering, `console/undo.py`, `fleet candidates undo` |
+| 6 | `run_autoapprove.py`, `systemd/fleet-autoapprove.{service,timer}` at 01:30, `--dry-run` |
 
 0. **DONE, ahead of everything: the `base_branch` literal** (§2.5.3).
    Independent of auto-approval, latent rather than broken, and one line — so
@@ -734,6 +764,13 @@ refuses an unrecognised band word rather than storing NULL for it, so the
 convention breaking is an error instead of a silently unranked batch. That
 narrows the risk; it does not close the question, which is still whether the
 shape check should require the prefix.
+
+**And 1 and 2 got worse, not better, once the code ran.** §10.1: the band
+separates one row from eight on this pool, so key 1 carries more of the order
+than §2.2 assumed — which raises the cost of 1 being wrong. And 2 has an
+instance now: c26 and c28 are held because they name a *directory* that queued
+task 49 writes one file inside, so one open frontend task holds four
+candidates. Both are why the unit ships with `--dry-run` rather than despite it.
 
 ---
 
@@ -832,6 +869,27 @@ producer rewrites titles every run. Candidates 17 and 23 are the same CSV export
 eleven days apart under different titles, so each scores 0 — the ceiling does
 not see the repeat it exists to catch.
 
+**Measured on the live pool, 9 Sep 2026, and it is worse than "does not see it":**
+
+    c14  "Coupon and discount performance report"            prior_failures = 1
+         (batch 8, APPROVED, produced task 23, which FAILED)
+    c28  "Coupon and discount performance report, over a
+          column that is already populated"                  prior_failures = 0
+         (batch 9 — the same work, re-verified, retitled)
+
+Every one of batch 9's nine candidates scores 0. The stop fires at 2, and **the
+counter can never reach 2**, because each producer run supplies a fresh title
+that starts again from nothing. It is not a ceiling that is set too high; it is
+a ceiling on a quantity that is reset before it can accumulate. c28 is held
+tonight by gate 3 — it names a path queued task 49 declares — and when task 49
+merges, nothing here will stop it being approved and buying task 23's failure a
+second time.
+
+The fix is a stable identity for "the same candidate", which the producer
+contract deliberately does not provide (*"a candidate that reappears is a
+signal"* — §7 forbids deduplication). That is a producer-contract change with
+its own argument and it is not made here.
+
 It also counts `tasks.status = 'FAILED'`, and two of this host's five FAILED
 tasks produced accepted artefacts: **task 21**'s draft was promoted (`abf4856
 spec: net revenue after refunds — drafted by task 21, reviewed`) and **task
@@ -878,3 +936,93 @@ is a change to the runner's terminal-state handling, not to anything here.
 
 ---
 
+
+---
+
+## 10. The first dry run over the live pool, and what it found
+
+Run 9 Sep 2026 against the twelve open candidates, at platform `6fd8ddd`,
+£139.09 remaining of the £158 pool.
+
+    rank_v1 at platform 6fd8ddd; 12 open candidate(s), newest batch 9
+    probes re-executed: 18 of 18 held  (across the 5 of 12 candidates that
+                                        reached gate 4)
+    cut: 1, bound by per_night
+         {per_night: 1, max_approval_batch: 5, queue_room: 4,
+          autonomous_credit: 37}
+
+      c20  frontend-only  daily   Forward the four order filters …
+      c25  modify         daily   Segment orders and products …
+      c23  create         daily   CSV export of the order list …
+      c24  create         daily   Scheduled digest of the dashboard …
+      c27  create         daily   Establish where product cost would come from …
+    x c21  HELD path_overlap  names platform/app/(dashboard)/analytics/page.tsx,
+                              which queued task 49 declares
+    x c22  HELD path_overlap  names platform/app/api/analytics/dashboard/route.ts,
+                              which queued task 49 declares
+    x c26  HELD path_overlap  names platform/app/(dashboard)/analytics …
+    x c28  HELD path_overlap  names platform/app/(dashboard)/analytics …
+    x c17  HELD older_batch   batch 8, and the newest is 9
+    x c18  HELD older_batch
+    x c19  HELD older_batch
+
+    WOULD APPROVE: [20] reserving GBP 2.00
+
+**It reached §2.3's answer**, which was written before any of this existed:
+candidate 20 taken, 21 and 22 held on task 49's declared paths, and 17/18/19 —
+the CSV-export duplicates — held as the older batch. The two dedupe cases §1.5
+named are both refused, by two different gates, for the reasons given.
+
+### 10.1 Five things the run established that the spec had wrong or unsaid
+
+**1. Key 1 classifies exactly three rows as frontend-only, and §2.2 predicted
+three.** c20, c21, c22. That is the only quantitative prediction in this
+document that could be checked against the finished code, and it held.
+
+**2. The band separates one row from eight.** Eight of batch 9 are Daily. Key 2
+does almost no work tonight, so the order is very nearly key 1 then candidate
+id — which puts more weight on the key §7.1 calls the most likely to be wrong,
+not less. This is the argument for the `--dry-run` nights, and it is a stronger
+one than the spec made.
+
+**3. §7.2's worry about the overlap gate is real and now has an instance.**
+c26 and c28 are held because they name the *directory*
+`platform/app/(dashboard)/analytics` and task 49 declares one file inside it.
+That is the gate being blunt exactly as predicted: one open frontend task holds
+four candidates. It is the conservative direction — a missed overlap queues two
+tasks against one file, a spurious one costs a night and prints why — and
+`mechanics` records `matched_via` on every one, so a week of nights answers
+this rather than an argument now.
+
+**4. The probe count is "of the rows that reached gate 4", not of the pool.**
+The gates short-circuit: a row held at gate 2 or 3 never has its probes
+re-executed, because nothing will be spent on it either way. So the honest
+figure is 18 of 18 across 5 of 12 candidates, not the 32 of 32 §4's example
+line imagined. Both numbers are now printed, because "18 of 18 held" alone
+reads as though the whole pool was re-verified.
+
+**5. The brief's undo line had to become a real command.** §4 prints
+`./fleet candidates undo <id>` beside every approval and §5 lists it as
+correction 4. No such subcommand existed. A copy-paste undo that is not a real
+command is worse than no line at all — it reads as a safety net right up until
+somebody needs it — so `console/undo.py` and `fleet candidates undo` were built
+with the brief section rather than after it. It abandons the unclaimed spec
+tasks, returns the candidates to `PENDING`, **leaves the original
+`decision_log` row untouched**, and writes a second decision citing it. §0 says
+the `decided_via='unattended'` rows stay as the record of this period; a log
+that can be tidied afterwards is not a record.
+
+### 10.2 What the dry-run nights are for, specifically
+
+Not "watching it work". Three questions, in the order they will be answerable:
+
+1. **Does key 1 pick work that succeeds?** The class it prefers is the class
+   whose specs passed the path check on five runs. A frontend-only candidate
+   approved and specced without failing `draft_spec_shape.py` is one datum
+   against a guess that currently has five, confounded.
+2. **Does the overlap gate free up?** Task 49 is holding four candidates. When
+   it merges, the next dry run should rank them, and if it does not, the gate
+   is matching something it should not.
+3. **Does the band ever discriminate?** It cannot on this pool. It needs a
+   batch that is not eight-ninths Daily, which needs a producer run, which
+   needs §8.1's producer timer.

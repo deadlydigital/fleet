@@ -160,3 +160,33 @@ created a worktree off `track-2-foundation`, ran the agent for 311s, derived the
 diff, judged the boundary clean, and failed verification because the draft cited
 a path that resolves nowhere — the check doing its job. Worktree removed,
 checkout untouched, no second instance, unit `failed` as designed.
+
+## Auto-approval: installed, enabled, and running `--dry-run`
+
+    sudo cp fleet-autoapprove.service fleet-autoapprove.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now fleet-autoapprove.timer
+
+`specs/auto-approval.md`. Ranks the open candidates at **01:30** and ticks the
+top of the list — before the runner's 02:00 slot, so the night's work is queued
+when the first fire lands. A separate unit from `fleet-runner` and
+`fleet-automerge` on the argument `fleet-automerge.service` makes: at 3am on a
+bad night the thing you want to stop is one of the three, not all of them.
+
+**The unit runs with `--dry-run` and that is the whole point of this stage.**
+It ranks everything, approves nothing, and prints the order with every key
+value and every gate that fired. Its first key — modify before create — rests
+on five runs whose outcomes are confounded, and `specs/auto-approval.md` §7.1
+says so. The dry run is the only check that happens before money.
+
+To let it write, remove `--dry-run` from `ExecStart` in
+`fleet-autoapprove.service` and `daemon-reload`. Do that after several nights of
+reading, not before.
+
+To stop it without touching the runner or the merge:
+
+    sudo systemctl disable --now fleet-autoapprove.timer
+
+**It is scoped and it has a stated end condition.** `specs/auto-approval.md` §0:
+this is reversed once Deadly Digital has a customer. If it has one and this
+timer is still enabled, that is the bug.
