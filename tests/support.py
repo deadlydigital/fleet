@@ -32,6 +32,11 @@ PLATFORM_FLOOR = [
     "api/worker.py",
     "api/analytics/routes/interventions.py",
     "api/analytics/services/trigger_router.py",
+    # 018: erasure
+    "api/analytics/services/gdpr.py",
+    # 019: the rest of the erasure path
+    "api/services/gdpr_identity.py",
+    "api/services/gdpr_replay_scrub.py",
 ]
 
 

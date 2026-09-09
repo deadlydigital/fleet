@@ -40,7 +40,8 @@ MIGRATIONS=(001_v1_core 002_proposals 003_tasks 004_console_reader
             008_task_reclaim 009_task_reclaims 010_decision_log
             011_proposal_product 012_daily_brief 013_approval_surface
             014_monthly_credit 015_sentry_detector 016_aws_cost_detector
-            017_email_floor)
+            017_email_floor 018_gdpr_floor 019_gdpr_services_floor
+            020_creatable_paths)
 SCRATCH="${TMPDIR:-/tmp}/fleet-drift-$$"
 LOCAL_DB="fleet_fromfiles"
 SOCKET="${PGHOST:-/var/run/postgresql}"

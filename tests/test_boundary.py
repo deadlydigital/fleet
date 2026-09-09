@@ -256,3 +256,77 @@ def test_suite_digest_moves_when_the_suite_does(repo):
     boundary.commit_agent_work(repo, "work")
     after = boundary.suite_digest(repo, "HEAD", CONTRACT["protected_paths"])
     assert before != after
+
+
+# ---- creatable_paths: add is permitted, modify is not ---------------------
+#
+# specs/unattended-operation.md §3.2. The exception exists so an agent can add
+# ONE test; the floor's argument is about modification, and adding a file
+# cannot weaken a test that already exists.
+
+def _change(paths_and_status, diff_lines=10):
+    from runner.boundary import Change
+    c = Change(base_sha="a" * 40, head_sha="b" * 40, diff_lines=diff_lines)
+    for p, st in paths_and_status.items():
+        c.paths.append(p)
+        c.status[p] = st
+    c.paths.sort()
+    return c
+
+
+CREATABLE_CONTRACT = {
+    "writable_paths": ["api/analytics/routes/orders.py"],
+    "protected_paths": ["api/tests/**"],
+    "creatable_paths": ["api/tests/analytics/test_fleet_*.py"],
+    "max_diff_lines": 400,
+}
+
+
+def test_an_added_creatable_test_is_permitted():
+    v = boundary.enforce(
+        _change({"api/tests/analytics/test_fleet_28_windows.py": "A"}),
+        CREATABLE_CONTRACT)
+    assert v.clean, v.reasons()
+
+
+def test_a_MODIFIED_creatable_test_is_still_refused():
+    """The half the floor is actually about: an agent that edits an existing
+    test can make it pass."""
+    v = boundary.enforce(
+        _change({"api/tests/analytics/test_fleet_28_windows.py": "M"}),
+        CREATABLE_CONTRACT)
+    assert not v.clean
+    assert "api/tests/analytics/test_fleet_28_windows.py" in v.protected_hits
+
+
+def test_a_DELETED_creatable_test_is_still_refused():
+    v = boundary.enforce(
+        _change({"api/tests/analytics/test_fleet_28_windows.py": "D"}),
+        CREATABLE_CONTRACT)
+    assert not v.clean
+
+
+def test_adding_a_test_OUTSIDE_the_creatable_glob_is_refused():
+    """`api/tests/**` is protected; only the narrow fleet pattern is excepted."""
+    v = boundary.enforce(
+        _change({"api/tests/analytics/test_parity.py": "A"}), CREATABLE_CONTRACT)
+    assert not v.clean
+    assert "api/tests/analytics/test_parity.py" in v.protected_hits
+
+
+def test_adding_a_conftest_is_refused():
+    """A conftest can override fixtures for tests it did not write, which is
+    editing the suite by another name."""
+    v = boundary.enforce(
+        _change({"api/tests/analytics/conftest.py": "A"}), CREATABLE_CONTRACT)
+    assert not v.clean
+
+
+def test_a_contract_with_no_creatable_paths_behaves_exactly_as_before():
+    """The exception must be opt-in. Every existing contract has no
+    creatable_paths and must be judged identically to before 020."""
+    plain = {k: v for k, v in CREATABLE_CONTRACT.items() if k != "creatable_paths"}
+    v = boundary.enforce(
+        _change({"api/tests/analytics/test_fleet_28_windows.py": "A"}), plain)
+    assert not v.clean
+    assert v.protected_hits

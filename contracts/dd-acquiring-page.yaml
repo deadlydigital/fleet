@@ -51,6 +51,11 @@ protected_paths:
   - api/worker.py
   - api/analytics/routes/interventions.py
   - api/analytics/services/trigger_router.py
+  # 018: erasure. Reverting the commit does not bring the rows back.
+  - api/analytics/services/gdpr.py
+  # 019: the rest of the erasure path.
+  - api/services/gdpr_identity.py
+  - api/services/gdpr_replay_scrub.py
 # node_modules is gitignored, so a fresh worktree has none and neither tsc
 # nor vitest can start. The runner links the checkout's own tree in AFTER the
 # diff is derived and the boundary judged, so the agent never sees it.

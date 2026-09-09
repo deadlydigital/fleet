@@ -202,14 +202,46 @@ def enforce(change: Change, contract: dict) -> Boundary:
                      of what this task was allowed to be, and a diff wider
                      than that is a diff nobody scoped.
       over limit     more lines than the contract allows.
+
+    CREATABLE PATHS: ADD IS PERMITTED, MODIFY IS NOT
+    ------------------------------------------------
+    `creatable_paths` is a third list, and it is narrower than `writable_paths`
+    rather than wider: a path matching one may be ADDED and may not be modified
+    or deleted, even when a protected glob also covers it.
+
+    It exists for exactly one thing. specs/unattended-operation.md §3.2: an
+    agent cannot write tests, because `api/tests/**` is on the floor as "the
+    suite that judges the work" -- so a feature lands with nothing covering the
+    new behaviour, and a green suite means "broke nothing", not "works". On
+    auto-merge that reads as verified and is not.
+
+    The floor's argument is about MODIFICATION. An agent that can edit an
+    existing test can make it pass; an agent that adds a new file cannot weaken
+    a test that already exists. So the exception is granted on the diff STATUS,
+    which git supplies and the agent does not:
+
+        A  -> allowed, if a creatable glob matches
+        M, D, R, and everything else -> refused exactly as before
+
+    This is a real widening and it is worth naming what still stops a vacuous
+    test: nothing here. `contracts/checks/new_test_bites.sh` is what does, by
+    requiring the added test to FAIL against the pre-change tree. The two are a
+    pair, and a contract that grants `creatable_paths` without that check has
+    given away the floor for nothing.
     """
     protected = list(contract.get("protected_paths", []))
     writable = list(contract.get("writable_paths", []))
+    creatable = list(contract.get("creatable_paths", []))
     limit = int(contract.get("max_diff_lines", 0))
 
     hits: dict[str, str] = {}
     outside: list[str] = []
     for path in change.paths:
+        # ADDED and matching a creatable glob: permitted, and permitted BEFORE
+        # the protected check, which is the whole point -- the paths this is
+        # for are protected ones.
+        if change.status.get(path) == "A" and matches_any(path, creatable):
+            continue
         glob = matches_any(path, protected)
         if glob:
             hits[path] = glob

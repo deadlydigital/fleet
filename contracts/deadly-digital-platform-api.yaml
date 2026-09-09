@@ -4,13 +4,19 @@
 #   the changed files still parse
 #   the changed files are clean under the project's own ruff.toml
 #
-#   tests/unit passes, file by file
+#   tests/unit passes, file by file           (31 files, 226s)
+#   tests/analytics passes, file by file      (34 files, 675 tests, 713s)
+#   the ONE test the change added fails without the change
 #
 # WHAT IT CANNOT
-#   that anything still works BEYOND tests/unit. tests/api, tests/integration
-#   and tests/analytics are all green as of 8 Sep 2026 and are still not gated
-#   here -- see "WHY ONLY tests/unit" below. A passing run means parsing, lint
-#   and the unit suite, and nothing wider.
+#   that anything still works beyond tests/unit and tests/analytics. tests/api
+#   (~10 min) and tests/integration are green as of 8 Sep 2026 and are still
+#   not gated here -- time, not redness.
+#
+#   that the added test asserts the RIGHT thing. new_test_bites.sh proves the
+#   test discriminates between the tree before the change and the tree after
+#   it. Whether it discriminates on the property the spec asked for is a
+#   question only a reader can answer, and auto-merge does not answer it.
 #
 # THE 81 FAILURES WERE FICTION (corrected 8 Sep 2026)
 #
@@ -29,14 +35,17 @@
 # refused to call (1); and a tenant sequence never advanced past the static
 # ids (3).
 #
-# WHY ONLY tests/unit, TODAY
+# WHY tests/analytics IS IN, AS OF 9 Sep 2026
 #
-# Not because the rest is red. Because of cost and of where this runs.
-# tests/analytics exhausts the test database's 384 MiB tmpfs after about eight
-# files and needs it recreated to continue; tests/api takes around ten minutes.
-# Neither belongs in the path of every task while the gate is proportional to
-# the SUITE rather than to the diff. The changed-file-aware gate is the answer
-# and is proposed separately.
+# It was excluded because it exhausted the test database's 384 MiB tmpfs after
+# about eight files. That went away on 8 Sep when the tmpfs was raised to
+# 1536 MiB, leaving only time -- and re-measured per file at 9df8821 on 9 Sep
+# it is 34 files, 675 tests, 713 seconds, all green.
+#
+# tests/api stays out: ~10 minutes, and it is the suite least likely to say
+# anything about an analytics report. The changed-file-aware gate that would
+# make cost proportional to the diff is still the right answer and is still
+# proposed separately.
 #
 # WHY LINT IS AIMED AT THE CHANGED FILES
 #
@@ -91,13 +100,12 @@ contract_version: 1
 # on analytics does not reach into it, and a task that genuinely needs it is
 # one a person queues with a widened contract.
 #
+# gdpr.py went on the floor in 018, after 017 deliberately left it: erasure is
+# the one change here that reverting the commit does not undo.
+#
 # NOT excluded, and worth a decision rather than a default:
-#   api/analytics/services/gdpr.py            erasure, inside the analytics tree
 #   api/analytics/services/intervention_tracker.py   marks interventions converted
-# Neither sends anything. gdpr.py has legal consequence and is the strongest
-# remaining candidate for the floor; it is left writable here because 017's
-# scope was the email surface and widening it silently would be the same
-# mistake in the other direction.
+# It sends nothing and computes no legal obligation, so it stays writable.
 writable_paths:
   - api/analytics/models.py
   # routes: all but interventions.py, which is floored
@@ -119,7 +127,6 @@ writable_paths:
   - api/analytics/services/churn_engine.py
   - api/analytics/services/date_range.py
   - api/analytics/services/dirty_dates.py
-  - api/analytics/services/gdpr.py
   - api/analytics/services/geography.py
   - api/analytics/services/intervention_tracker.py
   - api/analytics/services/metrics_repair.py
@@ -151,6 +158,29 @@ protected_paths:
   - api/services/email_sender.py
   - api/analytics/routes/interventions.py
   - api/analytics/services/trigger_router.py
+  # 018: erasure. Reverting the commit does not bring the rows back, so it is
+  # a separate decision from a feature -- the same argument as api/alembic/**.
+  - api/analytics/services/gdpr.py
+  # 019: the rest of the erasure path.
+  - api/services/gdpr_identity.py
+  - api/services/gdpr_replay_scrub.py
+
+# ONE new test may be ADDED, and no existing test may be touched.
+#
+# api/tests/** is floored as "the suite that judges the work", and that
+# argument is about MODIFICATION -- an agent that edits an existing test can
+# make it pass. Adding a file cannot weaken a test that already exists.
+#
+# Without this an agent cannot write tests at all, so a feature lands with
+# nothing covering the new behaviour and a green suite means "broke nothing"
+# while reading as "verified". specs/unattended-operation.md §3.2.
+#
+# 020 refuses any creatable glob not already inside a protected one, so this
+# can only ever narrow protected_paths and never widen writable_paths. What
+# stops the added test being vacuous is new_test_bites.sh below, not this --
+# the two are a pair.
+creatable_paths:
+  - api/tests/analytics/test_fleet_*.py
 
 # api/.venv is gitignored and absent from a worktree, so the interpreter and
 # ruff are named by absolute path. They are read, never written.
@@ -165,7 +195,27 @@ verification:
   # not run" (2) rather than a pass when the database is unreachable.
   # ~4 minutes for 31 files, inside timeout_seconds below.
   - /home/ubuntu/fleet/contracts/checks/pytest_unit_per_file.sh api tests/unit
+  # THE ADDED TEST MUST FAIL AGAINST THE TREE BEFORE THE CHANGE. Cheap enough
+  # to sit ahead of the suites (two runs of one file), and it is the check that
+  # makes creatable_paths safe rather than a hole. 6.2 Rule 2, by machine.
+  - /home/ubuntu/fleet/contracts/checks/new_test_bites.sh api
+  # tests/analytics: 34 files, 675 tests, 713s measured per-file at 9df8821 on
+  # 9 Sep 2026 -- GREEN. The tmpfs blocker that kept it out went away on 8 Sep
+  # when the test database moved from 384 MiB to 1536 MiB; what remained was
+  # time, and timeout_seconds went to 3600 to buy it.
+  #
+  # It is what proves the change broke nothing. It is NOT what proves the
+  # change works -- that is new_test_bites.sh above, and the distinction is the
+  # whole of specs/unattended-operation.md §3.2.
+  - /home/ubuntu/fleet/contracts/checks/pytest_unit_per_file.sh api tests/analytics
 
 max_diff_lines: 400
 max_cost_gbp: 3.00
-timeout_seconds: 1800
+# 3600, not 1800. timeout_seconds is ONE clock for the agent and for
+# verification -- runner/cycle.py sets deadline = started + timeout_seconds and
+# passes what remains to verify.run. Measured 9 Sep 2026: tests/unit 226s +
+# tests/analytics 713s + mutation ~20s = ~960s of verification, which left an
+# agent 840s. Task 7 took 820s. Twenty seconds is not margin, and the failure
+# mode is the bad one: the agent does not fail for being slow, verification
+# times out and is reported as a FAILING CHECK.
+timeout_seconds: 3600

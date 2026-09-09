@@ -41,6 +41,11 @@ protected_paths:
   - api/services/email_sender.py
   - api/analytics/routes/interventions.py
   - api/analytics/services/trigger_router.py
+  # 018: erasure. Reverting the commit does not bring the rows back.
+  - api/analytics/services/gdpr.py
+  # 019: the rest of the erasure path.
+  - api/services/gdpr_identity.py
+  - api/services/gdpr_replay_scrub.py
 # api/.venv is gitignored and absent from a worktree, so the interpreter and
 # ruff are named by absolute path. They are read, never written.
 verification:

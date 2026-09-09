@@ -28,7 +28,11 @@ ROOT = Path(__file__).resolve().parent.parent
 CONTRACT = ROOT / "contracts" / "deadly-digital-platform-api.yaml"
 PLATFORM = Path("/home/ubuntu/deadly-digital-platform")
 
-#: The five globs 017 puts on protected_path_floor for this repo.
+from tests.support import PLATFORM_FLOOR
+
+#: The five globs 017 puts on protected_path_floor for the EMAIL surface.
+#: Kept separate from PLATFORM_FLOOR because the email-specific assertions are
+#: about these and not about the erasure paths 018/019 added beside them.
 EMAIL_FLOOR = [
     "api/app.py",
     "api/services/email_sender.py",
@@ -36,6 +40,11 @@ EMAIL_FLOOR = [
     "api/analytics/routes/interventions.py",
     "api/analytics/services/trigger_router.py",
 ]
+
+#: The WHOLE floor, for the checks that are about reachability rather than
+#: about email. This was a second copy of the floor until 018 added a glob to
+#: one and not the other -- the same duplication PLATFORM_FLOOR exists to end.
+FLOOR = PLATFORM_FLOOR
 
 
 @pytest.fixture(scope="module")
@@ -56,13 +65,13 @@ def test_every_floored_path_is_protected_by_the_contract(contract):
     The database refuses it — `contract for X does not protect Y` — so this
     test exists to make that a failure at review rather than at 03:00.
     """
-    missing = [g for g in EMAIL_FLOOR if g not in contract["protected_paths"]]
+    missing = [g for g in FLOOR if g not in contract["protected_paths"]]
     assert not missing, f"the contract does not protect {missing}"
 
 
 def test_no_floored_path_is_writable(contract):
     """The half of the floor that holds for work already in flight."""
-    bad = [w for w in contract["writable_paths"] if w in EMAIL_FLOOR]
+    bad = [w for w in contract["writable_paths"] if w in FLOOR]
     assert not bad, f"the contract makes floored paths writable: {bad}"
 
 
@@ -112,7 +121,7 @@ def test_the_enumeration_covers_the_analytics_tree_it_claims_to(contract):
     fails a boundary check for a reason nobody wrote down.
     """
     writable = set(contract["writable_paths"])
-    floored = set(EMAIL_FLOOR)
+    floored = set(FLOOR)
     for d in ("api/analytics/routes", "api/analytics/services"):
         for p in sorted((PLATFORM / d).glob("*.py")):
             if p.name == "__init__.py":
