@@ -381,9 +381,18 @@ there, and a test asserts every glob in each of them resolves.
     python run_task.py --task 7        run that task, if it is QUEUED
     python run_task.py --no-push       leave the branch local
 
-Invoked by hand. `systemd/` carries no unit for this and no timer is enabled:
-the build order puts the timer after three tasks have gone through by hand,
-and that has not happened.
+**Also on a timer, and this paragraph used to say the opposite.** It said
+`systemd/` carried no unit and no timer was enabled, because the build order
+put the timer after three tasks had gone through by hand. Three did, the timer
+went in, and this text did not move with it. `fleet-runner.timer` is enabled
+and fires every 20 minutes from 02:00 to 04:40 — nine chances a night at one
+task per tick, with the interval measured against real code tasks (none has
+finished in under ten minutes) rather than against the draft-spec ones.
+
+So **a task queued during the day is claimed overnight with nobody watching.**
+That is the intended posture — see `specs/unattended-operation.md` — but it is
+not something to discover from a branch that appeared. Queue accordingly, and
+note that `auto_merge: false` in a contract stops the merge, not the run.
 
 One task per tick. There is no loop in `run_task.py`, so two tasks are two
 invocations and the cost and blast radius of an invocation stay one task
