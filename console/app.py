@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import time
@@ -24,6 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from console import (approve, config, db, decide, deploys, gitdiff, merge,
                      morning, queries, reverify)
+from runner import worktree
 
 RUNNING_AS: str = ""
 WRITING_AS: str = ""
@@ -378,23 +380,34 @@ def accept(request: Request, task_id: int,
     # stands now -- not against the branch, which would only re-establish what
     # the original run already established.
     #
-    # It happens in a throwaway worktree, so a failure leaves the checkout
+    # It happens in a throwaway clone, so a failure leaves the checkout
     # untouched and records nothing, exactly as a conflicting merge does.
+    #
+    # `keep_on_success` because the clone that verifies is the clone that is
+    # PUBLISHED -- merge_and_push pushes that exact commit rather than
+    # rebuilding an equal-looking one. It is ours to delete from here on,
+    # which is what the finally below is for: on every path, including an
+    # exception out of the merge, the trial goes away.
     check = merge.preflight(repo, task, branch, recorded_base, recorded_patch,
                             (patch or {}).get("branch_point_sha", ""))
     again = None
-    if check.ok and not check.already_merged:
-        again = reverify.run(
-            repo, config.trial_root(), task, contract, branch,
-            recorded_base=recorded_base,
-            changed_files=[p for p in (patch or {}).get("files_changed", [])
-                           if (patch or {}).get("file_status", {}).get(p) != "D"])
+    try:
+        if check.ok and not check.already_merged:
+            again = reverify.run(
+                repo, config.trial_root(), task, contract, branch,
+                recorded_base=recorded_base,
+                changed_files=[p for p in (patch or {}).get("files_changed", [])
+                               if (patch or {}).get("file_status", {}).get(p) != "D"],
+                keep_on_success=True)
 
-    result = merge.merge_and_push(
-        repo, task, branch,
-        recorded_base=recorded_base, recorded_patch=recorded_patch,
-        branch_point=(patch or {}).get("branch_point_sha", ""),
-        reverification=again)
+        result = merge.merge_and_push(
+            repo, task, branch,
+            recorded_base=recorded_base, recorded_patch=recorded_patch,
+            branch_point=(patch or {}).get("branch_point_sha", ""),
+            reverification=again)
+    finally:
+        if again is not None and again.trial_path:
+            worktree.discard_trial_clone(Path(again.trial_path))
 
     if not result.ok:
         _record_outcome(task_id, {

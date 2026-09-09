@@ -1,7 +1,29 @@
 # Merge outside the checkout
 
-**Status: SPEC. Nothing built.** Reads: `console/merge.py`,
-`console/reverify.py`, `runner/worktree.py`, `systemd/fleet-console.service`.
+**Status: BUILT 9 Sep 2026.** Touches: `console/merge.py`,
+`console/reverify.py`, `console/app.py`, `systemd/fleet-console.service`.
+
+**What was built, against what this spec asked for:**
+
+- §2.1 promote the trial — **done.** `reverify.run(keep_on_success=True)`
+  returns the clone in `trial_path`; `merge.publish` pushes that exact
+  commit. There is no path that merges without a verified trial: the obvious
+  "no trial, so merge in the checkout" fallback is refused explicitly, because
+  having it would mean the safe path is whichever one happens to be taken.
+- §2.2 the checkout becomes a follower — **done, and further than asked.**
+  `ReadWritePaths` is gone from the unit entirely, verified by running the
+  whole accept path under the unit's real confinement with no grant at all.
+  The checkout is not fast-forwarded, because the console cannot write there;
+  it is left behind by the merge and the outcome says so.
+- §2.3 the guards — **done as tabled**, plus one the table did not anticipate:
+  the remote-agreement check MOVED into `publish` rather than surviving in
+  place, because in preflight it compared against a remote-tracking ref that
+  only `merge_and_push`'s own fetch — a write to the checkout — kept fresh.
+- §2.4 the new failure mode — **done**, and one the spec missed: the
+  already-merged path could no longer push, so it would have recorded MERGED
+  while the remote lacked the commit. It now READS the remote with
+  `ls-remote`, which writes nothing, and refuses rather than claiming a state
+  that exists on one machine.
 
 ---
 

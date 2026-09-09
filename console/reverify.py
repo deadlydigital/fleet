@@ -66,6 +66,11 @@ class Reverification:
     duration_s: float = 0.0
     checks: list[dict[str, Any]] = field(default_factory=list)
     skipped_reason: str = ""
+    # Set only when the caller asked for the trial to be KEPT and it passed.
+    # The clone that verified is the clone that ships -- see merge.publish.
+    # Deliberately absent from as_record(): it is a path on a temporary
+    # filesystem that will not exist by the time anyone reads the record.
+    trial_path: str = ""
     # "could not re-verify" is not "re-verification failed". The first means
     # the trial never ran and nothing is known about the merged tree; the
     # second means it ran and said no. Both refuse the merge -- not knowing is
@@ -85,9 +90,19 @@ class Reverification:
 
 def run(repo: Path, trial_root: Path, task: dict[str, Any],
         contract: dict[str, Any], branch: str, *,
-        recorded_base: str, changed_files: list[str]) -> Reverification:
-    """Trial-merge into a scratch clone, verify there, throw it away."""
+        recorded_base: str, changed_files: list[str],
+        keep_on_success: bool = False) -> Reverification:
+    """Trial-merge into a scratch clone, verify there, throw it away.
+
+    `keep_on_success` leaves the clone in place and names it in
+    `trial_path`, so the caller can PUBLISH THE COMMIT THAT WAS TESTED
+    rather than construct an equal-looking one somewhere else. The clone is
+    then the caller's to delete -- see the accept route, which does it in a
+    finally. Nothing is kept on any failing path: an unverified trial is
+    still thrown away as it always was.
+    """
     started = time.monotonic()
+    keep = False                      # see the finally at the end of this function
     base = task["base_branch"]
     commands = list(contract.get("verification") or [])
     if not commands:
@@ -201,8 +216,16 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                         f"under it. Nothing was recorded."),
                 duration_s=time.monotonic() - started)
 
+        keep = keep_on_success
         return Reverification(ok=True, base_sha=base_sha, merged_sha=head,
                               verification=result, checks=checks,
+                              trial_path=str(trial) if keep else "",
                               duration_s=time.monotonic() - started)
     finally:
-        worktree.discard_trial_clone(trial)
+        # Only the passing path can set `keep`, and it sets it immediately
+        # before returning. Every `return` above it -- conflict, boundary
+        # violation, unresolved checker, failing check -- and every exception
+        # leaves it False, so a trial that did not verify is deleted here
+        # exactly as it always was.
+        if not keep:
+            worktree.discard_trial_clone(trial)

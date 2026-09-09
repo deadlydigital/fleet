@@ -76,7 +76,23 @@ class TestAnOutcomeCannotBeSetWithoutBeingLogged:
 
 # ---- the message -----------------------------------------------------------
 
-class TestTheRefusalSaysWhatToDo:
+class TestACheckoutOnAnotherBranchIsNoLongerARefusal:
+    """The refusal this class used to test was REMOVED on 9 Sep 2026.
+
+    `preflight` used to refuse when the checkout was not on the task's base
+    branch, and three tests here asserted that its message named the state,
+    the reason and the fix. The message was good. The refusal should not have
+    existed: it was needed only because the merge was made in that checkout,
+    and the merge is now built and verified in a throwaway clone and published
+    from there.
+
+    The cost of the old behaviour was not a bad message. It was that pressing
+    Accept required switching a production checkout onto a task's base branch
+    -- and on the morning of 9 Sep 2026 doing exactly that took out three
+    systemd timers, because the fleet's own units run from that tree.
+
+    See specs/merge-outside-the-checkout.md and console/merge.py.
+    """
 
     @pytest.fixture
     def repo(self, tmp_path):
@@ -89,24 +105,20 @@ class TestTheRefusalSaysWhatToDo:
         (r / "f.txt").write_text("x")
         run("git", "add", "-A")
         run("git", "commit", "-q", "-m", "base")
+        run("git", "checkout", "-q", "-b", "fleet/task-26")
+        (r / "f.txt").write_text("y")
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "work")
         run("git", "checkout", "-q", "-b", "somebody-elses-work")
         return r
 
-    def test_it_names_the_state_the_reason_and_the_fix(self, repo):
+    def test_where_the_checkout_points_is_not_mentioned_at_all(self, repo):
+        """Not "it is allowed"; it is not a subject preflight has an opinion on."""
+        tip = subprocess.run(["git", "-C", str(repo), "rev-parse", "fleet/task-26"],
+                             capture_output=True, text=True).stdout.strip()
         task = {"id": 26, "repo": repo.name, "status": "READY_FOR_REVIEW",
                 "branch_name": "fleet/task-26", "base_branch": "main"}
-        out = merge.preflight(repo, task, "fleet/task-26", "", "", "")
-        assert out.ok is False
-        # the state
-        assert "somebody-elses-work" in out.reason and "main" in out.reason
-        # the reason it is not the branch's fault
-        assert "nothing needs re-running" in out.reason
-        # the fix
-        assert any("checkout main" in d for d in out.detail)
-
-    def test_it_does_not_blame_the_branch_or_the_base(self, repo):
-        task = {"id": 26, "repo": repo.name, "status": "READY_FOR_REVIEW",
-                "branch_name": "fleet/task-26", "base_branch": "main"}
-        out = merge.preflight(repo, task, "fleet/task-26", "", "", "")
-        assert "stale" not in out.reason.lower()
-        assert "rebase" not in out.reason.lower()
+        out = merge.preflight(repo, task, "fleet/task-26", "", tip, "")
+        assert out.ok, out.reason
+        assert "somebody-elses-work" not in (out.reason or "")
+        assert not any("checkout main" in d for d in out.detail)

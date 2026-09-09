@@ -30,23 +30,28 @@ RestartSec=5s
 # It reads one database as a role that holds SELECT and nothing else, and it
 # reads git repositories on disk to render diffs.
 #
-# It writes in exactly two places: the fleet database, as fleet_console, from
-# the accept and reject routes; and the platform checkout, when accept merges
-# a branch. Everything else on this filesystem is read-only to it.
+# THERE IS NO ReadWritePaths, AND THAT IS THE POINT.
 #
-# ReadWritePaths names the platform repository and nothing else -- not
-# /home/ubuntu, not the fleet repo it is running from. A merge writes inside
-# .git (refs, ORIG_HEAD, the index) and to the working tree, and that is the
-# whole of what it needs.
+# It writes in exactly three places, none of them a checkout: the fleet
+# database as fleet_console, from the accept and reject routes; a git remote,
+# when accept publishes a merge; and its own PrivateTmp. Every checkout on
+# this filesystem is READ-ONLY to it, including the platform repository and
+# the fleet repository it is itself running from.
 #
-# Without this the merge fails with "cannot lock ref 'ORIG_HEAD': Read-only
-# file system", which is what happened the first time accept was pressed on a
-# task that needed a real merge. The failure was safe -- nothing was recorded
-# and the checkout was left clean -- but it was reported as a conflict, which
-# it was not. See console/merge.py.
+# Until 9 Sep 2026 this named /home/ubuntu/deadly-digital-platform, because
+# accept ran `git merge` in that checkout. That grant was the reason a task in
+# any OTHER repository could not be accepted at all -- task 22 failed with
+# "cannot lock ref 'ORIG_HEAD': Read-only file system" -- and widening it to
+# fix that would have handed the console write access to `.git/hooks` in the
+# repository its own code is served from, which is arbitrary code execution.
+#
+# The merge is now built and verified in a throwaway clone under PrivateTmp
+# and pushed from there, so the grant bought nothing and was removed rather
+# than widened. Verified by running the whole accept path, up to the push,
+# under this unit's confinement with no ReadWritePaths at all.
+# See console/merge.py and specs/merge-outside-the-checkout.md.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/ubuntu/deadly-digital-platform
 # Load-bearing for Accept: re-verification builds its trial clone in
 # /tmp/fleet-console-trials, which is writable only because this is private.
 # Removing it breaks Accept.

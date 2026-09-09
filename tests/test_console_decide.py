@@ -112,17 +112,59 @@ def task(console, admin, runner, repo):
             "base_sha": base_sha, "tip": tip}
 
 
+@pytest.fixture
+def trial(tmp_path):
+    """A kept trial clone, built exactly as the accept route builds one.
+
+    `merge_and_push` publishes the commit re-verification tested, so a test
+    that calls it directly has to supply a real verified trial — there is no
+    path that merges without one, deliberately. Cleaned up here the way the
+    route cleans up in its finally.
+    """
+    from console import reverify
+    from runner import worktree
+    built = []
+
+    def build(repo, task, **over):
+        rv = reverify.run(repo, tmp_path / "merge-trials", dict(task["task"]),
+                          contract(**over), task["branch"],
+                          recorded_base=task["base_sha"],
+                          changed_files=["api/app.py"], keep_on_success=True)
+        built.append(rv)
+        return rv
+
+    yield build
+    for rv in built:
+        if rv.trial_path:
+            worktree.discard_trial_clone(Path(rv.trial_path))
+
+
+def on_remote(origin: Path, ref: str) -> str:
+    """A sha read out of the bare remote itself, not out of a tracking ref."""
+    return sh(origin, "git", "rev-parse", "--verify", "--quiet", ref).strip()
+
+
 # ---- accept: the happy path ----------------------------------------------
 
-def test_accept_merges_pushes_and_verifies(dsns, repo, task, console):
+def test_accept_merges_pushes_and_verifies(dsns, repo, task, console, origin, trial):
+    rv = trial(repo, task)
+    assert rv.ok, rv.reason
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             task["base_sha"], task["tip"])
+                             task["base_sha"], task["tip"], reverification=rv)
     assert r.ok, r.reason
     assert r.merged and r.pushed and r.push_verified
     assert r.remote_sha == r.base_sha_after
-    # the branch really is in main now
+
+    # THE COMMIT THAT WAS TESTED IS THE COMMIT THAT LANDED, by identity.
+    assert r.base_sha_after == rv.merged_sha
+    assert on_remote(origin, "main") == rv.merged_sha
+
+    # It landed on the REMOTE, and the checkout was not written to at all.
+    assert subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor",
+                           task["tip"], "main"]).returncode == 0
     assert subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor",
-                           task["branch"], "main"]).returncode == 0
+                           task["branch"], "main"]).returncode != 0, (
+        "the merge was made in the checkout; it must be published from the trial")
 
     decide.record(task=task["task"], run_id=task["run_id"], verdict="MERGED",
                   decision="APPROVED", note="looks right",
@@ -187,35 +229,47 @@ def test_merging_the_base_into_itself_refuses(dsns, repo, task, console):
     assert not r.ok and "into itself" in r.reason
 
 
-def test_a_dirty_working_tree_refuses(dsns, repo, task):
+def test_a_dirty_working_tree_no_longer_blocks_a_merge(dsns, repo, task, origin,
+                                                       trial):
+    """A guard that was removed on purpose, asserted as removed.
+
+    It existed because the merge happened IN this checkout, where uncommitted
+    work would have been swept into it. The merge is published from a trial
+    clone now and the checkout is never written to, so the state of its
+    working tree cannot affect the outcome — and refusing on it would only
+    block merges that are perfectly safe.
+    """
     (repo / "api" / "app.py").write_text("uncommitted\n")
+    rv = trial(repo, task)
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             task["base_sha"], task["tip"])
-    assert not r.ok
-    # Anchored, not a substring search: the conflict message also contains the
-    # words "not clean", so `in r.reason` passed even with this guard removed.
-    assert r.reason.startswith("the working tree is not clean")
-    assert not r.merged and not r.pushed
+                             task["base_sha"], task["tip"], reverification=rv)
+    assert r.ok, r.reason
+    assert on_remote(origin, "main") == rv.merged_sha
+    # And the uncommitted work is still there, untouched.
+    assert (repo / "api" / "app.py").read_text() == "uncommitted\n"
 
 
-def test_a_checkout_on_another_branch_refuses(dsns, repo, task):
-    """And says what to do about it.
+def test_a_checkout_on_another_branch_no_longer_blocks_a_merge(
+        dsns, repo, task, origin, trial):
+    """The guard whose removal is the point of the change.
 
-    The refusal used to read only "the checkout is on X, not Y. Refusing to
-    switch a branch under whoever is using it" -- true, and it leaves the
-    reader to work out whether the branch is wrong, the run is wrong or the
-    base moved. Task 26 was accepted five times against exactly this. The
-    reason now names the state and the fix, and the "will not switch it"
-    argument moved to the detail where it belongs.
+    `head != base` forced the checkout onto each task's base branch before
+    Accept could be pressed — and that checkout is also what the fleet's own
+    systemd units run from, so pressing Accept meant switching a production
+    tree. On 9 Sep 2026 doing so took out three timers.
+
+    Nothing about the merge depends on where this checkout's HEAD points, so
+    nothing about it is checked.
     """
     sh(repo, "git", "checkout", "-q", "-b", "somewhere-else")
+    rv = trial(repo, task)
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             task["base_sha"], task["tip"])
-    assert not r.ok
-    assert "somewhere-else" in r.reason
-    assert "nothing needs re-running" in r.reason
-    assert any("checkout" in d for d in r.detail)
-    assert any("will not switch it" in d for d in r.detail)
+                             task["base_sha"], task["tip"], reverification=rv)
+    assert r.ok, r.reason
+    assert on_remote(origin, "main") == rv.merged_sha
+    # The checkout is where it was left, on the branch somebody else was using.
+    assert sh(repo, "git", "rev-parse", "--abbrev-ref",
+              "HEAD").strip() == "somewhere-else"
 
 
 def test_a_branch_whose_tip_moved_is_refused(dsns, repo, task):
@@ -229,19 +283,26 @@ def test_a_branch_whose_tip_moved_is_refused(dsns, repo, task):
 
 
 def test_a_conflicting_merge_records_nothing_and_leaves_the_tree_clean(
-        dsns, repo, task, console):
+        dsns, repo, task, console, origin, trial):
+    """A conflict is now found in the trial, before anything is published.
+
+    It used to be found by merging in this checkout and aborting. The tree
+    could not be left dirty because nothing was ever done to it.
+    """
     # main changes the same line the branch changed
     (repo / "api" / "app.py").write_text("x = 99\n")
     sh(repo, "git", "add", "-A")
     sh(repo, "git", "commit", "-q", "-m", "conflicting change on main")
 
+    rv = trial(repo, task)
+    assert not rv.ok and rv.conflicted, rv.reason
+
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             task["base_sha"], task["tip"])
+                             task["base_sha"], task["tip"], reverification=rv)
     assert not r.ok
-    assert "conflicted" in r.reason
     assert not r.pushed
-    assert sh(repo, "git", "status", "--porcelain").strip() == "", \
-        "a conflicted merge left the working tree dirty"
+    assert sh(repo, "git", "status", "--porcelain").strip() == ""
+    assert on_remote(origin, "main") != task["tip"], "a conflict reached the remote"
     assert console.execute(
         "SELECT status FROM tasks WHERE id=%s",
         (task["task"]["id"],)).fetchone()["status"] == "READY_FOR_REVIEW"
@@ -250,23 +311,25 @@ def test_a_conflicting_merge_records_nothing_and_leaves_the_tree_clean(
         " AND step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["n"] == 0
 
 
-def test_a_push_that_did_not_land_is_caught(dsns, repo, task, monkeypatch, console):
+def test_a_push_that_did_not_land_is_caught(dsns, repo, task, monkeypatch,
+                                            console, trial):
     """`git push` exiting 0 is a claim. The guard re-reads the remote.
 
     The happy-path test cannot prove this one: there the push really does
     land, so removing the check changes nothing. Here the remote is made to
     disagree, which is the only shape in which the guard matters.
     """
+    rv = trial(repo, task)
     real_sha = merge._sha
 
     def lying_sha(r, ref):
-        if ref.startswith("origin/"):
+        if ref.startswith(f"{merge.PUBLISH_REMOTE}/"):
             return "0" * 40
         return real_sha(r, ref)
 
     monkeypatch.setattr(merge, "_sha", lying_sha)
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             task["base_sha"], task["tip"])
+                             task["base_sha"], task["tip"], reverification=rv)
     assert not r.ok
     assert "reported success" in r.reason
     assert not r.push_verified
@@ -275,47 +338,93 @@ def test_a_push_that_did_not_land_is_caught(dsns, repo, task, monkeypatch, conso
         " AND step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["n"] == 0
 
 
-def test_a_merge_that_could_not_run_is_not_reported_as_a_conflict(
-        dsns, repo, task, monkeypatch, console):
-    """The failure mode that actually happened in production.
+def test_a_merge_is_never_attempted_in_the_checkout(dsns, repo, task, trial,
+                                                   monkeypatch):
+    """The failure that made this change necessary, asserted as impossible.
 
-    ProtectSystem=strict left the repo read-only, git said "cannot lock ref
-    'ORIG_HEAD': Read-only file system", and it was reported as a conflict --
-    sending the reader to look at the diff instead of at the sandbox.
+    ProtectSystem=strict left `~/fleet` read-only, `git merge` in the checkout
+    said "cannot lock ref 'ORIG_HEAD': Read-only file system", and task 22
+    could not be accepted at all -- after both the preflight and the
+    re-verification had passed.
+
+    Rather than testing that the message is worded well, this asserts the
+    merge never runs there. A checkout that cannot be written to is now
+    irrelevant to Accept, so there is no message to word.
     """
+    seen = []
     real = merge._git
 
-    def failing_git(r, *args, **kw):
-        # the real call is _git(repo, "-c", ..., "-c", ..., "merge", ...),
-        # so match on membership rather than on the first argument
-        if "merge" in args and "--abort" not in args:
-            return subprocess.CompletedProcess(
-                args, 128, "",
-                "fatal: cannot lock ref 'ORIG_HEAD': Read-only file system")
+    def watching_git(r, *args, **kw):
+        if Path(r) == repo:
+            seen.append(args)
         return real(r, *args, **kw)
 
-    monkeypatch.setattr(merge, "_git", failing_git)
+    rv = trial(repo, task)
+    monkeypatch.setattr(merge, "_git", watching_git)
     r = merge.merge_and_push(repo, task["task"], task["branch"],
-                             task["base_sha"], task["tip"])
+                             task["base_sha"], task["tip"], reverification=rv)
+
+    assert r.ok, r.reason
+    writes = [a for a in seen
+              if a and a[0] in {"merge", "fetch", "push", "commit", "checkout",
+                                "reset", "update-ref", "gc", "prune"}]
+    assert not writes, f"the checkout was written to: {writes}"
+    assert seen, "nothing was read from the checkout either; the watch is broken"
+
+
+def test_a_merge_without_a_verified_trial_is_refused(dsns, repo, task, origin):
+    """There is no path that merges without a verified trial, on purpose.
+
+    The obvious fallback — "no trial, so merge in the checkout" — is the
+    defect this module was changed to remove. Having it would mean the safe
+    path is whichever one happens to be taken.
+    """
+    before = on_remote(origin, "main")
+    r = merge.merge_and_push(repo, task["task"], task["branch"],
+                             task["base_sha"], task["tip"], reverification=None)
     assert not r.ok
-    assert "not a conflict" in r.reason
-    assert "conflicted" not in r.reason
-    assert any("Read-only file system" in d for d in r.detail)
+    assert "no verified trial" in r.reason
     assert not r.merged and not r.pushed
-    assert console.execute(
-        "SELECT count(*) AS n FROM run_steps WHERE run_id=%s"
-        " AND step_type='HUMAN_DECISION'", (task["run_id"],)).fetchone()["n"] == 0
+    assert on_remote(origin, "main") == before
 
 
 # ---- accept: the already-merged path -------------------------------------
 
 def test_an_already_merged_branch_records_without_merging(dsns, repo, task):
+    """The task-26 shape: somebody merged and pushed it by hand.
+
+    The remote is READ here rather than pushed to, because this path has no
+    trial clone to push from -- there was nothing to merge, so nothing was
+    re-verified. `ls-remote` writes nothing to the checkout.
+    """
     sh(repo, "git", "merge", "-q", "--no-ff", "--no-edit", task["branch"])
+    sh(repo, "git", "push", "-q", "origin", "main")
     r = merge.merge_and_push(repo, task["task"], task["branch"],
                              task["base_sha"], task["tip"])
     assert r.ok, r.reason
     assert r.already_merged and not r.merged
+    assert r.push_verified and r.remote_sha
     assert any("no merge is required" in d for d in r.detail)
+    assert any("already contains" in d for d in r.detail)
+
+
+def test_an_already_merged_branch_the_remote_does_not_have_is_refused(
+        dsns, repo, task):
+    """Merged locally, never pushed. Recording MERGED would be a claim about
+    one machine.
+
+    This used to push it, which it can no longer do -- pushing needs a clone
+    and there is no verified trial on this path. Refusing is the honest
+    replacement: the console says what is wrong rather than repairing a state
+    it cannot verify.
+    """
+    sh(repo, "git", "merge", "-q", "--no-ff", "--no-edit", task["branch"])
+    r = merge.merge_and_push(repo, task["task"], task["branch"],
+                             task["base_sha"], task["tip"])
+    assert not r.ok
+    assert "does not have it" in r.reason
+    assert "this machine only" in r.reason
+    assert r.already_merged and not r.merged and not r.pushed
 
 
 def test_an_already_merged_branch_whose_tip_moved_refuses(dsns, repo, task):
@@ -461,7 +570,7 @@ def human_decision(console, run_id):
 
 
 def test_accept_over_the_route_merges_reverifies_and_records(
-        dsns, repo, task, console, route, trial_root):
+        dsns, repo, task, console, route, trial_root, origin):
     """The whole route, end to end, as the browser drives it."""
     tid = task["task"]["id"]
     r = post_accept(route, task)
@@ -470,8 +579,13 @@ def test_accept_over_the_route_merges_reverifies_and_records(
 
     assert console.execute("SELECT status FROM tasks WHERE id=%s",
                            (tid,)).fetchone()["status"] == "MERGED"
+    # ON THE REMOTE, not in the checkout: the route publishes the trial and
+    # never writes here. The checkout is left behind by exactly this merge,
+    # which is stated in the outcome rather than silently repaired.
+    assert subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor",
+                           task["tip"], "main"]).returncode == 0
     assert subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor",
-                           task["branch"], "main"]).returncode == 0
+                           task["branch"], "main"]).returncode != 0
 
     # The re-verification branch is the one that carried the NameError, so the
     # test is only worth anything if it actually ran. A skipped or absent
@@ -749,6 +863,15 @@ def test_the_runners_worktree_root_is_not_writable_under_that_sandbox():
 # ---------------------------------------------------------------------------
 
 class TestTheBaseMustAgreeWithItsRemote:
+    """The check MOVED into `publish`; it did not go away.
+
+    It used to compare the checkout's base against a remote-TRACKING ref,
+    which is only as fresh as the last fetch -- and `merge_and_push` kept it
+    fresh by fetching into the checkout, which is a write this module no
+    longer makes. It now runs inside the trial clone, against a remote fetched
+    seconds earlier, and asks the sharper question: is the commit about to be
+    pushed a descendant of what is actually on the remote?
+    """
 
     @staticmethod
     def advance_remote(repo: Path, origin: Path, tmp_path: Path) -> None:
@@ -767,103 +890,81 @@ class TestTheBaseMustAgreeWithItsRemote:
         sh(other, "git", "commit", "-q", "-m", "PR #3")
         sh(other, "git", "push", "-q", "origin", "main")
 
-    def test_a_base_behind_its_remote_refuses_before_merging(
-            self, dsns, repo, origin, task, tmp_path):
+    def test_a_remote_that_moved_refuses_before_pushing(
+            self, dsns, repo, origin, task, tmp_path, trial):
+        """What was verified is a merge into a base that no longer exists."""
         self.advance_remote(repo, origin, tmp_path)
-        sh(repo, "git", "fetch", "-q", "origin", "main")
-        r = merge.preflight(repo, task["task"], task["branch"],
-                            task["base_sha"], task["tip"])
+        before = on_remote(origin, "main")
+        rv = trial(repo, task)
+        assert rv.ok, rv.reason           # the trial itself is fine; the base moved
+        r = merge.merge_and_push(repo, task["task"], task["branch"],
+                                 task["base_sha"], task["tip"], reverification=rv)
         assert not r.ok
-        assert "diverged" in r.reason
-        assert "origin/main has 1 commit(s) this checkout does not" in r.reason
-        assert any("pull --ff-only" in d for d in r.detail)
-        # AND NOTHING WAS MERGED. That is the whole point of moving it earlier.
-        assert sh(repo, "git", "rev-parse", "HEAD").strip() == \
-               sh(repo, "git", "rev-parse", "origin/main~1").strip()
+        assert "has moved" in r.reason
+        assert "no longer exists" in r.reason
+        assert not r.pushed and not r.merged
+        assert on_remote(origin, "main") == before, "something was pushed anyway"
+
+    def test_it_does_not_need_the_checkout_to_have_fetched(
+            self, dsns, repo, origin, task, tmp_path, trial):
+        """The freshness comes from the clone's own fetch.
+
+        `merge_and_push` used to fetch into the checkout so its divergence
+        check saw the truth. That fetch was a write, and it is gone. This is
+        the same scenario with the checkout deliberately never fetched: the
+        refusal must still happen, because the question is now asked somewhere
+        the console is allowed to write.
+        """
+        self.advance_remote(repo, origin, tmp_path)
+        stale = sh(repo, "git", "rev-parse", "origin/main").strip()
+        rv = trial(repo, task)
+        r = merge.merge_and_push(repo, task["task"], task["branch"],
+                                 task["base_sha"], task["tip"], reverification=rv)
+        assert not r.ok and "has moved" in r.reason
+        # Proof the checkout really was never refreshed by any of this.
+        assert sh(repo, "git", "rev-parse", "origin/main").strip() == stale
 
     def test_a_base_merely_AHEAD_of_its_remote_is_not_refused(
-            self, dsns, repo, task):
+            self, dsns, repo, origin, task, trial):
         """Ahead is unpushed work, not a defect.
 
-        It is what the already-merged path looks like by construction -- the
-        branch was merged locally and the console is recording it -- so
-        refusing here would make that flow impossible. The first version of
-        this check refused on `behind or ahead` and broke three existing
-        tests, which is how the distinction was found.
+        The verified merge descends from what is on the remote, so it is a
+        legitimate fast-forward and the local commits go up with it.
         """
         (repo / "local-only.txt").write_text("not pushed\n")
         sh(repo, "git", "add", "-A")
         sh(repo, "git", "commit", "-q", "-m", "local work")
-        r = merge.preflight(repo, task["task"], task["branch"],
-                            task["base_sha"], task["tip"])
-        assert "diverged" not in (r.reason or "")
+        rv = trial(repo, task)
+        r = merge.merge_and_push(repo, task["task"], task["branch"],
+                                 task["base_sha"], task["tip"], reverification=rv)
+        assert r.ok, r.reason
+        assert on_remote(origin, "main") == rv.merged_sha
 
-    def test_a_diverged_base_names_both_sides(self, dsns, repo, origin, task,
-                                              tmp_path):
-        self.advance_remote(repo, origin, tmp_path)
-        sh(repo, "git", "fetch", "-q", "origin", "main")
-        (repo / "local-only.txt").write_text("not pushed\n")
-        sh(repo, "git", "add", "-A")
-        sh(repo, "git", "commit", "-q", "-m", "local work")
-        r = merge.preflight(repo, task["task"], task["branch"],
-                            task["base_sha"], task["tip"])
-        assert "origin/main has 1 commit(s)" in r.reason
-        assert "this checkout has 1 commit(s)" in r.reason
-        assert "behind" not in r.reason.lower()      # the state, not "behind"
-        assert any("both ways" in d for d in r.detail)
+    def test_a_base_with_no_branch_on_the_remote_yet_is_created(
+            self, dsns, repo, origin, task, trial):
+        """fleet's own base branches are not all on its remote.
 
-    def test_a_base_in_sync_is_not_refused_for_it(self, dsns, repo, task):
-        r = merge.preflight(repo, task["task"], task["branch"],
-                            task["base_sha"], task["tip"])
-        assert "diverged" not in (r.reason or "")
-
-    def test_a_repo_with_no_remote_tracking_ref_is_not_refused(
-            self, dsns, repo, task):
-        """fleet's own branches have no remote. A check that cannot resolve
-        the ref must skip, not refuse -- refusing would make every task in a
-        remoteless repository unmergeable."""
-        sh(repo, "git", "update-ref", "-d", "refs/remotes/origin/main")
-        r = merge.preflight(repo, task["task"], task["branch"],
-                            task["base_sha"], task["tip"])
-        assert r.ok
-        assert any("no remote to" in n for n in r.detail)
-
-    def test_a_count_that_cannot_be_resolved_refuses_rather_than_reading_zero(
-            self, dsns, repo, task, monkeypatch):
-        """"I could not look" must not be identical to "they agree".
-
-        _count returned 0 on failure, so an unresolvable range read as a base
-        in sync and the merge proceeded on a question nobody answered. That is
-        the silent default this whole thread has been about.
+        Refusing here would make those tasks unmergeable; the push simply
+        creates the branch, and says that is what it did.
         """
-        real = merge._count
-        monkeypatch.setattr(merge, "_count", lambda *a, **k: None)
-        r = merge.preflight(repo, task["task"], task["branch"],
-                            task["base_sha"], task["tip"])
-        assert not r.ok
-        assert "could not determine" in r.reason
-        assert "not the same as them agreeing" in r.reason
+        sh(origin, "git", "update-ref", "-d", "refs/heads/main")
+        rv = trial(repo, task)
+        r = merge.merge_and_push(repo, task["task"], task["branch"],
+                                 task["base_sha"], task["tip"], reverification=rv)
+        assert r.ok, r.reason
+        assert any("creates it" in d for d in r.detail)
+        assert on_remote(origin, "main") == rv.merged_sha
 
     def test_count_itself_returns_none_when_git_fails(self, repo):
-        """The internals, since the test above monkeypatches over them.
+        """"I could not look" must not be identical to "they agree".
 
-        Pointed out by revert_guards.py: a guard on _count's body could not
-        be proven by a test that replaces _count.
+        `_count` no longer stands between a merge and a push -- the guard is
+        `merge-base --is-ancestor`, and _count only supplies a number for the
+        message. The property is still worth keeping: a 0 here would read as
+        "in sync" in a sentence a person acts on.
         """
         assert merge._count(repo, "no-such-ref..also-missing") is None
         assert merge._count(repo, "HEAD..HEAD") == 0
-
-    def test_merge_and_push_fetches_before_it_asks(self, dsns, repo, origin,
-                                                   task, tmp_path):
-        """The page may compare against a stale tracking ref and says so; the
-        write path must not. Here the remote moves and this checkout has NOT
-        fetched -- merge_and_push must still refuse."""
-        self.advance_remote(repo, origin, tmp_path)
-        # deliberately no fetch
-        r = merge.merge_and_push(repo, task["task"], task["branch"],
-                                 task["base_sha"], task["tip"])
-        assert not r.ok and "diverged" in r.reason
-        assert not r.merged and not r.pushed
 
 
 # ---------------------------------------------------------------------------

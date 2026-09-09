@@ -46,23 +46,41 @@ CASES = [
      '    if False:',
      "tests/test_console_decide.py::test_merging_the_base_into_itself_refuses"),
 
-    ("working tree is clean",
-     "console/merge.py",
-     '    if dirty:',
-     '    if False:',
-     "tests/test_console_decide.py::test_a_dirty_working_tree_refuses"),
+    # THREE GUARDS WERE REMOVED HERE ON 9 Sep 2026, deliberately, and this
+    # note is left in their place so the absence is a decision rather than a
+    # gap somebody has to reconstruct.
+    #
+    #   "working tree is clean"            console/merge.py, `if dirty:`
+    #   "checkout is on the base branch"   console/merge.py, `if head != base:`
+    #   "a conflicted merge is aborted"    console/merge.py, `if merged...`
+    #
+    # All three guarded a merge made IN THE CHECKOUT. The merge is now built
+    # and verified in a throwaway clone and published from there, so the
+    # console never writes to a checkout at all -- see specs/
+    # merge-outside-the-checkout.md. The first two conditions cannot affect
+    # the outcome any more, and asserting them would refuse merges that are
+    # safe; the second of them is what forced a production tree to be switched
+    # to a task's base branch before Accept could be pressed. The conflict
+    # guard did not disappear -- it moved to console/reverify.py, where "a
+    # conflicting trial merge is refused" below still proves it.
+    #
+    # What replaced them, as behaviour rather than as guards, is asserted by
+    # test_a_dirty_working_tree_no_longer_blocks_a_merge,
+    # test_a_checkout_on_another_branch_no_longer_blocks_a_merge and
+    # test_a_merge_is_never_attempted_in_the_checkout.
 
-    ("checkout is on the base branch",
+    ("a merge is published only from a verified trial",
      "console/merge.py",
-     '    if head != base:',
+     '    if not trial:',
      '    if False:',
-     "tests/test_console_decide.py::test_a_checkout_on_another_branch_refuses"),
+     "tests/test_console_decide.py::test_a_merge_without_a_verified_trial_is_refused"),
 
-    ("a conflicted merge is aborted and records nothing",
+    ("the remote must not have moved under the verified merge",
      "console/merge.py",
-     '        if merged.returncode != 0:',
+     '        if not descends:',
      '        if False:',
-     "tests/test_console_decide.py::test_a_conflicting_merge_records_nothing_and_leaves_the_tree_clean"),
+     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote"
+     "::test_a_remote_that_moved_refuses_before_pushing"),
 
     ("the push is verified against the remote, not trusted",
      "console/merge.py",
@@ -507,12 +525,11 @@ CASES = [
      "tests/test_console_blocker.py::TestAnOutcomeCannotBeSetWithoutBeingLogged::"
      "test_a_refusal_is_logged_at_warning"),
 
-    ("the refusal names the fix, not just the state",
-     "console/merge.py",
-     '            detail=[f"fix: git -C {repo} checkout {base}",',
-     '            detail=[f"{repo}",',
-     "tests/test_console_blocker.py::TestTheRefusalSaysWhatToDo::"
-     "test_it_names_the_state_the_reason_and_the_fix"),
+    # REMOVED 9 Sep 2026 with the refusal it guarded. `preflight` no longer
+    # refuses when the checkout is not on the base branch, because the merge
+    # is not made there -- so there is no message left to name a fix in. See
+    # tests/test_console_blocker.py, which records the same reasoning where
+    # the tests used to be.
 
     ("the page asks preflight before offering the button",
      "console/app.py",
@@ -530,27 +547,21 @@ CASES = [
      "tests/test_console.py::TestTheRefusalIsShownBeforeTheButton::"
      "test_the_page_still_renders_when_preflight_cannot_run"),
 
-    # ---- the base must agree with its remote, before the merge ------------
-    ("a base behind its remote is refused before merging",
-     "console/merge.py",
-     "        if behind:",
-     "        if False:",
-     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
-     "test_a_base_behind_its_remote_refuses_before_merging"),
-
-    ("merge_and_push fetches before it asks",
-     "console/merge.py",
-     '    _git(repo, "fetch", remote, task["base_branch"])',
-     "    pass",
-     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
-     "test_merge_and_push_fetches_before_it_asks"),
-
-    ("an unresolved count refuses rather than proceeding",
-     "console/merge.py",
-     "        if behind is None or ahead is None:",
-     "        if False:",
-     "tests/test_console_decide.py::TestTheBaseMustAgreeWithItsRemote::"
-     "test_a_count_that_cannot_be_resolved_refuses_rather_than_reading_zero"),
+    # ---- the base must agree with its remote, before the PUSH -------------
+    #
+    # Three guards lived here and all three were about the check as it stood
+    # in preflight: refusing on `behind`, fetching into the checkout first so
+    # the comparison was fresh, and refusing when the count could not be
+    # resolved. The check MOVED into `publish` on 9 Sep 2026, where it runs in
+    # the trial clone against a remote fetched seconds earlier -- so the fetch
+    # into the checkout is gone (it was a write), and the comparison is a
+    # `merge-base --is-ancestor` rather than two counts, which cannot return
+    # "I could not look" as a number.
+    #
+    # Its replacement is "the remote must not have moved under the verified
+    # merge", above. `_count` survives only to put a number in the message,
+    # and its own None-not-zero property is still tested directly by
+    # test_count_itself_returns_none_when_git_fails.
 
     ("_count reports failure as None, not as zero",
      "console/merge.py",
