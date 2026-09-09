@@ -205,6 +205,20 @@ CASES = [
      "tests/test_console_decide.py::TestDecidedVia::"
      "test_an_unattended_decision_cannot_claim_a_review"),
 
+    # AUTO-DEPLOY. The two refusals that cannot be recovered from by reverting
+    # a commit: a migration, and deploying onto an already-drifted production.
+    ("a migration is never deployed unattended",
+     "console/autodeploy.py",
+     '    if migrations:',
+     '    if False:',
+     "tests/test_autodeploy.py::test_a_migration_in_the_range_is_never_deployed_unattended"),
+
+    ("a stale drift reading is not an OK",
+     "console/autodeploy.py",
+     '    if age is None or age > MAX_DRIFT_AGE:',
+     '    if False:',
+     "tests/test_autodeploy.py::test_a_stale_reading_is_not_an_OK"),
+
     # ---- the decision log's half of review.py ---------------------------
     ("a verdict needs a reason in words, not only a code",
      "review.py",

@@ -51,16 +51,16 @@
 
 work_type: candidate_producer
 repo: fleet
-# The fleet repository has no `main`: the work lives on
-# track-2-foundation. A task's base branch is immutable once it
+# `master` since 9 Sep 2026: track-2-foundation and spec/daily-brief were
+# consolidated into it and it is the trunk. A task's base branch is immutable once it
 # exists, so getting this wrong means abandoning the task rather
 # than editing it.
-base_branch: track-2-foundation
+base_branch: master
 contract_version: 1
 
 # ONE file. A producer emits one batch from one document.
 writable_paths:
-  - research/candidates-metorik-gap-2026-09-08.md
+  - research/candidates-metorik-gap-2026-09-09.md
 
 protected_paths:
   # the fleet floor, which the database requires by name

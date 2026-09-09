@@ -287,19 +287,41 @@ provenance belongs in `decided_via` and a fourth status would be the
 **The brief names them and prints the revert**, since the posture is "read the
 brief and revert anything wrong" and that should be copy-paste.
 
-**6.2 Auto-deploy is a timer, and it is the most conditional thing here.** It
-deploys only when ALL of:
+**6.2 Auto-deploy is a timer, and it is the most conditional thing here.**
 
-- the merge was clean and pushed;
-- the mutation check bit;
-- `drift-check.sh` was green BEFORE it started — deploying onto an already
-  drifted production compounds two problems;
-- **no migration is in the diff.** `api/alembic/**` and
-  `api/analytics/migrations/**` are floored, so an auto-task cannot write one.
-  If a spec needs a migration, that is a task a person runs. This is not a
-  safety margin, it is a hard exclusion: `deploy.sh` migrates before the code
-  swap, and an unattended migration is the one action here that git does not
-  make reversible.
+**It invokes `api/deploy.sh` rather than reimplementing one.** That script tags
+rollback images from the RUNNING containers before it builds, migrates before
+the code swap, and asserts the alembic head in the image against the head in
+the database while the old containers are still serving. Every one of those is
+a lesson somebody paid for, and a second deploy path would relearn them. So
+this decides WHETHER and `deploy.sh` decides HOW.
+
+Five refusals:
+
+1. **drift-check green before starting.** Deploying onto a production that
+   already disagrees with main compounds two problems into one incident.
+2. **The reading must be FRESH.** Both checks run every 15 minutes, so a
+   45-minute-old reading is the answer from whenever the check died. A stale OK
+   is not an OK — the same freshness rule `console/deploys.py` already applies
+   on the page.
+3. **No migration in the range.** `api/alembic/**` and
+   `api/analytics/migrations/**` are floored, so an unattended task cannot
+   write one; this refuses the case where a PERSON did and their commit is
+   riding along. Not a safety margin — a hard exclusion, because a migration is
+   the one thing here that reverting the commit does not undo.
+4. **Something the fleet merged must be in the range.** Pushing to main is not
+   asking for a deploy at 04:00. The fleet deploys its own work, not yours as a
+   side effect of running.
+5. Production not already on main — which is the ordinary night, and exits 0.
+
+**And it deploys the WHOLE range anyway.** You cannot deploy a subset of main,
+so when the fleet's merge triggers a deploy every commit ahead of production
+goes with it, including hand-written ones. That is stated here and listed in
+the brief rather than left to be discovered.
+
+**It is the one part of the fleet that is not sandboxed**, because `deploy.sh`
+needs the docker socket and a writable checkout. Deploying cannot be confined,
+which is the honest reason this is last and most conditional.
 
 ---
 

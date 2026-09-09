@@ -1,0 +1,31 @@
+# Deploy what the fleet merged.
+#
+# specs/unattended-operation.md §6.2. Separate from fleet-automerge for the
+# same reason automerge is separate from the runner: stopping deploys must not
+# mean stopping merges.
+#
+# It decides WHETHER and api/deploy.sh decides HOW. Five things stop it: a
+# drifted production, a STALE drift reading, a migration in the range, a range
+# containing no merge this fleet made, and production already being on main.
+[Unit]
+Description=Fleet auto-deploy (unattended)
+After=network-online.target docker.service
+Wants=network-online.target
+OnFailure=fleet-unit-failed@%n.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+# --dry-run FOR THE FIRST NIGHTS, exactly as fleet-automerge is. It decides
+# and prints; deploy.sh is not invoked. Take the flag out when the dry runs
+# have been read and are boring -- and not before auto-merge has had its own.
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_autodeploy.py --dry-run
+
+# NOT sandboxed the way the console is. deploy.sh builds images, runs
+# migrations and swaps containers: it needs the docker socket and a writable
+# platform checkout. That is the honest reason this is the LAST step and the
+# most conditional one -- it is the only part of the fleet that is not
+# confined, because deploying cannot be.
+NoNewPrivileges=true

@@ -1,0 +1,15 @@
+[Unit]
+Description=fleet auto-deploy, nightly
+Documentation=file:/home/ubuntu/fleet/specs/unattended-operation.md
+
+[Timer]
+Unit=fleet-autodeploy.service
+# 04:15: after fleet-automerge at 03:30 and after at least two runs of the
+# 15-minute drift check, so the reading this depends on is fresh rather than
+# from before the merge it is about to deploy.
+OnCalendar=*-*-* 04:15:00
+AccuracySec=1m
+Persistent=false
+
+[Install]
+WantedBy=timers.target
