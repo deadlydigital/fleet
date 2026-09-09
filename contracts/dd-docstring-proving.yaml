@@ -24,7 +24,20 @@ base_branch: main
 contract_version: 1
 
 writable_paths:
-  - api/analytics/routes/**
+  # api/analytics/routes/** would reach interventions.py, which 017
+  # floored, so the routes are named individually.
+  - api/analytics/routes/churn.py
+  - api/analytics/routes/customers.py
+  - api/analytics/routes/dashboard.py
+  - api/analytics/routes/geography.py
+  - api/analytics/routes/manifest.py
+  - api/analytics/routes/orders.py
+  - api/analytics/routes/products.py
+  - api/analytics/routes/revenue.py
+  - api/analytics/routes/segments.py
+  - api/analytics/routes/setup.py
+  - api/analytics/routes/sources.py
+  - api/analytics/routes/sync.py
 
 protected_paths:
   # the floor, which the database requires by name
@@ -41,6 +54,12 @@ protected_paths:
   - api/app.py
   - .github/**
 
+  # 017: the email floor. Fleet does not go near email; these are on
+  # protected_path_floor, so a contract omitting one cannot create a task.
+  - api/services/email_sender.py
+  - api/worker.py
+  - api/analytics/routes/interventions.py
+  - api/analytics/services/trigger_router.py
 verification:
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q api/analytics/routes/revenue.py
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/ruff check --select E9 api/analytics/routes/revenue.py

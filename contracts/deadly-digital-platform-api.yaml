@@ -70,12 +70,65 @@ repo: deadly-digital-platform
 base_branch: main
 contract_version: 1
 
+# WRITABLE PATHS ARE ENUMERATED, NOT GLOBBED, AND THAT IS DELIBERATE.
+#
+# 017 put the email surface on protected_path_floor, and the floor is checked
+# against writable_paths as well as against protected_paths. `api/analytics/
+# services/**` writable and `api/analytics/services/trigger_router.py` floored
+# is a contradiction the database refuses, correctly -- so the glob has to go.
+#
+# Enumerating is the price of the floor and it buys something: this list IS the
+# statement of what an unattended fleet may write, in one place, with no
+# wildcard hiding a file nobody thought about. See
+# specs/unattended-operation.md §2.
+#
+# api/app.py is gone. 19,300 lines, 180 endpoints, 39 of them email -- flows,
+# campaigns, deliverability, suppression. Analytics work has never needed it:
+# tasks 26 and 28 both wrote only under api/analytics/.
+#
+# api/services/** is gone. It holds email_sender.py AND template_renderer.py,
+# which renders email templates and injects open-tracking pixels. Parity work
+# on analytics does not reach into it, and a task that genuinely needs it is
+# one a person queues with a widened contract.
+#
+# NOT excluded, and worth a decision rather than a default:
+#   api/analytics/services/gdpr.py            erasure, inside the analytics tree
+#   api/analytics/services/intervention_tracker.py   marks interventions converted
+# Neither sends anything. gdpr.py has legal consequence and is the strongest
+# remaining candidate for the floor; it is left writable here because 017's
+# scope was the email surface and widening it silently would be the same
+# mistake in the other direction.
 writable_paths:
-  - api/app.py
-  - api/services/**
-  - api/analytics/routes/**
-  - api/analytics/services/**
   - api/analytics/models.py
+  # routes: all but interventions.py, which is floored
+  - api/analytics/routes/churn.py
+  - api/analytics/routes/customers.py
+  - api/analytics/routes/dashboard.py
+  - api/analytics/routes/geography.py
+  - api/analytics/routes/manifest.py
+  - api/analytics/routes/orders.py
+  - api/analytics/routes/products.py
+  - api/analytics/routes/revenue.py
+  - api/analytics/routes/segments.py
+  - api/analytics/routes/setup.py
+  - api/analytics/routes/sources.py
+  - api/analytics/routes/sync.py
+  # services: all but trigger_router.py, which is floored
+  - api/analytics/services/acquisition.py
+  - api/analytics/services/analytics_engine.py
+  - api/analytics/services/churn_engine.py
+  - api/analytics/services/date_range.py
+  - api/analytics/services/dirty_dates.py
+  - api/analytics/services/gdpr.py
+  - api/analytics/services/geography.py
+  - api/analytics/services/intervention_tracker.py
+  - api/analytics/services/metrics_repair.py
+  - api/analytics/services/order_meter.py
+  - api/analytics/services/order_query.py
+  - api/analytics/services/parity.py
+  - api/analytics/services/reconciliation.py
+  - api/analytics/services/segment_engine.py
+  - api/analytics/services/sync_engine.py
 
 protected_paths:
   - api/tests/**
@@ -92,6 +145,12 @@ protected_paths:
   - api/deploy.sh
   - api/docker-compose.yml
   - api/worker.py
+  # 017: the email floor. These five are also in protected_path_floor, so a
+  # contract omitting any of them cannot create a task at all.
+  - api/app.py
+  - api/services/email_sender.py
+  - api/analytics/routes/interventions.py
+  - api/analytics/services/trigger_router.py
 
 # api/.venv is gitignored and absent from a worktree, so the interpreter and
 # ruff are named by absolute path. They are read, never written.

@@ -7,6 +7,13 @@ checked in isolation.
 """
 from __future__ import annotations
 
+
+def _ensure(p):
+    """The fixtures write a nested analytics path now that api/app.py
+    is floored (017); its parent does not exist in a bare fixture repo."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
 import json
 import os
 import signal
@@ -21,14 +28,13 @@ import pytest
 from runner import reclaim, worktree
 
 REPO = "deadly-digital-platform"
-FLOOR = ["api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
-         "api/analytics/migrations/**", "platform/__tests__/**",
-         "platform/vitest.config.ts", "platform/playwright.config.ts"]
+from tests.support import PLATFORM_FLOOR
 
+FLOOR = PLATFORM_FLOOR
 
 def contract(**over) -> dict:
     c = {"work_type": "dd_feature", "repo": REPO, "base_branch": "main",
-         "contract_version": 1, "writable_paths": ["api/app.py"],
+         "contract_version": 1, "writable_paths": ["api/analytics/services/analytics_engine.py"],
          "protected_paths": list(FLOOR), "verification": ["true"],
          "max_diff_lines": 200, "max_cost_gbp": 3.00}
     c.update(over)
@@ -49,7 +55,7 @@ def repo(tmp_path) -> Path:
     sh(r, "git", "config", "user.email", "t@t")
     sh(r, "git", "config", "user.name", "t")
     (r / "api").mkdir()
-    (r / "api" / "app.py").write_text("x = 1\n")
+    _ensure(r / "api" / "analytics" / "services" / "analytics_engine.py").write_text("x = 1\n")
     sh(r, "git", "add", "-A")
     sh(r, "git", "commit", "-q", "-m", "base")
     return r
@@ -214,7 +220,7 @@ def test_the_worktree_is_removed_and_the_branch_kept(dsns, settings, console,
     wt_root = Path(settings["worktree_root"])
     wt_root.mkdir(parents=True, exist_ok=True)
     wt_path, _ = worktree.create(repo, wt_root, branch, "main")
-    (wt_path / "api" / "app.py").write_text("what the dead tick wrote\n")
+    _ensure(wt_path / "api" / "analytics" / "services" / "analytics_engine.py").write_text("what the dead tick wrote\n")
     make_stale(admin, tid)
 
     results = reclaim.reclaim(log=lambda *_: None)
@@ -463,7 +469,7 @@ def test_a_tick_reclaims_before_it_claims(dsns, settings, console, runner,
 
     def invoke(worktree_path, prompt, timeout_seconds, model=None,
                allowed_tools=(), readable=(), max_cost_usd=None):
-        (worktree_path / "api" / "app.py").write_text("x = 2\n")
+        _ensure(worktree_path / "api" / "analytics" / "services" / "analytics_engine.py").write_text("x = 2\n")
         return agent_mod.AgentResult(exit_code=0, timed_out=False,
                                      duration_ms=5, text="done", cost_usd=0.01)
 

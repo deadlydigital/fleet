@@ -13,15 +13,15 @@ from runner.boundary import GitError
 
 def test_expansion_filters_by_suffix():
     cmd, found, n = verify.expand_changed_files(
-        "ruff check {changed_files:.py}", ["api/app.py", "platform/a.tsx"])
-    assert (cmd, found, n) == ("ruff check api/app.py", True, 1)
+        "ruff check {changed_files:.py}", ["api/analytics/services/analytics_engine.py", "platform/a.tsx"])
+    assert (cmd, found, n) == ("ruff check api/analytics/services/analytics_engine.py", True, 1)
 
 
 def test_expansion_takes_several_suffixes():
     cmd, _, n = verify.expand_changed_files(
         "tsc {changed_files:.ts,.tsx}",
-        ["platform/a.tsx", "platform/b.ts", "api/app.py"])
-    assert n == 2 and "api/app.py" not in cmd
+        ["platform/a.tsx", "platform/b.ts", "api/analytics/services/analytics_engine.py"])
+    assert n == 2 and "api/analytics/services/analytics_engine.py" not in cmd
 
 
 def test_expansion_without_a_filter_takes_everything():
@@ -71,9 +71,9 @@ def test_a_run_with_one_real_check_and_one_skipped_passes(tmp_path):
 
 def test_the_expanded_command_is_recorded(tmp_path):
     result = verify.run(tmp_path, ["true {changed_files:.py}"], 30,
-                        changed=["api/app.py"])
+                        changed=["api/analytics/services/analytics_engine.py"])
     assert result.checks[0].command == "true {changed_files:.py}"
-    assert result.checks[0].expanded == "true api/app.py"
+    assert result.checks[0].expanded == "true api/analytics/services/analytics_engine.py"
 
 
 # ---- the runner's facts reach the checks ---------------------------------
@@ -82,7 +82,7 @@ def test_checks_receive_the_runner_derived_facts(tmp_path):
     result = verify.run(
         tmp_path,
         ['test "$FLEET_BASE_SHA" = abc123 && test -n "$FLEET_CHANGED_FILES"'],
-        30, changed=["api/app.py"], facts={"FLEET_BASE_SHA": "abc123"})
+        30, changed=["api/analytics/services/analytics_engine.py"], facts={"FLEET_BASE_SHA": "abc123"})
     assert result.passed
 
 

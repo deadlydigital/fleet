@@ -47,6 +47,12 @@ protected_paths:
   - api/docker-compose.yml
   - api/worker.py
 
+  # 017: the email floor. Fleet does not go near email; these are on
+  # protected_path_floor, so a contract omitting one cannot create a task.
+  - api/app.py
+  - api/services/email_sender.py
+  - api/analytics/routes/interventions.py
+  - api/analytics/services/trigger_router.py
 # api/.venv is gitignored and absent from a worktree, so the interpreter and
 # ruff are named by absolute path. They are read, never written.
 #

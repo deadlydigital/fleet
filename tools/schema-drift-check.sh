@@ -31,11 +31,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Every migration, in order. 015, 016 and 017 were missing from this list
+# until 9 Sep 2026 -- so the comparison was being made against a schema three
+# migrations behind, and drift in anything they touched was invisible to the
+# check whose whole job is finding drift.
 MIGRATIONS=(001_v1_core 002_proposals 003_tasks 004_console_reader
             005_console_decisions 006_verdict_coverage 007_research_floor
             008_task_reclaim 009_task_reclaims 010_decision_log
             011_proposal_product 012_daily_brief 013_approval_surface
-            014_monthly_credit)
+            014_monthly_credit 015_sentry_detector 016_aws_cost_detector
+            017_email_floor)
 SCRATCH="${TMPDIR:-/tmp}/fleet-drift-$$"
 LOCAL_DB="fleet_fromfiles"
 SOCKET="${PGHOST:-/var/run/postgresql}"

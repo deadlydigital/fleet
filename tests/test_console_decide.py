@@ -10,6 +10,13 @@ is deleted is not testing the guard.
 """
 from __future__ import annotations
 
+
+def _ensure(p):
+    """The fixtures write a nested analytics path now that api/app.py
+    is floored (017); its parent does not exist in a bare fixture repo."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
 import json
 import shutil
 import subprocess
@@ -22,14 +29,13 @@ from fastapi.testclient import TestClient
 from console import decide, merge
 
 REPO = "deadly-digital-platform"
-FLOOR = ["api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
-         "api/analytics/migrations/**", "platform/__tests__/**",
-         "platform/vitest.config.ts", "platform/playwright.config.ts"]
+from tests.support import PLATFORM_FLOOR
 
+FLOOR = PLATFORM_FLOOR
 
 def contract(**over) -> dict:
     c = {"work_type": "dd_feature", "repo": REPO, "base_branch": "main",
-         "contract_version": 1, "writable_paths": ["api/app.py"],
+         "contract_version": 1, "writable_paths": ["api/analytics/services/analytics_engine.py"],
          "protected_paths": list(FLOOR), "verification": ["true"],
          "max_diff_lines": 200, "max_cost_gbp": 3.00}
     c.update(over)
@@ -59,7 +65,7 @@ def repo(tmp_path, origin) -> Path:
     sh(r, "git", "config", "user.email", "t@t")
     sh(r, "git", "config", "user.name", "t")
     (r / "api").mkdir()
-    (r / "api" / "app.py").write_text("x = 1\n")
+    _ensure(r / "api" / "analytics" / "services" / "analytics_engine.py").write_text("x = 1\n")
     sh(r, "git", "add", "-A")
     sh(r, "git", "commit", "-q", "-m", "base")
     sh(r, "git", "remote", "add", "origin", str(origin))
@@ -68,7 +74,7 @@ def repo(tmp_path, origin) -> Path:
 
 
 def branch_with_change(repo: Path, name: str, body: str = "x = 2\n",
-                       path: str = "api/app.py") -> tuple[str, str]:
+                       path: str = "api/analytics/services/analytics_engine.py") -> tuple[str, str]:
     """Returns (base_sha_at_branch_point, branch_tip)."""
     base = sh(repo, "git", "rev-parse", "HEAD").strip()
     sh(repo, "git", "checkout", "-q", "-b", name)
@@ -102,7 +108,7 @@ def task(console, admin, runner, repo):
         "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
         " VALUES (%s,1,'PATCH_PROPOSED','fleet-runner/agent',%s)",
         (rid, json.dumps({"base_commit_sha": base_sha, "patch_commit_sha": tip,
-                          "files_changed": ["api/app.py"], "diff_lines": 1})))
+                          "files_changed": ["api/analytics/services/analytics_engine.py"], "diff_lines": 1})))
     runner.execute(
         "UPDATE tasks SET status='READY_FOR_REVIEW', branch_name=%s,"
         " completed_at=now() - interval '30 minutes' WHERE id=%s", (branch, tid))
@@ -129,7 +135,7 @@ def trial(tmp_path):
         rv = reverify.run(repo, tmp_path / "merge-trials", dict(task["task"]),
                           contract(**over), task["branch"],
                           recorded_base=task["base_sha"],
-                          changed_files=["api/app.py"], keep_on_success=True)
+                          changed_files=["api/analytics/services/analytics_engine.py"], keep_on_success=True)
         built.append(rv)
         return rv
 
@@ -239,14 +245,14 @@ def test_a_dirty_working_tree_no_longer_blocks_a_merge(dsns, repo, task, origin,
     working tree cannot affect the outcome — and refusing on it would only
     block merges that are perfectly safe.
     """
-    (repo / "api" / "app.py").write_text("uncommitted\n")
+    _ensure(repo / "api" / "analytics" / "services" / "analytics_engine.py").write_text("uncommitted\n")
     rv = trial(repo, task)
     r = merge.merge_and_push(repo, task["task"], task["branch"],
                              task["base_sha"], task["tip"], reverification=rv)
     assert r.ok, r.reason
     assert on_remote(origin, "main") == rv.merged_sha
     # And the uncommitted work is still there, untouched.
-    assert (repo / "api" / "app.py").read_text() == "uncommitted\n"
+    assert (repo / "api" / "analytics" / "services" / "analytics_engine.py").read_text() == "uncommitted\n"
 
 
 def test_a_checkout_on_another_branch_no_longer_blocks_a_merge(
@@ -290,7 +296,7 @@ def test_a_conflicting_merge_records_nothing_and_leaves_the_tree_clean(
     could not be left dirty because nothing was ever done to it.
     """
     # main changes the same line the branch changed
-    (repo / "api" / "app.py").write_text("x = 99\n")
+    _ensure(repo / "api" / "analytics" / "services" / "analytics_engine.py").write_text("x = 99\n")
     sh(repo, "git", "add", "-A")
     sh(repo, "git", "commit", "-q", "-m", "conflicting change on main")
 

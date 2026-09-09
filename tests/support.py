@@ -7,6 +7,34 @@ from detectors import base
 from detectors.reconciliation import ReconciliationDetector
 
 
+#: The protected-path floor for `deadly-digital-platform`, as the database
+#: holds it. ONE COPY, because there were eight and 017 broke all of them at
+#: once: every fixture built a contract missing the five email globs, so 98
+#: tests failed on `contract for deadly-digital-platform does not protect ...`
+#: — none of them about what they were testing.
+#:
+#: `test_email_floor.py::test_the_test_floor_matches_the_database` asserts this
+#: list is what `protected_path_floor` actually contains, so the next migration
+#: that moves the floor fails ONE named test instead of a hundred unrelated
+#: ones.
+PLATFORM_FLOOR = [
+    "api/tests/**",
+    "api/pytest.ini",
+    "api/ruff.toml",
+    "api/alembic/**",
+    "api/analytics/migrations/**",
+    "platform/__tests__/**",
+    "platform/vitest.config.ts",
+    "platform/playwright.config.ts",
+    # 017: the email floor. specs/unattended-operation.md §2.
+    "api/app.py",
+    "api/services/email_sender.py",
+    "api/worker.py",
+    "api/analytics/routes/interventions.py",
+    "api/analytics/services/trigger_router.py",
+]
+
+
 def settled_slots(conn, count: int = 4, cadence: str = "1 hour",
                   settle_lag: str = "15 minutes") -> list[datetime]:
     """On-grid, already-settled slot ends, newest first."""

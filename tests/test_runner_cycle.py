@@ -23,12 +23,12 @@ from runner import cycle
 
 REPO = "deadly-digital-platform"
 
-FLOOR = ["api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
-         "api/analytics/migrations/**", "platform/__tests__/**",
-         "platform/vitest.config.ts", "platform/playwright.config.ts"]
+from tests.support import PLATFORM_FLOOR
+
+FLOOR = PLATFORM_FLOOR
 
 FILES = {
-    "api/app.py": "def app():\n    '''old docstring'''\n    return 1\n",
+    "api/analytics/services/analytics_engine.py": "def app():\n    '''old docstring'''\n    return 1\n",
     "api/services/thing.py": "value = 1\n",
     "api/tests/test_thing.py": "def test_v():\n    assert True\n",
     "api/pytest.ini": "[pytest]\n",
@@ -92,7 +92,8 @@ def contract(**over) -> dict:
         "repo": REPO,
         "base_branch": "main",
         "contract_version": 1,
-        "writable_paths": ["api/app.py", "api/services/**", "platform/app/**"],
+        "writable_paths": ["api/analytics/services/analytics_engine.py",
+                           "platform/app/**"],
         "protected_paths": list(FLOOR),
         "verification": ["true"],
         "max_diff_lines": 200,
@@ -151,8 +152,8 @@ def test_a_clean_task_reaches_ready_for_review(dsns, settings, console,
                                                monkeypatch):
     tid = queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new docstring'''\n    return 1\n"},
-        reported=["api/app.py"]))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new docstring'''\n    return 1\n"},
+        reported=["api/analytics/services/analytics_engine.py"]))
 
     assert result.outcome == "READY_FOR_REVIEW", result.reason
     assert result.task_id == tid
@@ -168,7 +169,7 @@ def test_a_clean_task_reaches_ready_for_review(dsns, settings, console,
 def test_the_run_and_its_steps_are_recorded(dsns, settings, console, monkeypatch):
     tid = queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
 
     steps = console.execute(
         "SELECT sequence, step_type, actor, payload FROM run_steps"
@@ -176,7 +177,7 @@ def test_the_run_and_its_steps_are_recorded(dsns, settings, console, monkeypatch
     assert [s["step_type"] for s in steps] == ["PATCH_PROPOSED", "VERIFICATION_RUN"]
 
     patch, verification = steps
-    assert patch["payload"]["files_changed"] == ["api/app.py"]
+    assert patch["payload"]["files_changed"] == ["api/analytics/services/analytics_engine.py"]
     assert patch["payload"]["derived_by"] == "runner"
     assert verification["payload"]["result"] == "PASS"
     assert verification["payload"]["boundary_clean"] is True
@@ -192,7 +193,7 @@ def test_the_run_ends_awaiting_a_human_and_never_deployed(dsns, settings,
                                                           console, monkeypatch):
     queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     row = console.execute("SELECT status FROM runs WHERE id=%s",
                           (result.run_id,)).fetchone()
     assert row["status"] == "AWAITING_HUMAN"
@@ -206,9 +207,9 @@ def test_an_agent_that_edits_the_suite_and_denies_it_is_refused(
     """The case the runner exists for."""
     tid = queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n",
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n",
          "api/tests/test_thing.py": "def test_v():\n    pass  # relaxed\n"},
-        reported=["api/app.py"]))          # the agent's story
+        reported=["api/analytics/services/analytics_engine.py"]))          # the agent's story
 
     assert result.outcome == "FAILED"
     assert result.reason == "boundary violation"
@@ -222,13 +223,13 @@ def test_an_agent_that_edits_the_suite_and_denies_it_is_refused(
 def test_the_divergence_is_on_the_record(dsns, settings, console, monkeypatch):
     queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n",
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n",
          "api/tests/test_thing.py": "def test_v():\n    pass\n"},
-        reported=["api/app.py"]))
+        reported=["api/analytics/services/analytics_engine.py"]))
     payload = console.execute(
         "SELECT payload FROM run_steps WHERE run_id=%s AND sequence=1",
         (result.run_id,)).fetchone()["payload"]
-    assert payload["agent_reported_files"] == ["api/app.py"]
+    assert payload["agent_reported_files"] == ["api/analytics/services/analytics_engine.py"]
     assert payload["divergence"]["touched_but_unclaimed"] == \
         ["api/tests/test_thing.py"]
 
@@ -257,7 +258,7 @@ def test_verification_never_runs_on_a_dirty_boundary(dsns, settings, console,
 def test_deleting_a_test_is_refused(dsns, settings, console, monkeypatch):
     queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
         deletes=["api/tests/test_thing.py"]))
     assert result.outcome == "FAILED"
     assert "api/tests/test_thing.py" in result.verdict.protected_hits
@@ -277,7 +278,7 @@ def test_failing_verification_fails_the_task(dsns, settings, console,
                                              monkeypatch):
     tid = queue_task(console, contract=contract(verification=["false"]))
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert result.outcome == "FAILED"
     assert result.reason == "verification failed"
     assert result.verdict.clean            # the boundary was fine
@@ -298,7 +299,7 @@ def test_a_timeout_is_a_failure_and_is_recorded(dsns, settings, console,
                                                 monkeypatch):
     tid = queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "x\n"}, timed_out=True))
+        {"api/analytics/services/analytics_engine.py": "x\n"}, timed_out=True))
     assert result.outcome == "FAILED"
     assert "wall clock" in result.reason
     payload = console.execute(
@@ -323,7 +324,7 @@ def test_a_second_attempt_gets_its_own_branch(dsns, settings, console,
     tid = queue_task(console, max_attempts=2)
     run_tick(monkeypatch, fake_agent({}))
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert result.outcome == "READY_FOR_REVIEW", result.reason
     assert result.branch == f"fleet/task-{tid}.2"
 
@@ -334,7 +335,7 @@ def test_one_task_per_tick(dsns, settings, console, monkeypatch):
     a = queue_task(console, title="first", priority=10)
     b = queue_task(console, title="second", priority=20)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert result.task_id == a
     assert console.execute("SELECT status FROM tasks WHERE id=%s",
                            (b,)).fetchone()["status"] == "QUEUED"
@@ -352,7 +353,7 @@ def test_the_checkout_is_never_touched(dsns, settings, console, monkeypatch,
     before_status = sh(platform_repo, "git", "status", "--porcelain").strip()
     queue_task(console)
     run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert sh(platform_repo, "git", "rev-parse", "HEAD").strip() == before_head
     assert sh(platform_repo, "git", "status", "--porcelain").strip() == before_status
 
@@ -361,7 +362,7 @@ def test_the_worktree_is_removed_afterwards(dsns, settings, console,
                                             monkeypatch, tmp_path):
     queue_task(console)
     run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     leftovers = list((tmp_path / "worktrees").glob("*")) \
         if (tmp_path / "worktrees").exists() else []
     assert leftovers == []
@@ -373,7 +374,7 @@ def test_cost_is_settled_against_the_reservation(dsns, settings, console,
                                                  admin, monkeypatch):
     queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
         cost_usd=1.00))
     assert result.cost_gbp == pytest.approx(0.79)
     row = console.execute(
@@ -391,7 +392,7 @@ def test_an_overspend_is_capped_and_recorded(dsns, settings, console,
     reservation closes at its bound and the true figure is not lost."""
     queue_task(console, max_cost_gbp="0.10")
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
         cost_usd=5.00))
     assert result.cost_gbp == pytest.approx(0.10)
     # The true figure is not lost. Which of the two overspend notes is
@@ -435,7 +436,7 @@ def test_the_agent_never_sees_the_linked_dependencies(dsns, settings, console,
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
                readable=(), max_cost_usd=None):
         seen["linked_during_agent"] = (worktree / "platform/node_modules").exists()
-        (worktree / "api/app.py").write_text(
+        (worktree / "api/analytics/services/analytics_engine.py").write_text(
             "def app():\n    '''new'''\n    return 1\n")
         return agent_mod.AgentResult(exit_code=0, timed_out=False,
                                      duration_ms=10, text="done", cost_usd=0.01)
@@ -455,7 +456,7 @@ def test_the_link_exists_for_verification_and_is_gone_afterwards(
     queue_task(console, contract=c)
 
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert result.outcome == "READY_FOR_REVIEW", result.reason
     assert result.verification.passed          # the check saw the link
     assert (deps / "pkg").exists()             # and the real tree survived
@@ -468,7 +469,7 @@ def test_a_check_filtered_to_untouched_file_types_is_skipped(
     c = contract(verification=["true", "false # {changed_files:.tsx}"])
     queue_task(console, contract=c)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert result.outcome == "READY_FOR_REVIEW", result.reason
     assert [ch.ran for ch in result.verification.checks] == [True, False]
 
@@ -479,7 +480,7 @@ def test_a_run_where_every_check_was_skipped_fails(dsns, settings, console,
     c = contract(verification=["true # {changed_files:.tsx}"])
     queue_task(console, contract=c)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"}))
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
     assert result.outcome == "FAILED"
     assert result.reason == "verification failed"
 
@@ -489,10 +490,10 @@ def test_checks_are_given_the_derived_change_not_the_agents_account(
     """$FLEET_CHANGED_FILES comes from git, so a lying agent cannot narrow
     what the lint gate looks at."""
     c = contract(verification=[
-        'test "$FLEET_CHANGED_FILES" = "api/app.py" && test -n "$FLEET_BASE_SHA"'])
+        'test "$FLEET_CHANGED_FILES" = "api/analytics/services/analytics_engine.py" && test -n "$FLEET_BASE_SHA"'])
     queue_task(console, contract=c)
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
         reported=[]))                      # the agent claims it changed nothing
     assert result.outcome == "READY_FOR_REVIEW", result.reason
 
@@ -509,7 +510,7 @@ def test_the_reservation_becomes_the_cli_spend_cap(dsns, settings, console,
     """A reservation the agent is never told about caps nothing."""
     tid = queue_task(console, max_cost_gbp=3.00)
     seen: dict[str, float | None] = {}
-    inner = fake_agent({"api/app.py": "def app():\n    '''new'''\n    return 1\n"})
+    inner = fake_agent({"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"})
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
                readable=(), max_cost_usd=None):
@@ -531,7 +532,7 @@ def test_reaching_the_cap_fails_the_task_and_says_why(dsns, settings, console,
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
                readable=(), max_cost_usd=None):
-        (worktree / "api/app.py").write_text("half a change\n")
+        (worktree / "api/analytics/services/analytics_engine.py").write_text("half a change\n")
         return agent_mod.AgentResult(
             exit_code=1, timed_out=False, duration_ms=900,
             budget_exhausted=True, text="", cost_usd=4.20,
@@ -553,7 +554,7 @@ def test_an_overshoot_with_the_cap_fired_is_reported_as_expected(
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
                readable=(), max_cost_usd=None):
-        (worktree / "api/app.py").write_text("x\n")
+        (worktree / "api/analytics/services/analytics_engine.py").write_text("x\n")
         return agent_mod.AgentResult(
             exit_code=1, timed_out=False, duration_ms=900,
             budget_exhausted=True, text="", cost_usd=over_usd,
@@ -574,7 +575,7 @@ def test_an_overshoot_with_no_exhaustion_is_named_as_a_dead_breaker(
     runaway_usd = 8.75 / float(settings["usd_to_gbp"])
 
     result = run_tick(monkeypatch, fake_agent(
-        {"api/app.py": "def app():\n    '''new'''\n    return 1\n"},
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
         cost_usd=runaway_usd))
 
     notes = " ".join(result.notes)

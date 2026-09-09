@@ -31,17 +31,14 @@ import pytest
 REPO = "deadly-digital-platform"
 PRODUCT = "deadly_digital"
 
-FLOOR = [
-    "api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
-    "api/analytics/migrations/**", "platform/__tests__/**",
-    "platform/vitest.config.ts", "platform/playwright.config.ts",
-]
+from tests.support import PLATFORM_FLOOR
 
+FLOOR = PLATFORM_FLOOR
 
 def contract(repo: str = REPO) -> str:
     return json.dumps({
         "work_type": "dd_feature", "repo": repo, "base_branch": "main",
-        "writable_paths": ["api/services/**"], "protected_paths": list(FLOOR),
+        "writable_paths": ["platform/app/**"], "protected_paths": list(FLOOR),
         "verification": ["pytest api/tests/"], "max_diff_lines": 800,
     })
 

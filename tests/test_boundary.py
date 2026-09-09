@@ -6,6 +6,13 @@ property anyone needs.
 """
 from __future__ import annotations
 
+
+def _ensure(p):
+    """The fixtures write a nested analytics path now that api/app.py
+    is floored (017); its parent does not exist in a bare fixture repo."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
 import subprocess
 from pathlib import Path
 
@@ -14,7 +21,7 @@ import pytest
 from runner import boundary
 
 CONTRACT = {
-    "writable_paths": ["api/services/**", "api/app.py", "platform/app/**"],
+    "writable_paths": ["platform/app/**", "api/analytics/services/analytics_engine.py", "platform/app/**"],
     "protected_paths": ["api/tests/**", "api/pytest.ini", "api/alembic/**"],
     "max_diff_lines": 100,
 }
@@ -35,7 +42,7 @@ def repo(tmp_path) -> Path:
     run(r, "git", "config", "user.email", "t@t")
     run(r, "git", "config", "user.name", "t")
     for p, body in [
-        ("api/app.py", "def app():\n    '''old'''\n"),
+        ("api/analytics/services/analytics_engine.py", "def app():\n    '''old'''\n"),
         ("api/services/thing.py", "x = 1\n"),
         ("api/tests/test_thing.py", "def test_x():\n    assert True\n"),
         ("api/pytest.ini", "[pytest]\n"),
@@ -84,10 +91,10 @@ def test_single_star_does_not_cross_a_separator():
 
 def test_a_clean_change_inside_the_contract(repo):
     base = base_sha(repo)
-    (repo / "api" / "app.py").write_text("def app():\n    '''new'''\n")
+    _ensure(repo / "api" / "analytics" / "services" / "analytics_engine.py").write_text("def app():\n    '''new'''\n")
     assert boundary.commit_agent_work(repo, "work")
     change = boundary.derive(repo, base)
-    assert change.paths == ["api/app.py"]
+    assert change.paths == ["api/analytics/services/analytics_engine.py"]
     verdict = boundary.enforce(change, CONTRACT)
     assert verdict.clean
     assert verdict.reasons() == []
@@ -191,7 +198,7 @@ def test_no_change_at_all(repo):
 def test_ignored_writes_are_reported_not_punished(repo):
     base = base_sha(repo)
     (repo / "debug.log").write_text("noise\n")
-    (repo / "api" / "app.py").write_text("def app():\n    '''new'''\n")
+    _ensure(repo / "api" / "analytics" / "services" / "analytics_engine.py").write_text("def app():\n    '''new'''\n")
     boundary.commit_agent_work(repo, "work")
     change = boundary.derive(repo, base)
     assert "debug.log" in change.ignored_writes
@@ -236,7 +243,7 @@ def test_an_honest_report_gets_no_credit_either(repo):
 def test_suite_digest_is_stable_when_the_suite_does_not_move(repo):
     base = base_sha(repo)
     before = boundary.suite_digest(repo, base, CONTRACT["protected_paths"])
-    (repo / "api" / "app.py").write_text("def app():\n    '''new'''\n")
+    _ensure(repo / "api" / "analytics" / "services" / "analytics_engine.py").write_text("def app():\n    '''new'''\n")
     boundary.commit_agent_work(repo, "work")
     after = boundary.suite_digest(repo, "HEAD", CONTRACT["protected_paths"])
     assert before == after

@@ -18,15 +18,14 @@ from fastapi.testclient import TestClient
 from tests import support_proposals as sp
 
 REPO = "deadly-digital-platform"
-FLOOR = ["api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
-         "api/analytics/migrations/**", "platform/__tests__/**",
-         "platform/vitest.config.ts", "platform/playwright.config.ts"]
+from tests.support import PLATFORM_FLOOR
 
+FLOOR = PLATFORM_FLOOR
 
 def contract(**over) -> dict:
     c = {"work_type": "dd_feature", "repo": REPO, "base_branch": "main",
          "contract_version": 1,
-         "writable_paths": ["api/app.py"], "protected_paths": list(FLOOR),
+         "writable_paths": ["api/analytics/services/analytics_engine.py"], "protected_paths": list(FLOOR),
          "verification": ["true"], "max_diff_lines": 200, "max_cost_gbp": 3.00}
     c.update(over)
     return c
@@ -178,15 +177,15 @@ def test_task_detail_shows_the_spec_and_the_contract(client, a_task):
     body = client.get(f"/tasks/{tid}").text
     assert "# the spec body" in body
     assert "api/tests/**" in body          # a protected glob
-    assert "api/app.py" in body            # a writable glob
+    assert "api/analytics/services/analytics_engine.py" in body            # a writable glob
 
 
 def test_divergence_is_surfaced(client, a_task, admin):
     """It is recorded so under-reporting is visible after the fact, and it is
     invisible unless something surfaces it."""
     tid, rid = a_task
-    add_steps(admin, rid, reported=["api/app.py"],
-              derived=["api/app.py", "api/tests/test_x.py"],
+    add_steps(admin, rid, reported=["api/analytics/services/analytics_engine.py"],
+              derived=["api/analytics/services/analytics_engine.py", "api/tests/test_x.py"],
               divergence={"touched_but_unclaimed": ["api/tests/test_x.py"],
                           "claimed_but_untouched": []})
     body = client.get(f"/tasks/{tid}").text
@@ -196,15 +195,15 @@ def test_divergence_is_surfaced(client, a_task, admin):
 
 def test_an_honest_agent_is_reported_as_such(client, a_task, admin):
     tid, rid = a_task
-    add_steps(admin, rid, reported=["api/app.py"], derived=["api/app.py"],
+    add_steps(admin, rid, reported=["api/analytics/services/analytics_engine.py"], derived=["api/analytics/services/analytics_engine.py"],
               divergence={"touched_but_unclaimed": [], "claimed_but_untouched": []})
     assert "matches git exactly" in client.get(f"/tasks/{tid}").text
 
 
 def test_verification_checks_are_shown_with_exit_and_duration(client, a_task, admin):
     tid, rid = a_task
-    add_steps(admin, rid, reported=[], derived=["api/app.py"],
-              divergence={"touched_but_unclaimed": ["api/app.py"],
+    add_steps(admin, rid, reported=[], derived=["api/analytics/services/analytics_engine.py"],
+              divergence={"touched_but_unclaimed": ["api/analytics/services/analytics_engine.py"],
                           "claimed_but_untouched": []})
     body = client.get(f"/tasks/{tid}").text
     assert "pytest -q" in body and "12ms" in body
@@ -213,7 +212,7 @@ def test_verification_checks_are_shown_with_exit_and_duration(client, a_task, ad
 def test_a_missing_branch_says_so_rather_than_showing_nothing(client, a_task, admin):
     """repo_root is pointed at /nonexistent by the fixture."""
     tid, rid = a_task
-    add_steps(admin, rid, reported=[], derived=["api/app.py"], divergence={})
+    add_steps(admin, rid, reported=[], derived=["api/analytics/services/analytics_engine.py"], divergence={})
     assert "no git repository" in client.get(f"/tasks/{tid}").text
 
 

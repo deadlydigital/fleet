@@ -105,7 +105,7 @@ def test_a_missing_or_malformed_report_is_none():
 
 def test_the_prompt_states_the_boundary():
     task = {"spec_md": "# do it"}
-    contract = {"writable_paths": ["api/app.py"],
+    contract = {"writable_paths": ["api/analytics/services/analytics_engine.py"],
                 "protected_paths": ["api/tests/**"],
                 "max_diff_lines": 800}
     prompt = agent.build_prompt(task, contract)

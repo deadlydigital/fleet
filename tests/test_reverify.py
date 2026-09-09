@@ -10,10 +10,9 @@ import pytest
 from console import merge, reverify
 
 REPO = "deadly-digital-platform"
-FLOOR = ["api/tests/**", "api/pytest.ini", "api/ruff.toml", "api/alembic/**",
-         "api/analytics/migrations/**", "platform/__tests__/**",
-         "platform/vitest.config.ts", "platform/playwright.config.ts"]
+from tests.support import PLATFORM_FLOOR
 
+FLOOR = PLATFORM_FLOOR
 
 def contract(**over) -> dict:
     c = {"work_type": "dd_feature", "repo": REPO, "base_branch": "main",

@@ -14,24 +14,16 @@ import pytest
 
 REPO = "deadly-digital-platform"
 
-FLOOR = [
-    "api/tests/**",
-    "api/pytest.ini",
-    "api/ruff.toml",
-    "api/alembic/**",
-    "api/analytics/migrations/**",
-    "platform/__tests__/**",
-    "platform/vitest.config.ts",
-    "platform/playwright.config.ts",
-]
+from tests.support import PLATFORM_FLOOR
 
+FLOOR = PLATFORM_FLOOR
 
 def contract(**over) -> str:
     c = {
         "work_type": "dd_feature",
         "repo": REPO,
         "base_branch": "main",
-        "writable_paths": ["api/services/**", "platform/app/**"],
+        "writable_paths": ["platform/app/**", "docs/**"],
         "protected_paths": list(FLOOR),
         "verification": ["pytest api/tests/"],
         "max_diff_lines": 800,
@@ -205,7 +197,7 @@ def test_contract_is_frozen_once_running(console, runner):
     tid = add_task(console)
     runner.execute("SELECT claim_task(NULL)")
     runner.commit()
-    wide = contract(writable_paths=["api/services/**", "platform/app/**", "docs/**"])
+    wide = contract(writable_paths=["platform/app/**", "docs/**", "scripts/**"])
     with pytest.raises(psycopg.errors.RaiseException, match="frozen"):
         console.execute(
             "UPDATE tasks SET acceptance_contract=%s WHERE id=%s", (wide, tid))
@@ -215,7 +207,7 @@ def test_contract_may_be_corrected_while_queued(console):
     tid = add_task(console)
     console.execute(
         "UPDATE tasks SET acceptance_contract=%s WHERE id=%s",
-        (contract(writable_paths=["api/services/**"]), tid))
+        (contract(writable_paths=["platform/app/**"]), tid))
     console.commit()
 
 
