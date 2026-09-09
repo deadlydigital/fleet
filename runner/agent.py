@@ -69,6 +69,72 @@ class AgentResult:
                 and not self.budget_exhausted)
 
 
+
+def _creatable_note(contract: dict) -> str:
+    """The one exception to the protected list, stated where it is read.
+
+    ADD, never modify. The exception is granted by runner.boundary on the diff
+    STATUS git reports, so an agent that edits an existing file under one of
+    these globs is refused exactly as before.
+    """
+    globs = list(contract.get("creatable_paths") or [])
+    if not globs:
+        return ""
+    listed = "\n".join(f"  - {g}" for g in globs)
+    return f"""
+## One exception, and it is an obligation rather than a permission
+
+You MUST ADD exactly one new file matching one of these:
+
+{listed}
+
+That is a test, and it is the only thing in this run that can show the new
+behaviour WORKS rather than that nothing broke. The suite passing proves the
+second; only a test that fails without your change proves the first, and the
+gate runs your test against the tree as it was before you touched it and
+refuses the branch if it passes there.
+
+So it must assert the behaviour the spec asked for, specifically enough to
+fail if that behaviour is absent. A test that would pass against either tree
+fails this run.
+
+ADD, never modify. Creating a file here is permitted; editing any file that
+already exists under these paths is refused exactly as the protected list
+says. Add ONE file, not several -- each extra is another thing that has to be
+shown to bite, and the gate refuses a change that adds more than one.
+"""
+
+
+def _paired_note(contract: dict) -> str:
+    """Files that must land together, with the contract's own reason.
+
+    The `why` is printed rather than summarised: it is the sentence somebody
+    wrote about this specific pair, and an agent deciding what "together"
+    means needs the reason, not the rule.
+    """
+    groups = list(contract.get("paired_paths") or [])
+    if not groups:
+        return ""
+    blocks = []
+    for group in groups:
+        paths = "\n".join(f"  - {p}" for p in (group.get("paths") or []))
+        why = (group.get("why") or "").strip()
+        blocks.append(f"{paths}\n\n  Why: {why}")
+    body = "\n\n".join(blocks)
+    return f"""
+## These change together, or not at all
+
+{body}
+
+A run that changes some of a group and not the rest is REFUSED, however good
+the part it did. This is not a style rule: half of such a change is usually
+worse than none of it, which is what the reason above says.
+
+If you conclude the whole group cannot be changed, change none of it and say
+why. That is a real answer. Landing the easy half is not.
+"""
+
+
 def build_prompt(task: dict, contract: dict, *, paths_file=None) -> str:
     """The spec, plus the boundary stated plainly.
 
@@ -80,9 +146,30 @@ def build_prompt(task: dict, contract: dict, *, paths_file=None) -> str:
     generated per run and its location is not knowable when the task is
     written. The spec used to hardcode `reference/PATHS.md`, which was a
     guess about a file the runner had not yet decided where to put.
+
+    CREATABLE AND PAIRED PATHS ARE STATED BECAUSE OMITTING THEM MADE THE
+    PROMPT WRONG, not merely incomplete.
+
+    The protected list is introduced with "must not edit under any
+    circumstances", and `platform/__tests__/**` and `api/tests/**` are on it.
+    A contract with `creatable_paths` and `new_test_bites.sh` in its
+    verification requires the agent to ADD a file inside exactly that tree --
+    so an agent that believed the sentence above could not pass the gate, and
+    one that passed it did so by disregarding the only line in the prompt
+    written in absolute terms. Neither is a thing to build a fleet on.
+
+    `paired_paths` is the same argument with a worse failure: an agent that
+    does not know two files must move together will land one of them, and the
+    check will refuse a branch that is otherwise good. Telling it after the
+    fact costs a whole run.
+
+    No decision rests on this text. Everything is re-derived from git and
+    judged by runner.boundary and the contract's own checks.
     """
     writable = "\n".join(f"  - {p}" for p in contract["writable_paths"])
     protected = "\n".join(f"  - {p}" for p in contract["protected_paths"])
+    creatable_note = _creatable_note(contract)
+    paired_note = _paired_note(contract)
     paths_note = ""
     if paths_file:
         paths_note = f"""
@@ -115,7 +202,7 @@ to make them pass, and do not change any migration. If the task appears to
 require editing a protected path, stop and say so instead: a branch that
 explains why it could not be done is useful, and one that quietly widened its
 own boundary is not.
-
+{creatable_note}{paired_note}
 Keep the whole change under {contract['max_diff_lines']} changed lines.
 Do not commit anything. Do not create branches. Do not run git.
 

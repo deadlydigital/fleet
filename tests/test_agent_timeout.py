@@ -116,6 +116,99 @@ def test_the_prompt_states_the_boundary():
     assert "derives the real diff from git" in prompt
 
 
+def test_the_prompt_states_the_one_file_the_agent_must_add():
+    """Without this the prompt CONTRADICTED the gate.
+
+    `platform/__tests__/**` and `api/tests/**` are introduced as paths not to
+    edit "under any circumstances", and a contract with creatable_paths runs
+    new_test_bites.sh, which refuses a change that adds no test there. An agent
+    that believed the absolute sentence could not pass; one that passed had
+    disregarded the only line in the prompt written in absolute terms.
+    """
+    task = {"spec_md": "# do it"}
+    contract = {
+        "writable_paths": ["platform/app/(dashboard)/analytics/page.tsx"],
+        "protected_paths": ["platform/__tests__/**"],
+        "creatable_paths": ["platform/__tests__/unit/analytics/test_fleet_*.test.tsx"],
+        "max_diff_lines": 600}
+    prompt = agent.build_prompt(task, contract)
+    assert "platform/__tests__/unit/analytics/test_fleet_*.test.tsx" in prompt
+    assert "MUST ADD exactly one new file" in prompt
+    # The two properties the gate actually checks, said in the prompt.
+    assert "ADD, never modify" in prompt
+    assert "Add ONE file, not several" in prompt
+    # And why, so an agent knows what makes the test acceptable rather than
+    # merely present.
+    assert "fails without your change" in prompt
+
+
+def test_a_contract_with_no_creatable_paths_says_nothing_about_adding_a_test():
+    """Every other contract in contracts/ is one of these, and telling those
+    agents to add a test would send them at a protected tree for no reason."""
+    prompt = agent.build_prompt(
+        {"spec_md": "# do it"},
+        {"writable_paths": ["api/analytics/routes/orders.py"],
+         "protected_paths": ["api/tests/**"], "max_diff_lines": 400})
+    assert "MUST ADD" not in prompt
+
+
+def test_the_prompt_states_paired_paths_with_the_contracts_own_reason():
+    """An agent that does not know two files move together lands one of them,
+    and paired_paths.py refuses a branch that is otherwise good. That costs a
+    whole run to say something the prompt could have said first.
+
+    The `why` is printed rather than summarised: it is the sentence somebody
+    wrote about this specific pair, and an agent deciding what "together" means
+    needs the reason and not the rule.
+    """
+    task = {"spec_md": "# do it"}
+    contract = {
+        "writable_paths": ["platform/app/api/analytics/dashboard/**",
+                           "platform/app/(dashboard)/analytics/page.tsx"],
+        "protected_paths": ["platform/__tests__/**"],
+        "paired_paths": [{
+            "why": "widening the proxy alone renders vs previous 366 days over "
+                   "a year-on-year comparison",
+            "paths": ["platform/app/api/analytics/dashboard/route.ts",
+                      "platform/app/(dashboard)/analytics/page.tsx"]}],
+        "max_diff_lines": 600}
+    prompt = agent.build_prompt(task, contract)
+    assert "change together, or not at all" in prompt
+    assert "platform/app/api/analytics/dashboard/route.ts" in prompt
+    assert "vs previous 366 days" in prompt
+    # The instruction for the case where it cannot do both, which is the one an
+    # agent would otherwise resolve by landing the easy half.
+    assert "Landing the easy half is not" in prompt
+
+
+def test_a_contract_with_no_paired_paths_says_nothing_about_pairs():
+    prompt = agent.build_prompt(
+        {"spec_md": "# do it"},
+        {"writable_paths": ["api/analytics/routes/orders.py"],
+         "protected_paths": ["api/tests/**"], "max_diff_lines": 400})
+    assert "change together" not in prompt
+
+
+def test_the_shipped_frontend_contract_produces_a_prompt_that_agrees_with_itself():
+    """The whole point, against the real file rather than a fixture: the
+    contract that runs the bite check must tell the agent to write the test,
+    and the contract that pairs two files must name them."""
+    import yaml
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    contract = yaml.safe_load(
+        (root / "contracts" / "dd-analytics-frontend.yaml").read_text())
+    prompt = agent.build_prompt({"spec_md": "# do it"}, contract)
+
+    assert any("new_test_bites.sh" in v for v in contract["verification"])
+    assert "MUST ADD exactly one new file" in prompt
+
+    assert any("paired_paths.py" in v for v in contract["verification"])
+    assert "change together, or not at all" in prompt
+    for p in contract["paired_paths"][0]["paths"]:
+        assert p in prompt
+
+
 # ---- the spend cap --------------------------------------------------------
 #
 # The cap is the CLI's, not the runner's: the CLI reports cost only in its
