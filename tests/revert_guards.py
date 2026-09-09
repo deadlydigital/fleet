@@ -103,8 +103,8 @@ CASES = [
     # proves nothing new.
     ("re-verification runs against the merged tree, not the branch",
      "console/reverify.py",
-     'trial, base_sha = worktree.create_detached(repo, worktree_root, name, base)',
-     'trial, base_sha = worktree.create_detached(repo, worktree_root, name, branch)',
+     'trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, base)',
+     'trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, branch)',
      "tests/test_reverify.py::test_it_verifies_the_merged_tree_not_the_branch"),
 
     ("a failing re-verification stops the merge",
@@ -118,6 +118,30 @@ CASES = [
      '        if merged.returncode != 0:',
      '        if False:',
      "tests/test_reverify.py::test_a_conflicting_merge_is_reported_as_one"),
+
+    # A missing checker has the exact shape of a failing check. Removing this
+    # does not break the refusal -- it breaks the SENTENCE, which is the whole
+    # defect: the reviewer is sent to read a diff that is fine.
+    ("a missing checker is could_not_run, not a failing check",
+     "console/reverify.py",
+     '        if result.unresolved:',
+     '        if False:',
+     "tests/test_reverify.py"
+     "::test_a_missing_checker_is_could_not_run_not_a_failing_check"),
+
+    # Deliberately pointed at the unit test and not at an Accept-level one.
+    # `Verification.passed` ALSO refuses an unresolved run, through its
+    # `any(c.ran)` clause, so removing this branch does not let a merge
+    # through -- the two are independent and either alone is sufficient. An
+    # earlier version of this guard claimed it did, named an Accept-level
+    # test, and could not be proven, because the claim was false. What this
+    # branch is solely responsible for is the per-check reading: without it a
+    # checker that has gone missing reports as a PASSING check.
+    ("an unresolved check does not read as a passing skip",
+     "runner/verify.py",
+     '        if self.unresolved_reason is not None:\n            return False',
+     '        if False:\n            return False',
+     "tests/test_verify_scoping.py::test_a_missing_checker_never_reads_as_a_pass"),
 
     # ---- the decision log's half of review.py ---------------------------
     ("a verdict needs a reason in words, not only a code",

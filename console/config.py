@@ -61,16 +61,24 @@ def console_writer_dsn() -> str:
 # merge can write to the checkout, and widening it so scratch data has
 # somewhere to live would trade a real boundary for a temporary directory.
 #
-# PrivateTmp=true already gives the unit a /tmp no other process can see. It
-# is writable, it is invisible to the runner and to anything else on the box,
-# and systemd destroys it when the service stops -- which is the whole of what
-# a trial worktree needs, since it is throwaway by definition.
+# PrivateTmp=true gives the unit a /tmp no other process can see. It is
+# writable, it is invisible to the runner and to anything else on the box, and
+# systemd destroys it when the service stops.
+#
+# THIS SETTING WAS ONCE MISTAKEN FOR THE WHOLE FIX, and the comment here said
+# so: that a writable private /tmp was "the whole of what a trial worktree
+# needs". It was not. A linked worktree also writes into the repository it
+# links from -- its admin directory, and its merge objects -- so pointing the
+# worktree's directory at a writable place left the half that fails untouched.
+# The trial is a clone now, which is what actually confines it here; see
+# runner.worktree.create_trial_clone. Choosing the root is still a real
+# choice, but it was never sufficient on its own.
 #
 # test_console_decide.py ties this to the unit file, so pointing it back into
 # home fails a test rather than failing an Accept.
-TRIAL_WORKTREE_ROOT = Path("/tmp/fleet-console-trials")
+TRIAL_ROOT = Path("/tmp/fleet-console-trials")
 
 
-def trial_worktree_root() -> Path:
+def trial_root() -> Path:
     """The trial root, overridable so tests need not write to the real one."""
-    return Path(os.environ.get("FLEET_CONSOLE_TRIAL_ROOT", TRIAL_WORKTREE_ROOT))
+    return Path(os.environ.get("FLEET_CONSOLE_TRIAL_ROOT", TRIAL_ROOT))

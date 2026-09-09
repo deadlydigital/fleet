@@ -213,3 +213,51 @@ def test_a_run_with_no_branch_point_skips_that_check(repo, wt_root):
                           branch_point="")
     assert out.ok, out.reason
     assert any("no branch point" in d for d in out.detail)
+
+
+# ---- a checker that is not there ------------------------------------------
+
+def test_a_missing_checker_is_could_not_run_not_a_failing_check(repo, wt_root):
+    """Task 22, as the worked example.
+
+    Its contract names /home/ubuntu/fleet/contracts/checks/draft_spec_shape.py,
+    which exists only on the `spec/daily-brief` branch of a repository that has
+    nothing to do with the merge. With ~/fleet checked out elsewhere the
+    command exits 2 -- the shape of a failing check -- and Accept said "the
+    branch verifies on its own and FAILS when merged into <base>". The branch
+    is fine. Nothing about it was ever looked at.
+    """
+    point, tip = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+
+    r = reverify.run(
+        repo, wt_root, task_for(repo),
+        contract(verification=["/nonexistent/python /nonexistent/shape.py"]),
+        "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
+
+    assert not r.ok
+    assert r.could_not_run, "a missing checker is not a verdict about the branch"
+    assert "/nonexistent/shape.py" in r.reason
+    assert "FAILS when merged" not in r.reason, (
+        "this is the sentence that sends a reviewer to read a diff that is fine")
+    # And nothing was touched, exactly as for any other refusal.
+    assert sh(repo, "git", "status", "--porcelain").strip() == ""
+    assert sh(repo, "git", "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+
+
+def test_a_missing_checker_does_not_merge_by_looking_like_a_skip(repo, wt_root):
+    """The dangerous reading, asserted against at the outcome.
+
+    An unresolved check does not `ran`, and skips are treated as passes, so
+    conflating the two would let a merge through unverified -- worse than
+    either wrong report. Two independent things refuse it: `Check.passed`
+    returns False for unresolved, and `Verification.passed` requires that
+    some check actually ran. This asserts the outcome rather than either
+    mechanism, which is why the reversion guard for the first one points at a
+    unit test instead of here.
+    """
+    point, _ = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+    r = reverify.run(
+        repo, wt_root, task_for(repo),
+        contract(verification=["/nonexistent/shape.py"]),
+        "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
+    assert not r.ok, "an unresolvable contract must never re-verify as OK"

@@ -573,7 +573,7 @@ def test_the_trial_root_is_not_a_path_the_unit_denies():
     into home fails the suite everywhere rather than only where sudo works.
     """
     from console import config
-    root = config.TRIAL_WORKTREE_ROOT
+    root = config.TRIAL_ROOT
     settings = unit_settings()
     writable = [Path(p) for p in settings.get("ReadWritePaths", "").split()]
 
@@ -591,35 +591,111 @@ def test_the_trial_root_is_not_a_path_the_unit_denies():
             f"{root} is in /tmp but the unit does not set PrivateTmp")
 
 
-@pytest.mark.skipif(
-    subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0
-    or shutil.which("systemd-run") is None,
-    reason="needs passwordless sudo and systemd-run to build the real sandbox")
-def test_the_trial_root_is_writable_under_the_service_sandbox():
-    """Build the unit's actual sandbox and try the write that broke Accept.
-
-    Not a re-implementation of the sandbox: the confinement settings are read
-    out of the unit file, so this asserts the property for the sandbox that is
-    really deployed.
-    """
+def sandbox_confinement() -> list[str]:
     settings = unit_settings()
     confinement = [f"-p{k}={settings[k]}"
                    for k in ("ProtectSystem", "ProtectHome", "ReadWritePaths",
                              "PrivateTmp")
                    if k in settings]
     assert confinement, f"{UNIT.name} declares no confinement to test"
+    return confinement
 
+
+@pytest.mark.skipif(
+    subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0
+    or shutil.which("systemd-run") is None,
+    reason="needs passwordless sudo and systemd-run to build the real sandbox")
+def test_a_trial_can_be_built_and_merged_under_the_service_sandbox():
+    """Build the unit's real sandbox and run the REAL operation inside it.
+
+    THIS TEST USED TO ASSERT A PROXY, and the proxy is why the bug shipped
+    green. It ran `mkdir -p <trial_root>/sandbox-probe` -- the half of the
+    operation that works -- and concluded the trial root was usable. It was:
+    /tmp is writable under PrivateTmp and always was. The half that failed was
+    never run, because `git worktree add` also writes into the repository it
+    links FROM, and no mkdir under /tmp will ever discover that.
+
+    So this calls create_trial_clone and merges, against the checkout the
+    suite is running from -- which is the repository the console may only
+    read, and the exact case that failed. A proxy cannot be substituted here
+    without deleting the thing being tested.
+
+    Not a re-implementation of the sandbox either: the confinement settings
+    are read out of the unit file, so this asserts the property for the
+    sandbox that is really deployed.
+    """
     from console import config
-    root = config.TRIAL_WORKTREE_ROOT
-    probe = root / "sandbox-probe"
+    project = Path(__file__).resolve().parent.parent
+    base = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+    # Run it as the console would: the real function, on the real repo, with
+    # the real root, inside the real confinement.
+    program = (
+        "import pathlib, subprocess, sys\n"
+        "sys.path.insert(0, %r)\n"
+        "from runner import worktree\n"
+        "trial, sha = worktree.create_trial_clone("
+        "    pathlib.Path(%r), pathlib.Path(%r), 'sandbox-probe', %r)\n"
+        "r = subprocess.run(['git', '-C', str(trial), 'merge-base',"
+        "                    '--is-ancestor', sha, 'HEAD'])\n"
+        "assert r.returncode == 0, 'the trial is not at the base commit'\n"
+        "worktree.discard_trial_clone(trial)\n"
+        "assert not trial.exists(), 'the trial outlived its own teardown'\n"
+        "print('TRIAL OK')\n"
+    ) % (str(project), str(project), str(config.TRIAL_ROOT), base)
+
     r = subprocess.run(
         ["sudo", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
-         "-pUser=ubuntu", *confinement,
-         "/bin/bash", "-c", f"mkdir -p {probe} && rmdir {probe}"],
+         "-pUser=ubuntu", f"-pWorkingDirectory={project}", *sandbox_confinement(),
+         str(project / ".venv" / "bin" / "python"), "-c", program],
         capture_output=True, text=True)
-    assert r.returncode == 0, (
-        f"the console cannot create its trial worktree root under its own "
-        f"sandbox: {(r.stdout + r.stderr).strip()}")
+    assert "TRIAL OK" in r.stdout, (
+        f"the console cannot build a trial for a repository it may only read, "
+        f"under its own sandbox: {(r.stdout + r.stderr).strip()}")
+
+
+def test_a_trial_writes_nothing_into_the_repository_it_came_from(repo, tmp_path):
+    """The claim reverify.py makes in its own docstring, as an assertion.
+
+    "A FAILURE RECORDS NOTHING AND LEAVES NOTHING" was false for every Accept
+    that reached re-verification before 2026-09-09: the trial was a linked
+    worktree, so its merge commit and tree were written into the SOURCE
+    repository's shared object store, and `git worktree remove` does not take
+    them back. Nothing read them, but the docstring was not telling the truth.
+
+    Counting objects rather than inspecting refs, because the leak was
+    unreferenced -- a check on refs or on `worktree list` would have passed
+    while the objects piled up.
+    """
+    from runner import worktree
+
+    branch_with_change(repo, "fleet/task-900", body="y = 3\n")
+    tip = sh(repo, "git", "rev-parse", "fleet/task-900").strip()
+    before_objects = sorted(p.name for p in (repo / ".git" / "objects").rglob("*")
+                            if p.is_file())
+
+    trial, sha = worktree.create_trial_clone(repo, tmp_path / "trials",
+                                             "leak-probe", "main")
+    # The tip by SHA, not by ref name. A clone reaches it as
+    # `origin/fleet/task-900` and a linked worktree as `fleet/task-900`, and a
+    # test that named either would fail on the NAME when the implementation
+    # regressed -- passing off a ref-resolution error as proof about objects.
+    # By sha both merge, and the only thing left to differ is the leak.
+    merged = subprocess.run(
+        ["git", "-C", str(trial), "-c", "user.name=t", "-c", "user.email=t@t",
+         "merge", "--no-ff", "--no-edit", tip],
+        capture_output=True, text=True)
+    assert merged.returncode == 0, merged.stdout + merged.stderr
+    worktree.discard_trial_clone(trial)
+
+    after_objects = sorted(p.name for p in (repo / ".git" / "objects").rglob("*")
+                           if p.is_file())
+    assert after_objects == before_objects, (
+        f"the trial merge left {len(after_objects) - len(before_objects)} "
+        f"object(s) in {repo}/.git/objects")
+    assert not (repo / ".git" / "worktrees").exists(), (
+        "the trial registered a worktree in the source repository")
 
 
 @pytest.mark.skipif(
@@ -637,11 +713,7 @@ def test_the_runners_worktree_root_is_not_writable_under_that_sandbox():
     runner_root = Path(yaml.safe_load(
         (Path(__file__).resolve().parent.parent / "runner.yaml").read_text()
     )["worktree_root"])
-    settings = unit_settings()
-    confinement = [f"-p{k}={settings[k]}"
-                   for k in ("ProtectSystem", "ProtectHome", "ReadWritePaths",
-                             "PrivateTmp")
-                   if k in settings]
+    confinement = sandbox_confinement()
     probe = runner_root / "sandbox-probe"
     r = subprocess.run(
         ["sudo", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
