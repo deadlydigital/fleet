@@ -43,6 +43,7 @@ loader that accepts what the check refuses, one edit later.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import json
 import re
@@ -55,6 +56,7 @@ import yaml
 from . import config, db
 
 
+@functools.lru_cache(maxsize=1)
 def _shape_check():
     """The contract check, imported as a module rather than copied.
 
