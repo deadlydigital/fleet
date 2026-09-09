@@ -170,6 +170,17 @@ CASES = [
      '# OnFailure removed',
      "tests/test_unit_failure_notice.py::test_every_fleet_unit_declares_onfailure"),
 
+    # The ceiling that matters once nothing is watching. max_attempts is 1 so
+    # a task does not retry itself; the loop is the producer re-emitting a
+    # candidate it is FORBIDDEN to deduplicate, and each approval buying the
+    # same failure again.
+    ("a candidate that has failed twice is not approved automatically",
+     "console/approve.py",
+     '            if blocked:',
+     '            if False:',
+     "tests/test_approval_surface.py::TestTheRepeatFailureStop"
+     "::test_a_candidate_that_failed_twice_is_refused"),
+
     # ---- the decision log's half of review.py ---------------------------
     ("a verdict needs a reason in words, not only a code",
      "review.py",

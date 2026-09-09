@@ -208,13 +208,39 @@ brief and the first thing an autonomous system would be tempted to drop.
 out when the month's work is already spent. At 60% the fleet stops queuing and
 the brief says why, leaving £63 for work a person chooses.
 
-**5.2 A finding whose last two tasks both FAILED is not re-proposed.**
-`max_attempts = 1` already means a task does not retry. The unbounded loop is
-elsewhere and is the 14-day repropose window: a finding fails, is suppressed,
-and returns in a fortnight to fail identically. Over a quarter that is six runs
-and £15 for the same wrong idea, each one looking like a fresh proposal. A
-`finding_key` check beside the existing suppression in `proposer/cycle.py`
-closes it, and it needs a human to clear.
+**5.2 A candidate that has failed twice is not approved automatically.**
+
+**CORRECTED 9 Sep 2026 while building it.** This section originally read *"a
+finding whose last two tasks both FAILED is not re-proposed"*, with the check
+going beside the existing suppression in `proposer/cycle.py`. That does not fit
+the system, in two ways found by tracing the chain rather than assuming it:
+
+1. **There is no `finding` → `task` link.** Findings become `proposals`;
+   candidates are read from a findings DOCUMENT by the producer task and carry
+   no `finding_key`. The proposer's 14-day suppression is about proposals and
+   never reaches a task, so a check there would have suppressed the wrong thing
+   and changed nothing about cost.
+2. **The producer must not deduplicate, and that is enforced rather than
+   asked** — no Bash, no credential, one writable file, and a shape check that
+   refuses `batch_id`. §7 of `specs/approval-surface.md`: *"a candidate that
+   reappears is a signal, and a producer that silently dropped repeats would
+   erase it."* Suppressing at production would have broken a designed property
+   to fix a problem that lives elsewhere.
+
+So the stop is at **approval**, which is the single path from a candidate to a
+task, and it withholds only the AUTOMATIC approval. The candidate still appears
+in the batch; a person may still tick it by naming it with a reason, which is
+recorded. The signal survives and the money loop does not.
+
+Identity is `(title, repo)` — candidates carry no stable key across batches,
+deliberately, because a batch two weeks old is a new batch. Both task columns
+count: a candidate produces a spec task and later a work task, and either
+failing is a failure of that candidate.
+
+Built as `022_repeat_failure_stop.sql` (`candidate_prior_failures`) and the
+`REPEAT_FAILURE_STOP` guard in `console/approve.py`. **It applies to the human
+surface today and to auto-approval in §6.1 tomorrow, because both go through
+`approve_batch`.**
 
 **This is the only unbounded loop I can find in the system.**
 

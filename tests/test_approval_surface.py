@@ -312,3 +312,105 @@ class TestTheMonthlyCredit:
         ).fetchone()
         assert p["r"] is True
         assert p["w"] is False and p["u"] is False
+
+
+class TestTheRepeatFailureStop:
+    """022. A candidate that has failed twice is not approved on its own.
+
+    max_attempts is 1, so a task does not retry itself. The loop is one level
+    up: the producer is FORBIDDEN to deduplicate against previous batches (§7,
+    "a candidate that reappears is a signal"), so the same candidate returns
+    every time it runs, and each approval buys another failing run at the same
+    price. Over a quarter that is the same wrong idea six times, each looking
+    like a fresh proposal.
+    """
+
+    @staticmethod
+    def _fail_once(console, runner, title, repo="deadly-digital-platform"):
+        """One earlier batch whose candidate was approved and whose task failed.
+
+        Approved through `approve_batch` rather than by setting the columns:
+        `candidates_approved_cites_decision_ck` requires an APPROVED row to
+        cite a decision, and a fixture that works around a constraint is a
+        fixture testing something the product cannot do.
+        """
+        b = _batch(console)
+        cid = _cand(console, b, title=title, repo=repo)
+        approve.approve_batch(reason="an earlier batch", approve_ids=[cid],
+                              reject={}, not_now_ids=[], decided_by="t")
+        tid = console.execute(
+            "SELECT spec_task_id FROM candidates WHERE id=%s", (cid,)
+        ).fetchone()["spec_task_id"]
+        # QUEUED -> RUNNING -> FAILED, as fleet_task_runner. There is no
+        # QUEUED -> FAILED edge and the transition trigger says so.
+        runner.execute("UPDATE tasks SET status='RUNNING', claimed_at=now(),"
+                       " attempts=1 WHERE id=%s", (tid,))
+        runner.execute("UPDATE tasks SET status='FAILED' WHERE id=%s", (tid,))
+        runner.commit()
+        return tid
+
+    @classmethod
+    def _failed_twice(cls, console, runner, title="Coupon report",
+                      repo="deadly-digital-platform"):
+        cls._fail_once(console, runner, title, repo)
+        cls._fail_once(console, runner, title, repo)
+
+    def test_a_candidate_that_failed_twice_is_refused(self, console, runner, dsns):
+        self._failed_twice(console, runner)
+        b = _batch(console)
+        cid = _cand(console, b, title="Coupon report")
+        with pytest.raises(approve.ApprovalRefused) as e:
+            approve.approve_batch(reason="the batch reason", approve_ids=[cid],
+                                  reject={}, not_now_ids=[], decided_by="t")
+        assert "failed 2 times or more" in str(e.value)
+        assert "Coupon report" in str(e.value)
+
+    def test_the_candidate_is_still_there_to_be_seen(self, console, runner, dsns):
+        """It withholds approval, never the candidate. §7's signal survives."""
+        self._failed_twice(console, runner)
+        b = _batch(console)
+        cid = _cand(console, b, title="Coupon report")
+        with pytest.raises(approve.ApprovalRefused):
+            approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                                  not_now_ids=[], decided_by="t")
+        row = console.execute(
+            "SELECT disposition FROM candidates WHERE id=%s", (cid,)).fetchone()
+        assert row["disposition"] == "PENDING"
+
+    def test_a_named_override_with_a_reason_lets_it_through(self, console, runner, dsns):
+        """'We did this anyway' must be a sentence somebody wrote."""
+        self._failed_twice(console, runner)
+        b = _batch(console)
+        cid = _cand(console, b, title="Coupon report")
+        out = approve.approve_batch(
+            reason="the batch reason", approve_ids=[cid], reject={},
+            not_now_ids=[], decided_by="t",
+            repeat_overrides={cid: "the checker that failed it is fixed now"})
+        assert out["queued_task_ids"]
+
+    def test_an_empty_override_does_not_count_as_one(self, console, runner, dsns):
+        self._failed_twice(console, runner)
+        b = _batch(console)
+        cid = _cand(console, b, title="Coupon report")
+        with pytest.raises(approve.ApprovalRefused):
+            approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                                  not_now_ids=[], decided_by="t",
+                                  repeat_overrides={cid: "   "})
+
+    def test_one_failure_is_not_two(self, console, runner, dsns):
+        """A single failure is bad luck and must not block the retry."""
+        self._fail_once(console, runner, "Coupon report")
+        b = _batch(console)
+        cid = _cand(console, b, title="Coupon report")
+        out = approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                                    not_now_ids=[], decided_by="t")
+        assert out["queued_task_ids"]
+
+    def test_a_different_candidate_is_unaffected(self, console, runner, dsns):
+        """Identity is (title, repo). A neighbour's failures are not yours."""
+        self._failed_twice(console, runner)
+        b = _batch(console)
+        cid = _cand(console, b, title="Something else entirely")
+        out = approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                                    not_now_ids=[], decided_by="t")
+        assert out["queued_task_ids"]

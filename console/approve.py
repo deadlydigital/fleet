@@ -162,9 +162,16 @@ Read the tree; do not write paths from memory.
 """
 
 
+#: A candidate that has produced this many FAILED tasks is not approved
+#: without somebody saying why. specs/unattended-operation.md §5.2 as
+#: corrected in 022: two is where a repeat stops being bad luck.
+REPEAT_FAILURE_STOP = 2
+
+
 def approve_batch(*, reason: str, approve_ids: List[int],
                   reject: Dict[int, str], not_now_ids: List[int],
-                  decided_by: str) -> Dict[str, Any]:
+                  decided_by: str,
+                  repeat_overrides: Dict[int, str] | None = None) -> Dict[str, Any]:
     """Record one batch decision and queue its draft-spec tasks.
 
     Raises ApprovalRefused with a reviewer-facing message rather than letting a
@@ -194,6 +201,44 @@ def approve_batch(*, reason: str, approve_ids: List[int],
         max_queued = caps["max_queued"]
         max_batch = caps["max_batch"]
         queued_now = caps["queued_now"]
+
+        # THE REPEAT-FAILURE STOP. 022, and it is the ceiling that matters
+        # once nothing is watching.
+        #
+        # max_attempts is 1, so a task does not retry itself. The loop is one
+        # level up: the producer is FORBIDDEN to deduplicate against previous
+        # batches -- specs/approval-surface.md §7, "a candidate that reappears
+        # is a signal" -- so the same candidate returns every time the producer
+        # runs, and each approval buys another failing run at the same price.
+        # Over a quarter that is the same wrong idea, six times, each one
+        # looking like a fresh proposal.
+        #
+        # It withholds APPROVAL, never the candidate. The row still appears in
+        # the batch and a person may still tick it by naming it in
+        # repeat_overrides with a reason -- which is recorded, so "we did this
+        # anyway" is a sentence somebody wrote rather than a silence.
+        overrides = repeat_overrides or {}
+        if approve_ids:
+            repeats = conn.execute(
+                "SELECT c.id, c.title, c.repo,"
+                " candidate_prior_failures(c.title, c.repo) AS fails"
+                " FROM candidates c WHERE c.id = ANY(%s)",
+                (list(approve_ids),)).fetchall()
+            blocked = [r for r in repeats
+                       if r["fails"] >= REPEAT_FAILURE_STOP
+                       and not (overrides.get(r["id"]) or "").strip()]
+            if blocked:
+                lines = "; ".join(
+                    f"{r['title']!r} has already produced {r['fails']} failed "
+                    f"task(s)" for r in blocked)
+                raise ApprovalRefused(
+                    f"{len(blocked)} candidate(s) have failed "
+                    f"{REPEAT_FAILURE_STOP} times or more and are not approved "
+                    f"automatically: {lines}. The candidate keeps reappearing "
+                    f"because the producer is not allowed to hide it, which is "
+                    f"working as intended -- but approving it again buys the "
+                    f"same failure at the same price. Say why it is different "
+                    f"this time, or leave it.")
 
         if len(approve_ids) > max_batch:
             raise ApprovalRefused(
