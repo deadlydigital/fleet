@@ -24,11 +24,12 @@ from __future__ import annotations
 
 from typing import List
 
-from .claims import CHANGED, LOOKS_WRONG, UNCOMPUTED, Claim
+from .claims import CHANGED, LOOKS_WRONG, OVERNIGHT, UNCOMPUTED, Claim
 
 
 def render(claims: List[Claim], *, generated_at, compares_since,
            sources_ok: int, sources_failed: int) -> str:
+    overnight = [c for c in claims if c.section == OVERNIGHT]
     changed = [c for c in claims if c.section == CHANGED]
     wrong = [c for c in claims if c.section == LOOKS_WRONG]
     uncomputed = [c for c in claims if c.section == UNCOMPUTED]
@@ -43,9 +44,47 @@ def render(claims: List[Claim], *, generated_at, compares_since,
         f"Claims: {len(claims)}, of which **{len(uncomputed)} could not be "
         f"computed**.",
         "",
-        "## What changed",
-        "",
     ]
+
+    # OVERNIGHT FIRST, and it is the only section that leads with a summary
+    # line. specs/unattended-operation.md §4: a brief of counts cannot tell you
+    # a bad night happened, and on most mornings this is three lines saying
+    # there is nothing to do. Putting it under "What changed" would bury the
+    # one section a reader must not miss beneath thirteen counts.
+    out += ["## Overnight", ""]
+    if not overnight:
+        out.append("_Nothing is reported here. That is not the same as a quiet "
+                   "night — check the uncomputed list below for whether this "
+                   "pass could read the runs at all._")
+    else:
+        # The roll-up before the detail, then per-task lines in the order they
+        # finished. Sorted by metric_key would interleave the summary with the
+        # tasks and put task 10 before task 9.
+        def _bullet(c):
+            return (f"- **{c.statement}**  \n  _source: {c.source} · as of "
+                    f"{c.as_of.isoformat() if c.as_of else 'unknown'}_")
+
+        # The per-task lines belong DIRECTLY under the run roll-up they
+        # itemise. Anywhere else and the indentation reads as though they
+        # nest under whatever bullet happens to precede them.
+        runs = [c for c in overnight if c.metric_key == "overnight.runs"]
+        detail = [c for c in overnight
+                  if c.metric_key.startswith("overnight.task.")]
+        deploys = [c for c in overnight
+                   if c.metric_key.startswith("overnight.deployed.")]
+        rest = [c for c in overnight
+                if c not in runs and c not in detail and c not in deploys]
+
+        for c in runs:
+            out.append(_bullet(c))
+        for c in sorted(detail, key=lambda c: c.as_of or c.metric_key):
+            out.append(f"  - {c.statement}")
+        for c in sorted(rest, key=lambda c: c.metric_key):
+            out.append(_bullet(c))
+        for c in sorted(deploys, key=lambda c: c.metric_key):
+            out.append(_bullet(c))
+
+    out += ["", "## What changed", ""]
 
     if not changed:
         # Distinguishable from "did not look". The run row exists and the

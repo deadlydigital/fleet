@@ -16,6 +16,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
+OVERNIGHT = "OVERNIGHT"
 CHANGED = "CHANGED"
 LOOKS_WRONG = "LOOKS_WRONG"   # DELIBERATELY UNUSED — see `brief/render.py`
 UNCOMPUTED = "UNCOMPUTED"
@@ -59,6 +60,35 @@ class Claim:
                 "none, it is UNCOMPUTED and should say why")
         return Claim(
             section=CHANGED, metric_key=metric_key, statement=statement,
+            status="COMPUTED", source=source, as_of=as_of,
+            value_num=None if value_num is None else Decimal(str(value_num)),
+            value_text=value_text, query_key=query_key,
+            query_version=query_version)
+
+    @staticmethod
+    def overnight(metric_key: str, statement: str, *, source: str,
+                  as_of: datetime, value_num: Any = None,
+                  value_text: Optional[str] = None,
+                  query_key: Optional[str] = None,
+                  query_version: Optional[int] = None) -> "Claim":
+        """What the fleet DID, as opposed to how the world's numbers moved.
+
+        Same shape and the same rules as `computed` -- a source and a recency,
+        both required, no third state. The section is the only difference and
+        it is about SUBJECT rather than confidence: CHANGED reports the world,
+        OVERNIGHT reports this system's own actions, and on an unattended night
+        those are the ones a reader must not miss.
+
+        It is NOT judgement. `LOOKS_WRONG` stays empty for the reasons
+        brief/render.py gives; "three merged, one failed" is a fact, and
+        whether that was a good night is the reader's to decide.
+        """
+        if value_num is None and value_text is None:
+            raise ValueError(
+                f"{metric_key}: an overnight claim needs a value; if there is "
+                "none, it is UNCOMPUTED and should say why")
+        return Claim(
+            section=OVERNIGHT, metric_key=metric_key, statement=statement,
             status="COMPUTED", source=source, as_of=as_of,
             value_num=None if value_num is None else Decimal(str(value_num)),
             value_text=value_text, query_key=query_key,

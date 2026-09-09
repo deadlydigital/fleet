@@ -88,6 +88,167 @@ def _objectives_version() -> str:
 # Printing them daily is the point: a gap that is only mentioned once is a gap
 # everyone forgets.
 
+
+# ---------------------------------------------------------------------------
+# OVERNIGHT — what the fleet itself did
+#
+# specs/unattended-operation.md §4. The rest of this pass reports how the
+# world's numbers moved; this reports what this system DID, which on an
+# unattended night is the only section a reader must not miss.
+#
+# It is description, not judgement. LOOKS_WRONG stays empty for the reasons
+# brief/render.py gives. "Three merged, one failed" is a fact; whether that
+# was a good night is the reader's call.
+# ---------------------------------------------------------------------------
+
+_OVERNIGHT_RUNS_SQL = """
+    SELECT r.id, r.task_id, t.title, t.repo, t.status AS task_status,
+           r.status AS run_status, r.committed_gbp, r.completed_at,
+           (SELECT s.payload->>'result' FROM run_steps s
+             WHERE s.run_id = r.id AND s.step_type = 'VERIFICATION_RUN'
+             ORDER BY s.id DESC LIMIT 1) AS verdict,
+           (SELECT s.payload->>'verification_unresolved' FROM run_steps s
+             WHERE s.run_id = r.id AND s.step_type = 'VERIFICATION_RUN'
+             ORDER BY s.id DESC LIMIT 1) AS unresolved,
+           (SELECT s.payload->'boundary_violations' FROM run_steps s
+             WHERE s.run_id = r.id AND s.step_type = 'VERIFICATION_RUN'
+             ORDER BY s.id DESC LIMIT 1) AS violations
+      FROM runs r JOIN tasks t ON t.id = r.task_id
+     WHERE r.completed_at > %(since)s
+     ORDER BY r.completed_at
+"""
+
+
+def _failure_class(row) -> str:
+    """Why a run ended badly, as a CLASS rather than a message.
+
+    Boundary violation, could-not-verify and verification-failed are three
+    different mornings and must not read alike -- the first is the task
+    exceeding its contract, the second is the fleet unable to judge, and only
+    the third is the code being wrong. Reading them as one is how a missing
+    checker got reported as a failing check on 9 Sep.
+    """
+    if row["violations"]:
+        v = row["violations"]
+        if v.get("protected") or v.get("outside_writable"):
+            return "wrote outside its contract"
+        if v.get("over_diff_limit"):
+            return "exceeded its diff limit"
+    if row["unresolved"]:
+        return "could not be verified (a checker was missing)"
+    if row["verdict"] == "FAIL":
+        return "verification failed"
+    return "failed before verification"
+
+
+def _overnight_claims(r: S.Reader, since) -> List[Claim]:
+    out: List[Claim] = []
+    key = "overnight.runs"
+    label = "what the fleet did since the last brief"
+
+    if since is None:
+        return [Claim.uncomputed(key, label, reason=(
+            "there is no previous brief, so there is no window to report over. "
+            "This is the first pass, not a quiet night"))]
+
+    rows = r.probe("fleet:runs/overnight",
+                   S.rows(_OVERNIGHT_RUNS_SQL, {"since": since}))
+    if rows is None:
+        return [Claim.uncomputed(key, label, reason=(
+            r.failed("fleet:runs/overnight")
+            or "the runs table could not be read, so what happened overnight "
+               "is unknown. An unreadable night is not a quiet one"))]
+
+    now = _utcnow()
+    if not rows:
+        out.append(Claim.overnight(
+            key, "nothing ran since the last brief", source="fleet:runs",
+            as_of=now, value_num=0, query_key="overnight_runs",
+            query_version=1))
+        return out
+
+    merged = [x for x in rows if x["task_status"] == "MERGED"]
+    failed = [x for x in rows if x["task_status"] == "FAILED"]
+    waiting = [x for x in rows if x["task_status"] == "READY_FOR_REVIEW"]
+    spent = sum((x["committed_gbp"] or 0) for x in rows)
+
+    parts = [f"{len(merged)} merged", f"{len(failed)} failed"]
+    if waiting:
+        parts.append(f"{len(waiting)} waiting for review")
+    out.append(Claim.overnight(
+        key, f"{len(rows)} run(s) finished: " + ", ".join(parts),
+        source="fleet:runs", as_of=now, value_num=len(rows),
+        query_key="overnight_runs", query_version=1))
+
+    # One line per run, so a bad night is legible without opening the console.
+    for x in rows:
+        verdict = x["task_status"]
+        detail = _failure_class(x) if x["task_status"] == "FAILED" else verdict.lower()
+        out.append(Claim.overnight(
+            f"overnight.task.{x['task_id']}",
+            f"task {x['task_id']} ({x['repo']}) — {detail}: "
+            f"{(x['title'] or '')[:70]} — GBP {x['committed_gbp']}",
+            source="fleet:runs", as_of=x["completed_at"] or now,
+            value_text=verdict, query_key="overnight_task", query_version=1))
+
+    # SPEND AS A RATE. "GBP 141 left" is useless without "how many nights".
+    # A number that only becomes alarming on the last day is not a control.
+    credit = r.probe("fleet:model_credit_pool",
+                     S.row("SELECT * FROM fleet_month_credit()"))
+    if credit is None or credit[1] != "COMPUTED":
+        out.append(Claim.uncomputed(
+            "overnight.spend", "spend since the last brief, against the pool",
+            reason=("the monthly credit position is unknown, so what was spent "
+                    "cannot be set against what remains")))
+    else:
+        remaining = credit[6]
+        nights = int(remaining / spent) if spent else None
+        statement = f"GBP {spent:.2f} spent since the last brief; GBP {remaining:.2f} remains"
+        if nights is not None:
+            statement += f" — {nights} more night(s) at this rate"
+        out.append(Claim.overnight(
+            "overnight.spend", statement, source="fleet:model_credit_pool",
+            as_of=now, value_num=spent, query_key="overnight_spend",
+            query_version=1))
+
+    return out
+
+
+def _deploy_claims() -> List[Claim]:
+    """Is production running what main says? Read from outside the database.
+
+    No run ever reaches DEPLOYED and the runner is not a deployer, so the
+    fleet database cannot answer this. console/deploys.py already reads the
+    cron'd drift checks, and its freshness rule matters more here than on the
+    page: a state file nobody has written for an hour is the answer from
+    whenever the CHECK died, not today's answer.
+    """
+    key = "overnight.deployed"
+    try:
+        from console import deploys
+        found = deploys.all_deployments()
+    except Exception as exc:                                  # noqa: BLE001
+        return [Claim.uncomputed(key, "whether production is running main",
+                                 reason=f"the deploy state could not be read: {exc}")]
+    if not found:
+        return [Claim.uncomputed(key, "whether production is running main",
+                                 reason="no deploy state files were found")]
+    out: List[Claim] = []
+    for name, d in sorted(found.items()):
+        if d.status in ("UNKNOWN", None):
+            out.append(Claim.uncomputed(
+                f"{key}.{name}", f"whether {name} is running main",
+                reason=d.detail or "the drift check reported no verdict"))
+            continue
+        out.append(Claim.overnight(
+            f"{key}.{name}",
+            f"{name}: production {'matches' if d.status == 'OK' else 'DOES NOT match'} "
+            f"main ({d.status})",
+            source=f"file:drift-{name}.state", as_of=d.checked_at or _utcnow(),
+            value_text=d.status, query_key="deploy_drift", query_version=1))
+    return out
+
+
 def _standing_gaps() -> List[Claim]:
     return [
         Claim.uncomputed(
@@ -540,6 +701,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
             "SELECT max(generated_at) FROM brief_runs"))
         previous = reader.probe("fleet:brief_claims",
                                 lambda c: _previous_values(c)) or {}
+        claims += _overnight_claims(reader, last)
         claims += _fleet_claims(reader, last)
         claims += _sentry_claims(reader)
         claims += _aws_cost_claims(reader)
@@ -568,6 +730,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
 
     claims += _git_claims(last)
     claims += _todo_claims()
+    claims += _deploy_claims()
     claims += _standing_gaps()
 
     claims = [c.with_previous(previous.get(c.metric_key)) for c in claims]

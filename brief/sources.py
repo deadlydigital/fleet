@@ -89,6 +89,28 @@ def row(sql: str, params: Optional[Dict] = None):
     return _run
 
 
+def rows(sql: str, params: Optional[Dict] = None):
+    """A probe body returning EVERY row.
+
+    Distinct from `row` because the empty case means something different: one
+    row expected and none found is usually a gap, while none found here is a
+    reading -- "nothing ran overnight" is an answer, not a failure. The probe
+    still records the read either way, so an unreadable table is not
+    indistinguishable from an empty one.
+
+    Returns MAPPINGS, not tuples. `row` returns a tuple and its callers
+    unpack positionally, which is fine for a fixed shape; a multi-row result
+    read by column name survives a query gaining a column, and the overnight
+    query will gain columns.
+    """
+    from psycopg.rows import dict_row
+
+    def _run(conn):
+        with conn.cursor(row_factory=dict_row) as cur:
+            return cur.execute(sql, params or {}).fetchall()
+    return _run
+
+
 # ---------------------------------------------------------------------------
 # git, which needs no grant and is the only measure of engineering time
 # ---------------------------------------------------------------------------
