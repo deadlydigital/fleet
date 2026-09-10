@@ -176,8 +176,20 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             raise RuntimeError(f"readable repo {name} is not at {other}")
         readable.append(other)
         watch_paths.setdefault(name, other)
+    # LINKED DEPENDENCY TREES ARE NOT WATCHED, and task 49 is why. The
+    # contract's worktree_links point the worktree's node_modules at the real
+    # checkout's, because copying gigabytes per task is not an option -- and
+    # verification then runs THROUGH that link. vitest wrote 131 bytes to
+    # platform/node_modules/.vite/vitest/results.json, inside the watched
+    # checkout, and the guard failed a task that had passed every check it had
+    # and already pushed its branch.
+    #
+    # The sources, not the targets: the targets live inside the worktree, which
+    # is not watched. See worktree.Untouched for the full argument, and note
+    # that the exclusions are named in the error if the guard ever does fire.
+    link_sources = list((contract.get("worktree_links") or {}).values())
     for name, path in watch_paths.items():
-        watched[name] = worktree.Untouched.of(path)
+        watched[name] = worktree.Untouched.of(path, exclude=link_sources)
 
     branch = worktree.branch_name(task["id"], task["attempts"])
     # Beside the worktree, never inside it: a file inside lands in the derived

@@ -17,8 +17,9 @@ import hashlib
 import os
 import shutil
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 from runner.boundary import git, GitError
 
@@ -31,31 +32,72 @@ class PushRefused(RuntimeError):
 class Untouched:
     """A checkout's state, so that "the runner did not touch it" is checkable.
 
-    `tree_digest` covers EVERY file, not only tracked ones. A write to an
+    The snapshot covers EVERY file, not only tracked ones. A write to an
     untracked path -- inside node_modules, into a gitignored directory, a new
     file nobody added -- shows in neither `rev-parse HEAD` nor `status
     --porcelain`, so a comparison built on those two would report a repository
     as untouched while something had been written into it.
 
-    It is a digest of (path, size, mtime_ns) rather than of contents: 65,767
-    files and 1.3 GB in the platform checkout, walked in about a tenth of a
-    second, where hashing the bytes would take minutes on every tick. A write
-    that preserved a file's size AND its nanosecond mtime would slip through;
-    that is a deliberate trade and it is written down rather than left to be
-    discovered.
+    It records (path, size, mtime_ns) per file rather than hashing contents:
+    63,395 files and 1.3 GB in the platform checkout, walked in 0.65s, where
+    hashing the bytes would take minutes on every tick. A write that preserved
+    a file's size AND its nanosecond mtime would slip through; that is a
+    deliberate trade and it is written down rather than left to be discovered.
+
+    WHAT IS DELIBERATELY NOT WATCHED, AND WHY IT HAD TO BECOME AN ARGUMENT
+    ----------------------------------------------------------------------
+    `exclude` takes the SOURCE paths of the contract's `worktree_links`, and
+    task 49 is why. That task passed every check it had -- tsc, vitest, the
+    bite check, paired_paths -- pushed its branch, and was then failed by this
+    guard because vitest had written 131 bytes to
+
+        platform/node_modules/.vite/vitest/results.json
+
+    inside the very checkout being watched. `link_dependencies` had pointed the
+    worktree's `platform/node_modules` at the real one, because copying
+    gigabytes per task is not an option, and verification then ran THROUGH that
+    link. Its docstring argues "timing is the safety property... the agent
+    never sees them", which is true of the agent and silent about verification,
+    which runs after the links exist.
+
+    The two features had been in collision since 30 Aug 13:35, when the task's
+    own repo joined the watch list four hours after the only previous frontend
+    task finished. Task 49 was the first task to meet both.
+
+    So a write to a linked dependency tree is EXPECTED rather than tampering:
+    the runner put the link there and pointed a test runner at it. Excluding it
+    keeps the guard's real job -- catching a write the AGENT made outside its
+    worktree, where the derived diff would show nothing at all.
+
+    The exclusions are recorded on the snapshot and reused by
+    assert_unchanged, so before and after are always compared over the same
+    ground, and they are NAMED IN THE ERROR: an exclusion that hides a real
+    write must be visible to whoever reads the failure.
     """
     head: str
     porcelain: str
     tree_digest: str
     file_count: int
+    #: rel path -> (size, mtime_ns). Kept, not only hashed, so a failure can
+    #: say WHICH file moved. Task 49's error said "63395 files before, 63395
+    #: after" -- two identical numbers offered as evidence, because the count
+    #: is incidental to a digest over size and mtime. That is a reporting
+    #: defect independent of the guard, and it is why the failure sat unread
+    #: for a day. The map costs 0.65s and ~2 MiB, the same walk as the hash.
+    entries: dict[str, tuple[int, int]] = field(default_factory=dict)
+    #: Absolute, resolved. Recorded so the check cannot use a different set
+    #: from the snapshot, which would be a guard that reports its own drift.
+    excluded: tuple[str, ...] = ()
 
     @staticmethod
-    def _digest(repo: Path) -> tuple[str, int]:
-        """Streamed, not collected: rglob into a sorted list costs seconds on a
-        65k-file checkout and this runs twice per tick."""
+    def _digest(repo: Path, excluded: tuple[str, ...] = ()
+                ) -> tuple[str, int, dict[str, tuple[int, int]]]:
+        """One os.walk. Streamed into the map; nothing is collected and sorted
+        afterwards, which is what would cost seconds on a 63k-file checkout."""
         h = hashlib.sha256()
-        n = 0
-        root = str(repo)
+        entries: dict[str, tuple[int, int]] = {}
+        root = str(repo.resolve())
+        skip = set(excluded)
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             # .git is excluded, and not as an optimisation. Taking a snapshot
             # runs `git status`, which refreshes .git/index and changes its
@@ -65,7 +107,11 @@ class Untouched:
             # about the working tree.
             if ".git" in dirnames:
                 dirnames.remove(".git")
-            dirnames.sort()
+            # Pruned by full path, and only ever a CHILD -- os.walk yields the
+            # root before its children, so an exclusion naming the repo root
+            # matches nothing and cannot silently switch the whole guard off.
+            dirnames[:] = [d for d in sorted(dirnames)
+                           if os.path.join(dirpath, d) not in skip]
             rel_dir = os.path.relpath(dirpath, root)
             for name in sorted(filenames):
                 try:
@@ -74,30 +120,63 @@ class Untouched:
                     continue
                 if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
                     continue
-                n += 1
                 rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+                entries[rel] = (st.st_size, st.st_mtime_ns)
                 h.update(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\n"
                          .encode("utf-8", "surrogateescape"))
-        return h.hexdigest(), n
+        return h.hexdigest(), len(entries), entries
 
     @classmethod
-    def of(cls, repo: Path) -> "Untouched":
-        digest, count = cls._digest(repo)
+    def of(cls, repo: Path, exclude: Sequence[str | Path] = ()) -> "Untouched":
+        excluded = tuple(sorted({str(Path(p).resolve()) for p in exclude or ()}))
+        digest, count, entries = cls._digest(repo, excluded)
         return cls(head=git(repo, "rev-parse", "HEAD").strip(),
                    porcelain=git(repo, "status", "--porcelain").strip(),
-                   tree_digest=digest, file_count=count)
+                   tree_digest=digest, file_count=count,
+                   entries=entries, excluded=excluded)
+
+    def _what_moved(self, now: "Untouched", limit: int = 5) -> str:
+        """The filenames, which is what a person needs to act on this."""
+        added = sorted(set(now.entries) - set(self.entries))
+        removed = sorted(set(self.entries) - set(now.entries))
+        changed = sorted(p for p in set(self.entries) & set(now.entries)
+                         if self.entries[p] != now.entries[p])
+        parts = []
+        for label, paths in (("added", added), ("removed", removed),
+                             ("modified", changed)):
+            if not paths:
+                continue
+            shown = paths[:limit]
+            detail = []
+            for p in shown:
+                if label == "modified":
+                    was, now_ = self.entries[p], now.entries[p]
+                    how = (f"{was[0]} -> {now_[0]} bytes" if was[0] != now_[0]
+                           else f"{was[0]} bytes, mtime moved")
+                    detail.append(f"{p} ({how})")
+                else:
+                    detail.append(p)
+            more = f" and {len(paths) - limit} more" if len(paths) > limit else ""
+            parts.append(f"{len(paths)} {label}: {'; '.join(detail)}{more}")
+        return ". ".join(parts) if parts else "no file differs, which should be impossible here"
 
     def assert_unchanged(self, repo: Path, what: str) -> None:
-        now = Untouched.of(repo)
+        now = Untouched.of(repo, self.excluded)
         if now.head != self.head:
             raise GitError(f"{what} moved from {self.head[:12]} to {now.head[:12]}")
         if now.porcelain != self.porcelain:
             raise GitError(f"{what} has uncommitted changes it did not have before")
         if now.tree_digest != self.tree_digest:
+            # NAMED, not counted. The count is incidental to a digest over size
+            # and mtime, and printing it as though it were the evidence is what
+            # made task 49's failure unreadable.
+            skipped = (f" Not watched, because the contract links them and "
+                       f"verification runs through them: "
+                       f"{', '.join(self.excluded)}." if self.excluded else "")
             raise GitError(
-                f"{what} changed on disk without git seeing it: "
-                f"{self.file_count} files before, {now.file_count} after. "
-                f"Something was written to an untracked or ignored path.")
+                f"{what} changed on disk without git seeing it. "
+                f"{self._what_moved(now)}. Something was written to an "
+                f"untracked or ignored path.{skipped}")
 
 
 def branch_name(task_id: int, attempt: int) -> str:

@@ -104,6 +104,168 @@ def test_a_brand_new_ignored_file_is_caught(tmp_path):
         snap.assert_unchanged(repo, "repo")
 
 
+# ---- what the guard deliberately does not watch, and what it says ---------
+
+def _repo_with_deps(tmp_path, name="r"):
+    """A checkout with a gitignored dependency tree, like the platform one."""
+    repo = tmp_path / name
+    repo.mkdir()
+    sh(repo, "git", "init", "-q", "-b", "main")
+    sh(repo, "git", "config", "user.email", "t@t")
+    sh(repo, "git", "config", "user.name", "t")
+    # Two ignored trees: one the contract links, one it does not. The second
+    # is what proves the exclusion did not widen into "stop watching".
+    (repo / ".gitignore").write_text("node_modules/\n.cache/\n")
+    (repo / "src.ts").write_text("x")
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-q", "-m", "base")
+    cache = repo / "node_modules" / ".vite" / "vitest"
+    cache.mkdir(parents=True)
+    (cache / "results.json").write_text('{"version":"1.6.1","results":[]}')
+    (repo / ".cache").mkdir()
+    return repo, cache / "results.json"
+
+
+class TestLinkedDependencyTreesAreNotWatched:
+    """Task 49, exactly: every check passed, the branch pushed, and the guard
+    failed it because vitest wrote 131 bytes into the checkout's node_modules
+    -- which the runner had itself linked the worktree's node_modules at,
+    because copying gigabytes per task is not an option.
+    """
+
+    def test_a_write_to_the_dependency_tree_fails_without_the_exclusion(
+            self, tmp_path):
+        """The bug, held so the fix cannot be mistaken for a no-op."""
+        repo, results = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        results.write_text('{"version":"1.6.1","results":[["t",{"failed":true}]]}')
+        with pytest.raises(Exception, match="without git seeing it"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_and_passes_when_the_contract_linked_it(self, tmp_path):
+        repo, results = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo, exclude=[repo / "node_modules"])
+        results.write_text('{"version":"1.6.1","results":[["t",{"failed":true}]]}')
+        snap.assert_unchanged(repo, "repo")
+
+    def test_the_exclusion_does_not_widen_past_what_was_linked(self, tmp_path):
+        """Excluding node_modules must not stop watching the repository.
+
+        The guard's real job is catching a write the AGENT made outside its
+        worktree, where the derived diff would show nothing at all. An
+        exclusion that quietly covered the tracked tree would remove that.
+        """
+        repo, _ = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo, exclude=[repo / "node_modules"])
+        # Into a DIFFERENT ignored tree, so git sees nothing and only the
+        # digest can catch it -- which is the path the exclusion touches.
+        (repo / ".cache" / "planted.js").write_text("the agent wrote here")
+        with pytest.raises(Exception, match="without git seeing it"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_excluding_the_root_switches_nothing_off(self, tmp_path):
+        """A contract naming the repo root must not disable the guard.
+
+        os.walk yields the root before its children and the prune only ever
+        matches a CHILD path, so this is safe by construction rather than by a
+        check somebody has to remember.
+        """
+        repo, _ = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo, exclude=[repo])
+        (repo / ".cache" / "planted.js").write_text("still watched")
+        with pytest.raises(Exception, match="without git seeing it"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_the_check_reuses_the_snapshot_exclusions(self, tmp_path):
+        """Before and after are compared over the same ground.
+
+        assert_unchanged takes no exclusion argument; it reads the one recorded
+        on the snapshot. A guard that could be checked against a different set
+        from the one it was taken with would report its own drift as tampering.
+        """
+        repo, results = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo, exclude=[repo / "node_modules"])
+        assert snap.excluded == (str((repo / "node_modules").resolve()),)
+        results.write_text("rewritten")
+        snap.assert_unchanged(repo, "repo")
+
+
+class TestTheFailureNamesTheFile:
+    """Task 49's error was "63395 files before, 63395 after" -- two identical
+    numbers offered as evidence, because the count is incidental to a digest
+    over size and mtime. That is a reporting defect independent of the guard,
+    and it is why the failure went unread for a day.
+    """
+
+    def test_a_modified_file_is_named_with_what_changed(self, tmp_path):
+        repo, results = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        results.write_text("x" * 400)
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        msg = str(exc.value)
+        assert "node_modules/.vite/vitest/results.json" in msg
+        assert "1 modified" in msg
+        assert "-> 400 bytes" in msg
+
+    def test_a_same_size_rewrite_says_the_mtime_moved(self, tmp_path):
+        """Task 49's actual shape: 131 bytes before and after."""
+        repo, results = _repo_with_deps(tmp_path)
+        size = results.stat().st_size
+        snap = worktree.Untouched.of(repo)
+        import os
+        st = results.stat()
+        os.utime(results, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        assert f"{size} bytes, mtime moved" in str(exc.value)
+
+    def test_an_added_file_is_named(self, tmp_path):
+        repo, _ = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        (repo / "node_modules" / "planted.js").write_text("x")
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        assert "1 added: node_modules/planted.js" in str(exc.value)
+
+    def test_a_removed_file_is_named(self, tmp_path):
+        repo, results = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        results.unlink()
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        assert "1 removed:" in str(exc.value)
+
+    def test_many_files_are_capped_and_the_rest_counted(self, tmp_path):
+        repo, _ = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        for i in range(9):
+            (repo / "node_modules" / f"f{i}.js").write_text("x")
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        assert "9 added" in str(exc.value) and "and 4 more" in str(exc.value)
+
+    def test_what_was_not_watched_is_named_when_the_guard_fires(self, tmp_path):
+        """An exclusion that hides a real write must be visible to the reader."""
+        repo, _ = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo, exclude=[repo / "node_modules"])
+        (repo / ".cache" / "planted.js").write_text("x")
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        msg = str(exc.value)
+        assert "Not watched" in msg and "node_modules" in msg
+        assert ".cache/planted.js" in msg
+
+    def test_the_count_is_not_offered_as_the_evidence(self, tmp_path):
+        """The regression itself: no "N before, N after" in the message."""
+        repo, results = _repo_with_deps(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        results.write_text("changed")
+        with pytest.raises(Exception) as exc:
+            snap.assert_unchanged(repo, "repo")
+        assert "files before" not in str(exc.value)
+
+
 # ---- the evidence pack ----------------------------------------------------
 
 def test_the_pack_records_the_sql_and_the_moment(dsns, tmp_path):

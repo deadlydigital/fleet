@@ -974,6 +974,11 @@ catches §1.5's duplicates. It catches neither. Gates 2 and 3 do.
 
 ### 9.3 A task that fails after verification writes no reason to the database
 
+> **§9.6 is this defect with a second symptom, found 10 Sep from task 49.** The
+> FAILED path writes `status` and `completed_at` and discards everything else
+> the run established — the reason, and also the branch it had already pushed.
+> One root cause, four instances.
+
 Which is *why* 21 and 34 are unexplained. A task that fails a check records what
 the check said; a task that fails after passing verification records nothing,
 so the row reads FAILED with no account of what happened — and the two rows
@@ -1095,6 +1100,57 @@ during the observation period a refusal is still recorded only in the journal.
 Relaxing that to make the refusal visible would be a dry run with a side
 effect. The fix takes effect the day the flag comes off; until then,
 `journalctl -u fleet-autoapprove.service` is the record.
+
+---
+
+### 9.6 The FAILED path discards everything the run knew, and §9.3 is the same defect
+
+Recorded 10 Sep 2026 from task 49. **Not fixed here**, and it will recur.
+
+`runner/cycle.py`'s terminal writer has two branches. The success branch records
+what the run produced:
+
+```sql
+UPDATE tasks SET status='READY_FOR_REVIEW', branch_name=%s, completed_at=now()
+```
+
+The failure branch records that it stopped:
+
+```sql
+UPDATE tasks SET status='FAILED', completed_at=now()
+```
+
+`branch_name` is written **only** on the success path. Task 49 pushed
+`fleet/task-49` at step 5 and died at step 6, so `origin` holds a verified,
+reviewed-clean branch and `tasks.branch_name` is NULL. The console cannot show
+it — `app.py` gates the diff view on `status == 'READY_FOR_REVIEW' AND
+branch_name` — so verified work existed for a day in a place nothing in the
+system pointed at. It took reading `git branch -a` to find it.
+
+**§9.3 is not a separate defect; it is this one.** *"A task that fails after
+verification writes no reason to the database"* and *"a task that fails after
+pushing writes no branch name"* are one root cause: **the FAILED path writes two
+columns and discards everything else the run established.** By then the runner
+holds `result.reason`, `result.branch`, the verification verdict and the boundary
+result, and none of it is offered to the row.
+
+Four tasks are in this state — 21, 34, 49 and 50 — all with
+`VERIFICATION_RUN = PASS`, all with artefacts that were used or merged. 027's
+`task_was_unsuccessful_attempt()` reads round the silence by consulting the
+verification step; it does not end it.
+
+**Blast radius, checked rather than assumed.** Every reader that *acts* on
+`branch_name` already gates on status: `console/automerge.py` selects
+`WHERE status = 'READY_FOR_REVIEW'`, `console/app.py` requires both, and
+`console/merge.py` is reached only from a reviewed task. The rest
+(`morning.py`, `queries.py`) display it. So recording the branch on a FAILED
+task would be visible and inert — the value is that a person can see what the
+run left behind.
+
+**The fix is one line on the failure branch plus a column for the reason**, and
+it is deliberately not made here: it is a runner change, not an approval one,
+and §9.3 has been open since 9 Sep without anybody being hurt by it. What has
+changed is that it now has a fourth instance and a named cause.
 
 ---
 
