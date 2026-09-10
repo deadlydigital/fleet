@@ -1152,6 +1152,30 @@ it is deliberately not made here: it is a runner change, not an approval one,
 and §9.3 has been open since 9 Sep without anybody being hurt by it. What has
 changed is that it now has a fourth instance and a named cause.
 
+**And on 10 Sep the silence misled a reader for the fourth time, in a new
+direction: about a DIFFERENT task's work.** Reviewing task 55, I checked whether
+the frontend had a deploy path, read `tasks` row 51 — *Give the platform a
+deploy script*, `FAILED` — and concluded there was none. `platform/deploy.sh`
+has been on `main` since f3284c8 that morning and had been run watched three
+times, including a no-op. Task 51 says FAILED for the same reason tasks 21, 34,
+49 and 50 do: **the work landed and there is no FAILED → MERGED edge.**
+
+This is worth separating from the four above, because the blast radius argument
+recorded there — *"recording the branch on a FAILED task would be visible and
+inert"* — is about readers that ACT on `branch_name`. It is right about those,
+and it does not cover this: the row is also read as a statement about **whether
+the work exists**, and by that reading five FAILED rows are five false
+statements. The cost so far is small and it is not zero — one wrong sentence in
+a question put to the person who then had to correct it, which is the cheapest
+possible version of the failure and not a reason to think it is the last.
+
+The rule that would have saved it is not a schema change and is available today:
+**ask the tree, not the row.** `git log -- platform/deploy.sh` is one command and
+it is the same discipline `paired_paths.py` and `new_test_bites.sh` are built on
+— *"git is the thing neither the agent nor the runner can talk out of"*. The
+fix in the paragraph above is still the right one; this is what to do until it
+is scheduled, and it is still unscheduled.
+
 ---
 
 ### 9.7 A check nobody can fail is what the first watched run is for
