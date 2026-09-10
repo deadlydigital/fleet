@@ -246,14 +246,77 @@ def test_no_base_sha_is_could_not_run(repo):
 
 # ---- and the contract that uses it ----------------------------------------
 
-def test_the_shipped_contract_pairs_the_two_files_task_28_named():
+#: The second group, added 10 Sep 2026. The orders proxy forwards six
+#: parameters and api/analytics/routes/orders.py has accepted four more since
+#: task 2, so the page half alone ships controls that appear to work.
+ORDERS_PROXY = "platform/app/api/analytics/orders/route.ts"
+ORDERS_PAGE = "platform/app/(dashboard)/analytics/orders/page.tsx"
+
+
+def _shipped_groups():
     import yaml
     c = yaml.safe_load(
         (ROOT / "contracts" / "dd-analytics-frontend.yaml").read_text())
-    groups = c["paired_paths"]
-    assert len(groups) == 1
-    assert sorted(groups[0]["paths"]) == sorted([PROXY, PAGE])
-    assert groups[0]["why"].strip()
+    return c["paired_paths"], c["writable_paths"]
+
+
+def _group_for(groups, *paths):
+    """The group naming exactly these paths, or None.
+
+    Found BY ITS PATHS rather than by position. This test asserted
+    `len(groups) == 1` and indexed `groups[0]`, so adding a second group failed
+    it -- not for a pairing being wrong, but for a pairing being new. That is
+    the same defect test_every_shipped_contract_matches_the_repo_it_names had:
+    a rule written against the cases that happened to exist, refusing the next
+    one for arriving.
+    """
+    want = sorted(paths)
+    return next((g for g in groups if sorted(g.get("paths") or []) == want), None)
+
+
+def test_the_shipped_contract_pairs_the_two_files_task_28_named():
+    groups, _ = _shipped_groups()
+    g = _group_for(groups, PROXY, PAGE)
+    assert g is not None, "the dashboard pair is not in the contract"
+    assert g["why"].strip()
+
+
+def test_the_shipped_contract_pairs_the_orders_proxy_and_page():
+    """The half that is dangerous is the PAGE half, which is why this exists.
+
+    The proxy alone accepts parameters nothing sends and changes nothing a user
+    sees. The page alone renders four filter controls, the proxy drops what
+    they set, and the table returns every row with a summary that agrees with
+    it -- a control wired to nothing, which is worse than a control that is
+    missing because the missing one is visible.
+
+    tsc and vitest cannot catch that: both halves compile, and the page's own
+    tests pass against a proxy that ignores the parameters.
+    """
+    groups, _ = _shipped_groups()
+    g = _group_for(groups, ORDERS_PROXY, ORDERS_PAGE)
+    assert g is not None, "the orders pair is not in the contract"
+    assert g["why"].strip()
+
+
+def test_every_shipped_group_could_actually_bite():
+    """024's own rules, held against the file rather than only the database.
+
+    The trigger refuses these at INSERT, which is one task too late to be a
+    useful place to find out: the contract is edited by a person queueing work,
+    and this fails in the suite they run before they queue it.
+    """
+    groups, writable = _shipped_groups()
+    prefixes = [w.split("*", 1)[0].rstrip("/") for w in writable]
+    for i, g in enumerate(groups, 1):
+        assert len(g.get("paths") or []) >= 2, f"group {i} pairs nothing"
+        assert (g.get("why") or "").strip(), f"group {i} has no why"
+        for path in g["paths"]:
+            assert any(path == pre or path.startswith(pre + "/")
+                       for pre in prefixes), (
+                f"group {i} names {path}, which is outside writable_paths -- "
+                f"the task cannot write it, so the pair is satisfied by "
+                f"writing neither and the check cannot fail")
 
 
 def test_the_shipped_contract_does_not_merge_unattended():

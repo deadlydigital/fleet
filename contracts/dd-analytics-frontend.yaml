@@ -86,7 +86,12 @@
 work_type: dd_frontend
 repo: deadly-digital-platform
 base_branch: main
-contract_version: 3
+# 4 since 10 Sep 2026: a second paired_paths group. Bumped because this
+# version REFUSES something version 3 allowed -- an orders change landing one
+# half -- and `runs.contract_version` is what keeps a run attributable to the
+# contract that actually held it. Task 49 ran under 3 and was not held to the
+# orders pairing; anything from here is. Same argument rank.RANK_VERSION makes.
+contract_version: 4
 
 # ---------------------------------------------------------------------------
 # WRITABLE
@@ -269,6 +274,45 @@ paired_paths:
     paths:
       - platform/app/api/analytics/dashboard/route.ts
       - platform/app/(dashboard)/analytics/page.tsx
+
+  # ADDED 10 Sep 2026, from drafts/order-filters-frontend.md, which found the
+  # gap while being written: the group above pairs the DASHBOARD proxy with the
+  # overview page and says nothing about the ORDERS pair, and the draft's own
+  # closing line was "whoever queues this either adds a group for these two
+  # paths or reads the diff for it". Reading the diff for it is not a check --
+  # it is the thing a check exists to stop being necessary, and it is the
+  # reading that does not happen at 02:00.
+  #
+  # THE TWO HALVES ARE NOT EQUALLY DANGEROUS, and that asymmetry is the reason
+  # this group is worth more than the one above:
+  #
+  #   route.ts alone   the proxy accepts four more parameters and no control
+  #                    sends them. Nothing a user sees changes. Dead code, and
+  #                    the next task notices.
+  #
+  #   page.tsx alone   FOUR CONTROLS THAT APPEAR TO WORK. The page renders
+  #                    payment method, country, coupon and has_discount, the
+  #                    user sets one, the proxy drops it, and the table comes
+  #                    back with every row and a summary that matches. Nothing
+  #                    errors. The merchant reads an unfiltered figure as a
+  #                    filtered one.
+  #
+  # That is FEAT-035 exactly: a control that is wired to nothing is worse than
+  # a control that is missing, because the missing one is visible. tsc and
+  # vitest cannot catch it -- both halves compile and the page's own tests pass
+  # against a proxy that ignores the parameters -- so the pairing is the only
+  # thing between that and a merchant.
+  - why: >-
+      the orders proxy at platform/app/api/analytics/orders/route.ts forwards
+      only start, end, status, search, sort_by and sort_dir, while
+      api/analytics/routes/orders.py has accepted payment_method, country,
+      coupon and has_discount since task 2. Landing the page half alone ships
+      four filter controls that appear to work and silently return unfiltered
+      rows, with a summary that agrees with them; landing the proxy half alone
+      changes nothing a user can see. Land both or neither.
+    paths:
+      - platform/app/api/analytics/orders/route.ts
+      - platform/app/(dashboard)/analytics/orders/page.tsx
 
 # node_modules is gitignored, so a fresh worktree has none and neither tsc nor
 # vitest can start. The runner links the checkout's own tree in AFTER the diff
