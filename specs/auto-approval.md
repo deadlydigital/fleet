@@ -1154,6 +1154,54 @@ changed is that it now has a fourth instance and a named cause.
 
 ---
 
+### 9.7 A check nobody can fail is what the first watched run is for
+
+Recorded 10 Sep 2026. `platform/deploy.sh` shipped with a `wait_serving` step
+that could not fail:
+
+```bash
+code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APP_URL" || echo 000)"
+case "$code" in 000) ;; 5*) …fail… ;; 4*) …warn… ;; *) echo serving; return 0 ;;
+```
+
+`curl -w '%{http_code}'` prints `000` on a connection failure **and** exits
+non-zero, so `|| echo 000` appended a second one. `"000000"` misses the `000)`
+case, falls through to `*)`, and returns success. **A container that came up
+dead would have been reported as deployed** — the one thing the step exists to
+assert.
+
+It printed `serving: HTTP 000000` five seconds after the swap, on the first
+watched run, against a port nothing was listening on. The deploy was fine —
+the site served 200 throughout and the two sha assertions are independent and
+both held — but the check contributed nothing.
+
+**Three things did not catch it, and none of them could have.**
+`deploy_script_shape.py` asks whether the script HAS a read-back, not whether
+the read-back works; `bash -n` parses it; and the boundary and the contract
+never see runtime behaviour. This is the class of defect
+`contracts/checks/new_test_bites.sh` exists for on code — a check that passes
+before the change it is meant to prove — and there is no equivalent for a
+script whose verification cannot run it.
+
+**What did catch it: the author saying which step they were unsure of.** The
+spec asked for that in as many words —
+
+> Say so in a comment, in the script, at the point where it matters.
+
+— and the script carried `THIS IS THE STEP I AM LEAST SURE OF` directly above
+the broken lines. That is why it was read closely on run one instead of run
+five, and it is the cheapest instrument in this whole document: it costs a
+sentence and it aims a person's attention at the place the author already knew
+was thin.
+
+**The general form, and it is not new here.** §9.5 was a refusal that left no
+row; §7.1 of `specs/daily-brief.md` is a claim that left the same row every
+morning; this is an assertion that could only succeed. All three are records
+that exist and carry no signal, and in all three the absence looked exactly like
+the healthy state.
+
+---
+
 ## 10. The first dry run over the live pool, and what it found
 
 Run 9 Sep 2026 against the twelve open candidates, at platform `6fd8ddd`,
