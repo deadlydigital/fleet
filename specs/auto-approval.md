@@ -179,6 +179,12 @@ that catches the duplicates in §1.5. It catches neither of them.
 measured**, along with §9.3, which is why the two miscounted rows have no
 explanation attached to them.
 
+> **Fixed 10 Sep 2026** — `027_repeat_failure_identity.sql` and
+> `console/work_key.py`. The ceiling now counts unsuccessful attempts at the
+> same **document row** rather than the same title, and does not count a FAILED
+> task whose acceptance check passed. It still does not catch §1.5's
+> duplicates — gates 2 and 3 do, and that sentence above stands. See §9.2.
+
 ---
 
 ## 2. What is proposed
@@ -862,7 +868,49 @@ by **the unattended path only**, so a person keeps the 100% ceiling, which is
 what "leaving £63 for work a person chooses" means. It is step 2 of §6 and it
 should land before the timer does, not after.
 
-### 9.2 The repeat-failure ceiling is looser than it reads, and miscounts in both directions
+### 9.2 The repeat-failure ceiling is looser than it reads, and miscounts in both directions — **FIXED 10 Sep 2026** (`027`, `console/work_key.py`)
+
+> **What was built.** The finding below stands as written; this is what
+> answered it, after the first live dry run proved it on the real pool.
+>
+> **The identity.** `candidates.work_key`, derived at load by
+> `console/work_key.py` from `evidence[].document`, `evidence[].sha` and
+> `evidence[].section` — the row of the findings document the candidate IS.
+> The heading is not compared to another heading: it is **resolved against the
+> document at the sha the candidate cites**, so batch 8's *"Weekly — coupon and
+> discount performance"* and batch 9's verbatim cell land on one row. All five
+> repeat pairs in the pool collapse; 16 of the 17 rows resolve, and c25 (whose
+> heading elides a parenthetical the document carries) falls back to its
+> heading. A NULL key falls back to 022's `(title, repo)`, so this is never
+> weaker than what it replaced.
+>
+> **The outcome rule, frozen.** An *unsuccessful attempt* is a task in a
+> terminal `FAILED` state **whose acceptance verification did not record
+> `PASS`**. Tasks 21, 34 and 49 are FAILED with a passing check and do not
+> count; 23, 24 and 25 failed their check and do. A FAILED task that never
+> reached verification counts — it produced nothing, and treating silence as a
+> pass would let a task that died before it was checked buy the next one.
+>
+> **The threshold is unchanged at 2**, and so are the band, the path-overlap
+> rule, `per_night`, the pool ceilings and the ranking keys.
+>
+> **And the dry run now evaluates it.** The stop lived only inside
+> `approve_batch()`, which `sweep(dry_run=True)` never calls — which is why the
+> first dry run could not show that the ceiling was broken and it had to be
+> found by hand against production. `plan()` reads the same
+> `candidate_prior_failures(id)` the approval enforces with, gate 4 in
+> `console/rank.py` holds the row, and `approve.py` still refuses inside the
+> transaction as the backstop.
+>
+> **Corrected counts on the live pool** (dry run, 10 Sep 2026): c28 = **1**,
+> where it read 0. Nothing reaches 2 yet, so nothing is held by this rule
+> tonight — which is the honest outcome and not the same as the rule being
+> untested; `tests/test_repeat_failure.py` and
+> `tools/mutation-repeat-failure.sh` are what test it.
+>
+> **What is NOT fixed:** §9.3. A task that fails after passing verification
+> still writes no reason to the database. This migration reads round that
+> silence; it does not end it.
 
 `candidate_prior_failures(title, repo)` is **exact-match on the title**, and the
 producer rewrites titles every run. Candidates 17 and 23 are the same CSV export

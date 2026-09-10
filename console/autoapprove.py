@@ -6,6 +6,22 @@ BYPASSES NONE -- the repeat-failure stop, the batch cap, the queue-depth check,
 the credit check and the one-transaction ordering are already in approve.py and
 were put there on the grounds that auto-approval would have to meet them.
 
+IT NOW EVALUATES ONE OF THEM EARLY, AND THAT IS NOT A SECOND CEILING
+--------------------------------------------------------------------
+The repeat-failure stop lived only inside approve_batch(), which a dry run
+never calls -- so the first live dry run could not show that the stop was
+broken, and the defect had to be found by hand against the database. plan()
+now reads `candidate_prior_failures(id)`, THE SAME FUNCTION approve.py
+enforces with, and hands it to gate 4 in rank.py. Two consequences,
+both wanted:
+
+  * the dry run prints the count and whether the stop matched, for every row;
+  * a night whose top-ranked row is repeat-blocked HOLDS THAT ROW and takes the
+    next one, instead of dying on an ApprovalRefused and approving nothing.
+
+approve.py still refuses. It is the backstop and it runs inside the approving
+transaction, where a stale plan cannot get past it.
+
 THE REFUSAL THAT MATTERS
 ------------------------
 `decision_log.reason` is NOT NULL on every row, and 010 §4 is explicit that ten
@@ -41,9 +57,16 @@ class NothingToApprove(Exception):
 
 
 def _open_candidates(conn) -> List[Dict[str, Any]]:
+    # work_identity AND prior_failures come from the SAME FUNCTIONS
+    # console/approve.py enforces with, on this read-only connection. §7.H: the
+    # dry run and the real decision must not be two predicates that agree only
+    # until somebody edits one -- which is how this defect stayed invisible,
+    # since the stop lived inside approve_batch() and a dry run never called it.
     return conn.execute(
         "SELECT id, batch_id, title, repo, band, hib_signal, probes,"
-        " suggested_paths, disposition, objective_ref"
+        " suggested_paths, disposition, objective_ref, work_key,"
+        " candidate_work_identity(id) AS work_identity,"
+        " candidate_prior_failures(id) AS prior_failures"
         " FROM candidates WHERE disposition IN ('PENDING','NOT_NOW')"
         " ORDER BY id").fetchall()
 
@@ -170,7 +193,8 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
 
     scored = []
     for c in candidates:
-        g = rank.gate(c, newest_batch=newest, live_tasks=tasks)
+        g = rank.gate(c, newest_batch=newest, live_tasks=tasks,
+                      prior_failures=c["prior_failures"])
         scored.append({**dict(c), "gate": g, "keys": rank.key_values(c),
                        "sort": rank.rank(c)})
 
@@ -213,6 +237,17 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
              # into "overlapped" is what would make §7.2 unanswerable.
              "matched_via": s["gate"].get("matched_via"),
              "overlap_task_id": s["gate"].get("task_id"),
+             # THE REPEAT-FAILURE COUNT ON EVERY ROW, including rows the gate
+             # never reached because an earlier one held them. §10 asks for the
+             # count AND the other hold reason, and they are different facts: a
+             # row held tonight by a path overlap that has TWO prior failures
+             # behind it is a row that will be held for a different reason the
+             # moment the overlapping task merges, and reading only the first
+             # rule that fired is how that arrives as a surprise.
+             "work_identity": s["work_identity"],
+             "work_key_derived": s["work_key"] is not None,
+             "prior_failures": s["gate"].get("prior_failures", 0),
+             "repeat_stop_matched": s["gate"].get("rule") == "repeat_failure",
              # EACH PROBE'S RESULT, not just the tally. §3 asks for this by
              # name: "32 of 32 held" cannot tell a later reader WHICH claim
              # was true, and the whole argument for storing predicates rather
@@ -236,6 +271,26 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
         # never has its probes re-executed, because there is nothing to spend on
         # it either way. `reached` is recorded beside the totals so "18 of 18
         # held" cannot be misread as "the whole pool was re-verified".
+        # THE CEILING'S OWN TALLY, beside the probes' one and for the same
+        # reason. `keyed` is the line that matters: a pool where nothing
+        # resolved to a document row is a pool being counted by title again,
+        # and "0 prior failures" then means "we could not tell" rather than
+        # "none" -- which is precisely how this read correct while broken.
+        "repeat": {
+            "stop_at": approve.REPEAT_FAILURE_STOP,
+            "with_prior_failures": sum(1 for s in scored if s["prior_failures"]),
+            "blocked": sum(1 for s in scored
+                           if s["gate"].get("rule") == "repeat_failure"),
+            "keyed": sum(1 for s in scored if s["work_key"] is not None),
+            # A key resolved to a document ROW is the strong case. A key made
+            # from the heading alone is stable across batches only while the
+            # producer keeps quoting the heading the same way, and a row
+            # counted by title is 022's behaviour. Three different strengths of
+            # the same 0, and flattening them is what made this invisible.
+            "resolved": sum(1 for s in scored
+                            if (s["work_key"] or "").find("#row:") > 0),
+            "of_candidates": len(scored),
+        },
         "probes": {
             "run": sum(s["gate"].get("probes", {}).get("run", 0) for s in scored),
             "held": sum(s["gate"].get("probes", {}).get("held", 0) for s in scored),
@@ -274,6 +329,10 @@ def mechanics_of(p: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "rank_version": p["rank_version"],
         "platform_sha": p["platform_sha"],
+        # WHAT THE CEILING SAW, recorded on the decision. A morning that wants
+        # to know whether the repeat stop was consulted at all -- as opposed to
+        # consulted and silent -- cannot get that from a list of approved rows.
+        "repeat": p["repeat"],
         "probes": p["probes"],
         "cut": p["cut"],
         "ranked": p["ranked"],
@@ -325,14 +384,27 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
         print("credit: UNCOMPUTED -- nothing may be approved")
     print(f"cut: {p['cut']['n']}, bound by {', '.join(p['cut']['bound_by'])} "
           f"{p['cut']['limits']}")
+    rk = p["repeat"]
+    print(f"repeat-failure: stop at {rk['stop_at']}; "
+          f"{rk['with_prior_failures']} candidate(s) carry a prior unsuccessful "
+          f"attempt, {rk['blocked']} at or over the stop  "
+          f"({rk['resolved']} of {rk['of_candidates']} resolved to a document "
+          f"row, {rk['keyed'] - rk['resolved']} keyed by heading only, "
+          f"{rk['of_candidates'] - rk['keyed']} counted by title)")
     print()
     print("ranked, eligible first:")
     for r in p["ranked"]:
         mark = "  " if r["eligible"] else "x "
         k = r["keys"]
         line = (f"  {mark}c{r['candidate_id']:<3} {str(k['key1_class']):<14}"
-                f" {str(k['key2_band'] or '-'):<8} {r['title'][:52]}")
+                f" {str(k['key2_band'] or '-'):<8} rf={r['prior_failures']} "
+                f"{r['title'][:44]}")
         print(line)
+        # THE IDENTITY THE COUNT WAS TAKEN OVER, printed under every row. A
+        # count of 0 means nothing until you can see what it was 0 OF -- which
+        # is exactly how nine rows reading 0 looked correct for a night.
+        print(f"        work: {r['work_identity']}"
+              f"{'' if r['work_key_derived'] else '   (fallen back to the title)'}")
         if not r["eligible"]:
             print(f"        HELD ({r['rule']}): {r['detail']}")
     print()

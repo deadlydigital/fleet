@@ -1,6 +1,6 @@
 """Ordering open candidates, and refusing to order them when nothing separates.
 
-specs/auto-approval.md §2.2. A pure `rank()` over four gates, and the gates are
+specs/auto-approval.md §2.2. A pure `rank()` over five gates, and the gates are
 not part of the ranking: a candidate that fails one is not rejected and not
 marked -- it is simply not approved by the machine, stays PENDING, and appears
 in the morning brief with the rule that held it. That is the shape
@@ -42,6 +42,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 from . import config
+# The threshold is console/approve.py's and stays there: approve.py is what
+# ENFORCES it inside the approving transaction, and a second literal here would
+# be the drift where the gate holds at one number and the ceiling refuses at
+# another. This gate is the same rule, applied early enough that the ranking
+# can pass over the row instead of the night dying on a refusal.
+from .approve import REPEAT_FAILURE_STOP
 
 #: Bumped when any key changes meaning or order. Recorded on every decision, so
 #: last week's batches stay attributable to the ranking that made them instead
@@ -68,7 +74,7 @@ SPEC_BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
 def _shape_check():
     """contracts/checks/candidate_block_shape.py, imported rather than copied.
 
-    run_probe() is the whole reason gate 4 is cheap: it exists, it is pure
+    run_probe() is the whole reason gate 5 is cheap: it exists, it is pure
     pathlib and `re`, and nothing is shelled out -- so a probe cannot become an
     arbitrary command no matter what a producer writes.
 
@@ -267,7 +273,7 @@ def declared_paths(task: Dict[str, Any]) -> tuple[List[str], str]:
 
 
 def platform_head(repo: str) -> str | None:
-    """The sha gate 4 re-executes against. Recorded on every decision."""
+    """The sha gate 5 re-executes against. Recorded on every decision."""
     mod = _shape_check()
     path = mod.REPOS.get(repo)
     if path is None:
@@ -281,7 +287,7 @@ def platform_head(repo: str) -> str | None:
 
 
 def check_probes(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    """GATE 4. Re-execute the stored predicates against the tree as it is now.
+    """GATE 5. Re-execute the stored predicates against the tree as it is now.
 
     The most valuable gate here and the cheapest. The producer verified batch 9
     at platform 4619a76; HEAD moves nightly, and a claim that has stopped being
@@ -318,12 +324,20 @@ def check_probes(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def gate(candidate: Dict[str, Any], *, newest_batch: int,
-         live_tasks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """The four gates, in order, ahead of the sort.
+         live_tasks: Sequence[Dict[str, Any]],
+         prior_failures: int = 0) -> Dict[str, Any]:
+    """The five gates, in order, ahead of the sort.
 
     Returns {"eligible": bool, "rule": str|None, "detail": str|None, ...}.
     The first failure stops: the rule that held a row is the one printed in the
-    brief, and reporting four of them for one row would bury it.
+    brief, and reporting five of them for one row would bury it.
+
+    `prior_failures` is passed IN rather than read here, so this stays pure: the
+    same inputs give the same answer, which is the property that makes a dry
+    run worth reading. console/autoapprove.plan() reads it from
+    `candidate_prior_failures(id)` -- the same function console/approve.py
+    enforces with, so the dry run and the real decision cannot drift into two
+    predicates that agree only until somebody edits one.
     """
     # 1. PENDING only, never NOT_NOW. A NOT_NOW is the only record of a human
     #    judgement about one specific candidate, and a machine that can overrule
@@ -333,7 +347,8 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
         return {"eligible": False, "rule": "not_pending",
                 "detail": f"disposition is {candidate.get('disposition')}; "
                           f"NOT_NOW is a person's veto and the machine does not "
-                          f"overrule it"}
+                          f"overrule it",
+                "prior_failures": prior_failures}
 
     # 2. The newest batch only. Batch 9 re-verified batch 8's rows against a
     #    newer sha, so an older row is superseded by construction -- and rows
@@ -343,7 +358,8 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
         return {"eligible": False, "rule": "older_batch",
                 "detail": f"batch {candidate.get('batch_id')}, and the newest "
                           f"is {newest_batch}; the newer batch re-verified "
-                          f"these claims against a later sha"}
+                          f"these claims against a later sha",
+                "prior_failures": prior_failures}
 
     # 3. No overlap with a task that is not terminal.
     mine = [p for p in (candidate.get("suggested_paths") or [])]
@@ -356,12 +372,42 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
                               f"task {task['id']} declares"
                               f"{'' if source == 'spec' else ' (via its contract, which is wide)'}",
                     "task_id": task["id"], "matched_via": source,
-                    "paths": [list(h) for h in hits]}
+                    "paths": [list(h) for h in hits],
+                    "prior_failures": prior_failures}
 
-    # 4. The probes still hold at the current HEAD.
+    # 4. THE REPEAT-FAILURE STOP, and it is a ceiling rather than a
+    #    measurement. specs/unattended-operation.md §5.2 and 022: the same work
+    #    has already been attempted unsuccessfully twice, and approving it
+    #    again buys the same failure at the same price.
+    #
+    #    AHEAD OF THE PROBES because it is free and they are not -- gate 5
+    #    re-executes predicates against two checkouts -- and BEHIND the overlap
+    #    check because that is where it was: a row held by gate 3 today must
+    #    keep reporting gate 3, or a rule change reads as a behaviour change in
+    #    the brief. The count is attached to every result either way, including
+    #    rows held earlier, so a reader can see it for a row this gate never
+    #    reached.
+    #
+    #    IT WITHHOLDS THE AUTOMATIC APPROVAL, NEVER THE CANDIDATE. The row
+    #    stays PENDING, appears in the brief with this rule, and a person may
+    #    still tick it through the console by naming it in repeat_overrides
+    #    with a reason. console/approve.py refuses those on the unattended
+    #    path: an override is a person saying it is different this time, and
+    #    there is no such sentence when nobody is there.
+    if prior_failures >= REPEAT_FAILURE_STOP:
+        return {"eligible": False, "rule": "repeat_failure",
+                "detail": (f"materially the same work has already had "
+                           f"{prior_failures} unsuccessful attempt(s), and the "
+                           f"stop is {REPEAT_FAILURE_STOP}; approving it again "
+                           f"buys the same failure at the same price"),
+                "prior_failures": prior_failures}
+
+    # 5. The probes still hold at the current HEAD.
     probes = check_probes(candidate)
     if not probes["ok"]:
         return {"eligible": False, "rule": "probes_failed",
-                "detail": probes["why"], "probes": probes}
+                "detail": probes["why"], "probes": probes,
+                "prior_failures": prior_failures}
 
-    return {"eligible": True, "rule": None, "detail": None, "probes": probes}
+    return {"eligible": True, "rule": None, "detail": None, "probes": probes,
+            "prior_failures": prior_failures}

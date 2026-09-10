@@ -173,9 +173,16 @@ Read the tree; do not write paths from memory.
 """
 
 
-#: A candidate that has produced this many FAILED tasks is not approved
-#: without somebody saying why. specs/unattended-operation.md §5.2 as
-#: corrected in 022: two is where a repeat stops being bad luck.
+#: A candidate whose work has already had this many UNSUCCESSFUL ATTEMPTS is
+#: not approved without somebody saying why. specs/unattended-operation.md §5.2
+#: as corrected in 022: two is where a repeat stops being bad luck.
+#:
+#: THE NUMBER IS UNCHANGED AND 027 DID NOT TOUCH IT. What changed is the
+#: quantity it bounds. Until 027 the count was keyed on the candidate TITLE and
+#: counted every `tasks.status='FAILED'` row, so it under-counted real repeats
+#: (a retitle reset it to zero) and over-counted fake ones (three of this
+#: host's six FAILED tasks passed their acceptance check and produced accepted
+#: artefacts). Both halves are 027; the threshold is where it always was.
 REPEAT_FAILURE_STOP = 2
 
 
@@ -276,9 +283,17 @@ def approve_batch(*, reason: str, approve_ids: List[int],
         # anyway" is a sentence somebody wrote rather than a silence.
         overrides = repeat_overrides or {}
         if approve_ids:
+            # KEYED ON THE CANDIDATE, NOT ITS TITLE, since 027. The producer
+            # rewrites titles every run -- it must, because it is forbidden to
+            # deduplicate -- so a title-keyed count restarted at zero every
+            # batch and this stop could never reach 2. c14 and c28 are one row
+            # of one findings document eleven days apart, and scored 1 and 0.
+            # candidate_prior_failures now counts unsuccessful attempts at the
+            # same WORK, across batches, ids and retitles.
             repeats = conn.execute(
                 "SELECT c.id, c.title, c.repo,"
-                " candidate_prior_failures(c.title, c.repo) AS fails"
+                " candidate_work_identity(c.id) AS work,"
+                " candidate_prior_failures(c.id) AS fails"
                 " FROM candidates c WHERE c.id = ANY(%s)",
                 (list(approve_ids),)).fetchall()
             blocked = [r for r in repeats
@@ -286,8 +301,8 @@ def approve_batch(*, reason: str, approve_ids: List[int],
                        and not (overrides.get(r["id"]) or "").strip()]
             if blocked:
                 lines = "; ".join(
-                    f"{r['title']!r} has already produced {r['fails']} failed "
-                    f"task(s)" for r in blocked)
+                    f"{r['title']!r} ({r['work']}) has already produced "
+                    f"{r['fails']} unsuccessful attempt(s)" for r in blocked)
                 raise ApprovalRefused(
                     f"{len(blocked)} candidate(s) have failed "
                     f"{REPEAT_FAILURE_STOP} times or more and are not approved "

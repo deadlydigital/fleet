@@ -242,6 +242,19 @@ Built as `022_repeat_failure_stop.sql` (`candidate_prior_failures`) and the
 surface today and to auto-approval in §6.1 tomorrow, because both go through
 `approve_batch`.**
 
+> **CORRECTED 10 Sep 2026 — `(title, repo)` was not an identity, and the
+> ceiling could never fire.** The paragraph above conflates the ROW with the
+> WORK. The row has no stable key across batches; the work does, and the
+> producer quotes it: `evidence[].document` and `evidence[].section` name a row
+> of a findings document, and the producer rewrites titles but does not get to
+> rewrite somebody else's document. Measured on the live pool, c14 scored 1 and
+> c28 — the same document row, re-verified eleven days later — scored 0, with
+> the stop at 2. `027_repeat_failure_identity.sql` and `console/work_key.py`
+> replace the key; the threshold is unchanged. The same migration stops
+> counting `tasks.status='FAILED'` blindly, because three of this host's six
+> FAILED tasks passed their acceptance check and produced accepted artefacts.
+> See specs/auto-approval.md §9.2.
+
 **This is the only unbounded loop I can find in the system.**
 
 ---

@@ -29,7 +29,7 @@ since -- batch 9 was verified at platform 4619a76 and HEAD is past it. A loader
 that refused a batch whose claims had aged would refuse to record the finding
 that the claims HAD aged, which is exactly the fact worth keeping. Re-execution
 belongs at the approval, against the sha about to be spent money on:
-specs/auto-approval.md §2.2 gate 4, in console/rank.py.
+specs/auto-approval.md §2.2 gate 5, in console/rank.py.
 
 So: this writes rows. It does not judge them, it cannot approve them, and 013's
 trigger means it could not pre-approve one if it tried.
@@ -226,6 +226,22 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
             problems.append(f"{where}: {exc}")
             band = None
 
+        # THE SECOND FACT READ OFF THE SAME HEADING. band_of() takes the
+        # frequency word; work_key.derive() resolves the rest of it to the row
+        # of the findings document this candidate IS, which is what lets the
+        # repeat-failure ceiling see a repeat the producer is forbidden to
+        # deduplicate. Derived here, at the load, for the reason the band is:
+        # once, in the code that is allowed to refuse the row, rather than
+        # every night in a ranker that cannot.
+        #
+        # A candidate that cannot be keyed is NOT refused. The key is a safety
+        # ceiling's input, not a producer contract, and 027 falls back to
+        # (title, repo) for a NULL -- so an unkeyable row loads and counts the
+        # way it did before this existed. It is reported instead.
+        from . import work_key as _work_key
+        keyed = _work_key.derive({"repo": c.get("repo"),
+                                  "evidence": c.get("evidence") or []})
+
         out.append({
             "title": str(c.get("title") or "").strip(),
             "rationale": str(c.get("rationale") or "").strip(),
@@ -236,6 +252,9 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
             "band": band,
             "hib_signal": sig,
             "probes": probes if isinstance(probes, list) else [],
+            "work_key": keyed["key"],
+            "work_key_kind": keyed["kind"],
+            "work_key_why": keyed.get("why"),
         })
 
     if problems:
@@ -272,6 +291,17 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
         "signals": sum(1 for r in rows if r["hib_signal"]),
         "bands": {b: sum(1 for r in rows if r["band"] == b)
                   for b in BANDS + (None,) if any(r["band"] == b for r in rows)},
+        # PRINTED, NOT SWALLOWED. A batch where nothing keyed is a batch the
+        # repeat-failure ceiling will count by title again, which is the
+        # failure 027 exists to end and which went unnoticed for two batches
+        # precisely because nothing said so at the load.
+        "work_keys": {
+            "row": sum(1 for r in rows if r["work_key_kind"] == "row"),
+            "topic": sum(1 for r in rows if r["work_key_kind"] == "topic"),
+            "none": sum(1 for r in rows if not r["work_key"]),
+        },
+        "unkeyed": [{"title": r["title"], "why": r["work_key_why"]}
+                    for r in rows if not r["work_key"]],
     }
     if dry_run:
         summary["batch_id"] = None
@@ -290,12 +320,12 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
             conn.execute(
                 "INSERT INTO candidates (batch_id, title, rationale, repo,"
                 " objective_ref, evidence, suggested_paths, band, hib_signal,"
-                " probes) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " probes, work_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (batch_id, r["title"], r["rationale"], r["repo"],
                  r["objective_ref"], json.dumps(r["evidence"]),
                  r["suggested_paths"], r["band"],
                  json.dumps(r["hib_signal"]) if r["hib_signal"] else None,
-                 json.dumps(r["probes"])))
+                 json.dumps(r["probes"]), r["work_key"]))
             ids.append(conn.execute(
                 "SELECT currval('candidates_id_seq') AS id").fetchone()["id"])
     summary["batch_id"] = batch_id
@@ -422,6 +452,11 @@ def main(argv=None) -> int:
             what = "would load" if args.dry_run else f"loaded batch {out['batch_id']}:"
             print(f"{what} {out['candidates']} candidate(s), {out['probes']} "
                   f"probe(s), {out['signals']} signal(s), bands {out['bands']}")
+            wk = out["work_keys"]
+            print(f"  work keys: {wk['row']} resolved to a document row, "
+                  f"{wk['topic']} keyed by heading only, {wk['none']} not keyed")
+            for u in out["unkeyed"]:
+                print(f"    NOT KEYED {u['title'][:50]!r}: {u['why']}")
             if out["candidate_ids"]:
                 print(f"  candidates: {out['candidate_ids']}")
     except LoadRefused as exc:
