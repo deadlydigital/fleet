@@ -1202,6 +1202,48 @@ the healthy state.
 
 ---
 
+### 9.8 `work_task_id` is read by two ceilings and written by nobody
+
+Found 10 Sep 2026 while queueing task 53. **Recorded, and one link set.**
+
+`022` and `027` both count a candidate's failures across **both** task columns,
+and say why:
+
+> Both task columns count. A candidate produces a spec task and later a work
+> task, and either failing is a failure of that candidate: the first means the
+> spec could not be written, the second that it could not be built.
+
+`approve_batch` sets `spec_task_id`. **Nothing anywhere sets `work_task_id`.**
+Of the six candidates that have produced a spec task, exactly one — c12 — has a
+work task recorded, and it was written by hand. c13's spec task 22 merged and
+became code task 28; the column is NULL.
+
+So half the repeat-failure ceiling's stated scope is unreachable. A candidate
+whose *build* fails twice scores 0, because the builds were never linked to it.
+That is the same shape as §9.2 — a count over a quantity that cannot
+accumulate — surviving inside the fix for §9.2, and 027's header asserts the
+property as preserved rather than checking it.
+
+It also breaks the console: `queries.py` joins `tasks w ON w.id = c.work_task_id`
+for the candidate → spec → work chain, so that view shows a broken chain for
+every candidate but one.
+
+**Why it is not simply wired here.** The step from an accepted draft spec to a
+code task is a *hand* step by design — §8's chain marks it HAND, and
+`approve_batch` deliberately creates only draft-spec tasks. So the write belongs
+wherever a person queues the code task, and today that is `./fleet task add`,
+which knows nothing about candidates and should probably not learn: a task is
+not always a candidate's. The honest shapes are an optional `--candidate N` on
+`task add`, or the console's accept flow offering it when the draft it merged
+came from one. Neither is chosen here.
+
+**c29 → task 53 is set**, because it was a live fact at the moment of queueing
+rather than history to be reconciled. The five older NULLs are left alone:
+filling them now would be reconstructing links nobody recorded, which is the
+reconciliation `contracts/candidate-producer.yaml` refuses by name.
+
+---
+
 ## 10. The first dry run over the live pool, and what it found
 
 Run 9 Sep 2026 against the twelve open candidates, at platform `6fd8ddd`,
