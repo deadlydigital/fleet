@@ -52,6 +52,12 @@ from typing import Any, Dict, List
 from . import approve, db, rank
 
 
+#: The one repository this sweep ranks work for. Named once: it was already
+#: a literal in `platform_head(...)` and gates 5 and 6 would have made it
+#: three, which is how a copy starts drifting.
+REPO = "deadly-digital-platform"
+
+
 class NothingToApprove(Exception):
     """Not an error. The night had no answer it could defend."""
 
@@ -228,8 +234,19 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
         ceilings = _ceilings(conn)
         newest = conn.execute(
             "SELECT max(batch_id) AS b FROM candidates").fetchone()["b"]
+        # THE FLOOR FROM THE TABLE, never a literal here. Same argument as
+        # the coverage floor below and as contracts/draft-spec.yaml's
+        # generated protected list: a typed copy drifts, and here a drifted
+        # copy means approving work no contract can write.
+        floor = [r["glob"] for r in conn.execute(
+            "SELECT glob FROM protected_path_floor WHERE repo = %s",
+            (REPO,)).fetchall()]
 
-    head = rank.platform_head("deadly-digital-platform")
+    # Read once for the whole sweep rather than per candidate, and handed to
+    # gate() so the gate stays pure. See rank.contract_writables.
+    writables = rank.contract_writables(REPO)
+
+    head = rank.platform_head(REPO)
 
     # From the database, never a literal here. 028 puts the floor beside the
     # other ceilings on 013's precedent, and a copy in this file is the drift
@@ -239,7 +256,8 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
     scored = []
     for c in candidates:
         g = rank.gate(c, newest_batch=newest, live_tasks=tasks,
-                      prior_failures=c["prior_failures"])
+                      prior_failures=c["prior_failures"],
+                      writables=writables, floor=floor)
         scored.append({**dict(c), "gate": g,
                        "keys": rank.key_values(c, coverage_floor=floor),
                        "sort": rank.rank(c, coverage_floor=floor)})

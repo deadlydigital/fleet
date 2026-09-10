@@ -762,3 +762,187 @@ class TestTheFourNightLimit:
         p = autoapprove.plan()
         assert p["approve_ids"] == []
         assert "indistinguishable on every key" in p["refused"]
+
+
+# ---------------------------------------------------------------------------
+# Gates 5 and 6: work no single task can do.
+#
+# Added 10 Sep 2026. A draft spec produces ONE task under ONE contract, and
+# the two that matter are strictly disjoint -- dd_api writes only api/**,
+# dd_frontend only platform/**. A candidate spanning them ships one half and
+# nothing queues the other: `tasks` has no dependency column, `claim_task`
+# orders by (priority, id), `work_key` names the gap ROW rather than the half,
+# and gate 3 releases the sibling the moment the first half reaches MERGED.
+#
+# Task 28 is the instance. It merged the comparison-window backend on 9 Sep;
+# task 49, the half that would have made it reachable, was queued BY HAND six
+# hours later and failed; candidates 22 and 30 are still PENDING. A person
+# caught it by opening a page. Under the unattended chain the backend half
+# merges at 03:30 and deploys at 04:15.
+#
+# THE FIXTURES READ THE REAL CONTRACTS AND THE REAL FLOOR. See the note at the
+# top of tests/conftest.py: a fixture more permissive than production is a
+# test that cannot fail for the reason it exists, and these gates are entirely
+# about what the real yaml says.
+# ---------------------------------------------------------------------------
+
+REPO = "deadly-digital-platform"
+
+
+def _writables():
+    return rank.contract_writables(REPO)
+
+
+def _floor(console):
+    return [r["glob"] for r in console.execute(
+        "SELECT glob FROM protected_path_floor WHERE repo = %s",
+        (REPO,)).fetchall()]
+
+
+def _row(paths, **over):
+    c = {"id": 900, "disposition": "PENDING", "batch_id": 1, "repo": REPO,
+         "suggested_paths": list(paths)}
+    c.update(over)
+    return c
+
+
+def _g(candidate, console, **over):
+    kw = {"newest_batch": candidate["batch_id"], "live_tasks": [],
+          "prior_failures": 0, "writables": _writables(),
+          "floor": _floor(console)}
+    kw.update(over)
+    return rank.gate(candidate, **kw)
+
+
+class TestWorkThatSpansTwoContracts:
+    def test_one_sided_backend_work_is_eligible(self, console):
+        """The gate must not hold ordinary work. Paths taken from the real
+        deadly-digital-platform-api.yaml writable list."""
+        g = _g(_row(["api/analytics/routes/orders.py",
+                      "api/analytics/services/order_query.py"]), console)
+        assert g["rule"] not in ("spans_contracts", "unwritable_path",
+                                 "protected_path"), g["detail"]
+
+    def test_one_sided_frontend_work_is_eligible(self, console):
+        g = _g(_row(["platform/app/(dashboard)/analytics/orders/page.tsx",
+                      "platform/app/api/analytics/orders/route.ts"]), console)
+        assert g["rule"] not in ("spans_contracts", "unwritable_path",
+                                 "protected_path"), g["detail"]
+
+    def test_work_needing_both_halves_is_held(self, console):
+        g = _g(_row(["api/analytics/routes/dashboard.py",
+                      "platform/app/(dashboard)/analytics/page.tsx"]), console)
+        assert not g["eligible"]
+        assert g["rule"] == "spans_contracts"
+
+    def test_the_refusal_names_what_is_left_over(self, console):
+        """Naming the contracts alone does not tell a reader how to split the
+        candidate. Naming the remainder does."""
+        g = _g(_row(["api/analytics/routes/dashboard.py",
+                      "platform/app/(dashboard)/analytics/page.tsx"]), console)
+        assert g["not_covered"] == ["api/analytics/routes/dashboard.py"] or \
+            g["not_covered"] == ["platform/app/(dashboard)/analytics/page.tsx"]
+        assert "task 28" in g["detail"]
+
+    def test_it_withholds_the_approval_and_not_the_candidate(self, console):
+        """Same shape as the repeat-failure stop: the row stays PENDING and a
+        person may still tick it in the console having seen both halves."""
+        g = _g(_row(["api/analytics/routes/dashboard.py",
+                      "platform/app/(dashboard)/analytics/page.tsx"]), console)
+        assert g["eligible"] is False
+        assert "paths" in g and "covered_by" in g
+
+
+class TestAPathNoContractCovers:
+    def test_a_directory_rather_than_a_file_is_its_own_rule(self, console):
+        """The producer writes `api/analytics/routes` on four open rows. That
+        is a candidate to rewrite, not work to split, so it must not report
+        spans_contracts and send the reader to the wrong repair."""
+        g = _g(_row(["api/analytics/routes"]), console)
+        assert g["rule"] == "unwritable_path"
+
+    def test_a_file_outside_every_boundary_is_held(self, console):
+        g = _g(_row(["platform/app/(dashboard)/segments/builder/page.tsx"]),
+               console)
+        assert g["rule"] == "unwritable_path"
+
+
+class TestAPathTheFleetMayNeverWrite:
+    """c35 and c27, and the reason is stronger than gates 6's.
+
+    A migration is on protected_path_floor and is console/autodeploy.py's
+    third refusal: deploy.sh migrates before the code swap, and a migration is
+    the one action here git does not make reversible. No contract can make it
+    writable, so this is not unattended work however the candidate is cut.
+    """
+
+    def test_a_migration_is_held_and_reported_as_its_own_rule(self, console):
+        g = _g(_row(["api/analytics/routes/products.py",
+                      "api/analytics/migrations/versions/v0008_x.py"]), console)
+        assert g["rule"] == "protected_path"
+
+    def test_the_floor_is_checked_before_the_contract_coverage(self, console):
+        """A row that is BOTH two-sided and names a migration must report the
+        floor: splitting it would not help."""
+        g = _g(_row(["api/analytics/migrations/versions/v0008_x.py",
+                      "platform/app/(dashboard)/analytics/products/page.tsx"]),
+               console)
+        assert g["rule"] == "protected_path"
+
+    def test_c35_on_the_live_row_if_it_is_here(self, console):
+        row = console.execute(
+            "SELECT * FROM candidates WHERE id = 35").fetchone()
+        if row is None:
+            pytest.skip("candidate 35 is not in this database")
+        g = _g(dict(row), console, newest_batch=row["batch_id"])
+        assert g["rule"] == "protected_path", g["detail"]
+
+
+class TestTheGateStaysPure:
+    def test_omitting_the_inputs_skips_the_gates(self, console):
+        """A caller that does not supply them is asking a narrower question.
+        Reading the contracts directory here instead would make the answer
+        depend on when it was asked."""
+        both = _row(["api/analytics/routes/dashboard.py",
+                      "platform/app/(dashboard)/analytics/page.tsx"])
+        g = rank.gate(both, newest_batch=1, live_tasks=[], prior_failures=0)
+        assert g["rule"] not in ("spans_contracts", "unwritable_path",
+                                 "protected_path")
+
+    def test_the_earlier_gates_still_win(self, console):
+        """A row held by gate 3 today must keep reporting gate 3, or a rule
+        change reads as a behaviour change in the brief."""
+        both = _row(["api/analytics/routes/dashboard.py",
+                      "platform/app/(dashboard)/analytics/page.tsx"])
+        g = _g(both, console, live_tasks=[{
+            "id": 7, "status": "QUEUED", "title": "t", "repo": REPO,
+            "spec_md": "x", "acceptance_contract": {
+                "writable_paths": ["api/analytics/routes/dashboard.py"]}}])
+        assert g["rule"] == "path_overlap"
+
+    def test_the_repeat_stop_still_wins(self, console):
+        both = _row(["api/analytics/routes/dashboard.py",
+                      "platform/app/(dashboard)/analytics/page.tsx"])
+        g = _g(both, console, prior_failures=rank.REPEAT_FAILURE_STOP)
+        assert g["rule"] == "repeat_failure"
+
+
+class TestTheGateAndAutoqueueAgree:
+    """rank._inside is a copy of autoqueue._inside, and a copy is only
+    acceptable if something asserts they answer the same. If they diverge,
+    the gate approves work the accept route then refuses -- after the spec
+    has been written and paid for."""
+
+    def test_they_answer_the_same_on_every_real_writable_glob(self):
+        from console import autoqueue
+        probes = ["api/analytics/routes/orders.py",
+                  "api/analytics/routes",
+                  "api/analytics/migrations/versions/v0008_x.py",
+                  "platform/app/(dashboard)/analytics/page.tsx",
+                  "platform/app/(dashboard)/segments/builder/page.tsx",
+                  "platform/components/layout/Sidebar.tsx",
+                  "drafts/a.md", ""]
+        for _name, globs in rank.contract_writables(REPO):
+            for p in probes:
+                assert rank._inside(p, globs) == autoqueue._inside(p, list(globs)), \
+                    (p, _name)

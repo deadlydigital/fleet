@@ -39,7 +39,9 @@ import importlib.util
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+
+import yaml
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config
 # The threshold is console/approve.py's and stays there: approve.py is what
@@ -466,21 +468,78 @@ def check_premise(candidate: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def contract_writables(repo: str,
+                       contracts_dir: Optional[Path] = None
+                       ) -> List[Tuple[str, List[str]]]:
+    """(contract file, writable globs) for every contract on a repo.
+
+    Read here and passed INTO gate() rather than read inside it, on the same
+    argument the docstring below makes about `prior_failures`: the gate stays
+    pure, so a dry run and the real decision cannot answer differently
+    because one of them happened to read the directory at a different moment.
+
+    The same yaml the work would actually run under. `console/autoqueue.py`
+    resolves a contract from the draft's declared paths at accept time and
+    refuses when they fall outside it; this reads the same files so that the
+    refusal happens before the money rather than after it.
+    """
+    root = contracts_dir or (Path(__file__).resolve().parent.parent
+                             / "contracts")
+    out: List[Tuple[str, List[str]]] = []
+    for y in sorted(root.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(y.read_text()) or {}
+        except Exception:                                     # noqa: BLE001
+            continue
+        if data.get("repo") != repo:
+            continue
+        out.append((y.name, [str(g) for g in
+                             (data.get("writable_paths") or [])]))
+    return out
+
+
+def _glob_prefix(g: str) -> str:
+    return g.split("*", 1)[0].rstrip("/")
+
+
+def _inside(path: str, globs: Sequence[str]) -> bool:
+    """The same prefix test console/autoqueue.py refuses with.
+
+    Copied deliberately rather than imported: autoqueue imports db and would
+    drag a writer-side module into the ranker. Eight lines, and a test asserts
+    the two agree on the paths that matter -- which is the only property that
+    makes a copy acceptable.
+    """
+    for g in globs:
+        pre = _glob_prefix(g)
+        if pre and (path == pre or path.startswith(pre + "/")):
+            return True
+    return False
+
+
 def gate(candidate: Dict[str, Any], *, newest_batch: int,
          live_tasks: Sequence[Dict[str, Any]],
-         prior_failures: int = 0) -> Dict[str, Any]:
-    """The five gates, in order, ahead of the sort.
+         prior_failures: int = 0,
+         writables: Optional[Sequence[Tuple[str, Sequence[str]]]] = None,
+         floor: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """The eight gates, in order, ahead of the sort.
 
     Returns {"eligible": bool, "rule": str|None, "detail": str|None, ...}.
     The first failure stops: the rule that held a row is the one printed in the
     brief, and reporting five of them for one row would bury it.
 
-    `prior_failures` is passed IN rather than read here, so this stays pure: the
-    same inputs give the same answer, which is the property that makes a dry
-    run worth reading. console/autoapprove.plan() reads it from
+    `prior_failures`, `writables` and `floor` are all passed IN rather than
+    read here, so this stays pure: the same inputs give the same answer, which
+    is the property that makes a dry run worth reading.
+    console/autoapprove.plan() reads `prior_failures` from
     `candidate_prior_failures(id)` -- the same function console/approve.py
     enforces with, so the dry run and the real decision cannot drift into two
     predicates that agree only until somebody edits one.
+
+    `writables` and `floor` DEFAULT TO NONE AND THAT SKIPS GATES 5 AND 6.
+    Not a convenience: a caller that does not supply them is asking a
+    narrower question, and silently reading the contracts directory instead
+    would make the answer depend on when it was asked.
     """
     # 1. PENDING only, never NOT_NOW. A NOT_NOW is the only record of a human
     #    judgement about one specific candidate, and a machine that can overrule
@@ -545,14 +604,115 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
                            f"buys the same failure at the same price"),
                 "prior_failures": prior_failures}
 
-    # 5. The probes still hold at the current HEAD.
+    # 5. NO PATH THE FLEET MAY NEVER WRITE.
+    #
+    #    c35 is why this is a rule of its own rather than a case of gate 6.
+    #    It names `api/analytics/migrations/versions/v0008_product_categories.py`,
+    #    and `api/analytics/migrations/**` is on protected_path_floor. That is
+    #    not "no single contract covers this work" -- it is work no contract
+    #    can ever cover, and it is the same path class console/autodeploy.py
+    #    refuses third, because deploy.sh migrates before the code swap and a
+    #    migration is the one action here git does not make reversible.
+    #
+    #    Reported separately so the brief says which of the two it is. A row
+    #    held for "spans two contracts" might be split into two candidates
+    #    tomorrow; a row held for this one needs a person however it is cut.
+    if floor is not None:
+        mine = [p for p in (candidate.get("suggested_paths") or [])]
+        blocked = [p for p in mine if _inside(p, floor)]
+        if blocked:
+            return {"eligible": False, "rule": "protected_path",
+                    "detail": f"names {blocked[0]}, which is on the protected "
+                              f"floor for {candidate.get('repo')}; no contract "
+                              f"can make it writable, so this is not "
+                              f"unattended work however it is scoped",
+                    "paths": blocked,
+                    "prior_failures": prior_failures}
+
+    # 6. THE WORK MUST FIT INSIDE ONE CONTRACT.
+    #
+    #    A draft spec produces ONE task under ONE contract --
+    #    console/autoqueue.from_accepted_draft reads a single `fleet-spec`
+    #    block and resolves a single contract for it. The two contracts that
+    #    matter here are strictly disjoint: dd_api writes only `api/**`, and
+    #    dd_frontend writes only `platform/**`.
+    #
+    #    So a candidate whose work spans them cannot be built by one task, and
+    #    nothing queues the second half. `tasks` has no dependency column,
+    #    `claim_task` orders by (priority, id) alone, `work_key` identifies the
+    #    GAP ROW rather than the half, and gate 3 releases the sibling the
+    #    moment the first half reaches MERGED -- which is terminal -- so it
+    #    returns to the pool as an ordinary row with no marker that it is now
+    #    the missing half of something in production.
+    #
+    #    THIS HAPPENED. Task 28 merged the comparison-window backend on 9 Sep;
+    #    task 49, the half that would have made it reachable, was queued BY
+    #    HAND six hours later and failed; candidates 22 and 30 are still
+    #    PENDING. It was caught by a person opening a page. Under the
+    #    unattended chain the backend half would merge at 03:30 and deploy at
+    #    04:15, and the morning page would render the thread ending "Running
+    #    in production".
+    #
+    #    So this WITHHOLDS THE AUTOMATIC APPROVAL AND NOTHING ELSE, exactly as
+    #    gate 4 does. The row stays PENDING and a person can still tick it in
+    #    the console, having seen both halves. Twelve of the twenty open
+    #    candidates are in this class on 10 Sep 2026; the fix that would let
+    #    them run unattended is two tasks with an order between them, which is
+    #    a real feature and is not this.
+    if writables is not None:
+        mine = [p for p in (candidate.get("suggested_paths") or [])]
+        if mine:
+            fits = [n for n, globs in writables
+                    if all(_inside(p, globs) for p in mine)]
+            if not fits:
+                covered = {p: sorted(n for n, globs in writables
+                                     if _inside(p, globs)) for p in mine}
+                homeless = [p for p, n in covered.items() if not n]
+                if homeless:
+                    # A DIFFERENT FINDING AND SO A DIFFERENT RULE. "No
+                    # contract covers this path" is not "the work spans two
+                    # contracts": the first is usually a producer naming a
+                    # directory (`api/analytics/routes`) or a file outside
+                    # every boundary, and it is fixed by rewriting the
+                    # candidate. The second is fixed by splitting the work or
+                    # by giving tasks an order. Reporting them under one name
+                    # would send the reader to the wrong repair.
+                    return {"eligible": False, "rule": "unwritable_path",
+                            "detail": (
+                                f"names {homeless[0]}, which no contract on "
+                                f"{candidate.get('repo')} makes writable"
+                                + (f" (and {len(homeless) - 1} more)"
+                                   if len(homeless) > 1 else "")
+                                + ", so no task can be queued for it at all"),
+                            "paths": homeless, "covered_by": covered,
+                            "prior_failures": prior_failures}
+                # The best any single contract manages, and what it leaves
+                # behind. Naming the REMAINDER is what tells a reader how to
+                # split the candidate; naming the contracts alone does not.
+                best, left = None, mine
+                for n, globs in writables:
+                    rest = [p for p in mine if not _inside(p, globs)]
+                    if len(rest) < len(left):
+                        best, left = n, rest
+                return {"eligible": False, "rule": "spans_contracts",
+                        "detail": (
+                            f"{best} covers {len(mine) - len(left)} of its "
+                            f"{len(mine)} paths and not {left}. A draft spec "
+                            f"produces one task under one contract, so one "
+                            f"half would ship and nothing would queue the "
+                            f"other -- which is what task 28 did"),
+                        "paths": mine, "covered_by": covered,
+                        "best_contract": best, "not_covered": left,
+                        "prior_failures": prior_failures}
+
+    # 7. The probes still hold at the current HEAD.
     probes = check_probes(candidate)
     if not probes["ok"]:
         return {"eligible": False, "rule": "probes_failed",
                 "detail": probes["why"], "probes": probes,
                 "prior_failures": prior_failures}
 
-    # 6. AND THE GROUND IS STILL THERE. Behind the probes rather than ahead of
+    # 8. AND THE GROUND IS STILL THERE. Behind the probes rather than ahead of
     #    them, though both cost the same: a row whose gap has closed is not
     #    work at all, and reporting the premise for it would name the less
     #    important of two true things.

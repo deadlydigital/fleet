@@ -132,3 +132,34 @@ DO $$ DECLARE ok bool := false; cid bigint; BEGIN
         RAISE EXCEPTION 'Q7 FAIL: 025s probes-is-array rule did not survive 030';
     END IF;
 RAISE NOTICE 'Q7 pass  025s probes rule is untouched'; END $$;
+
+-- ------------------------------------------------------- the fixture, removed
+--
+-- ADDED 10 SEP 2026 BECAUSE IT WAS NOT HERE AND THE ROW SURVIVED.
+--
+-- Every assertion above deletes the candidate it built. `pg_temp.q_batch()`
+-- builds a `candidate_batches` row for them to hang off and nothing removed
+-- it, so running this file against the fleet database left a permanent batch
+-- behind -- id 12 on this host, generated 17:24, note "a fixture, not a
+-- batch", holding no candidates.
+--
+-- WHY THAT IS NOT COSMETIC. `console/rank.py` gate 2 holds every candidate
+-- that is not in the newest batch, on the argument that "the newer batch
+-- re-verified these claims against a later sha". A fixture re-verified
+-- nothing. It happens not to bite today only because
+-- `console/autoapprove.plan()` takes `max(batch_id) FROM candidates` and this
+-- row has none -- so the whole pool is spared by an implementation detail of
+-- a query somewhere else, which is not a property to rely on.
+--
+-- Keyed on the note rather than on an id, so it removes what this file made
+-- and nothing a person made. Safe to re-run.
+DO $$
+DECLARE n int;
+BEGIN
+    DELETE FROM candidate_batches
+     WHERE note = '030 assertions: a fixture, not a batch'
+       AND NOT EXISTS (SELECT 1 FROM candidates c
+                        WHERE c.batch_id = candidate_batches.id);
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RAISE NOTICE 'cleanup  removed % fixture batch row(s)', n;
+END $$;
