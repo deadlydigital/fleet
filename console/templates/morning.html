@@ -296,9 +296,13 @@
       <div class="body">
         <p>{{ u.title }}</p>
         <p>Merged unattended{% if u.merged_at %} at {{ u.merged_at.strftime('%d %b %H:%M') }}{% endif %}{% if u.merge_commit %} as <code>{{ u.merge_commit }}</code>{% endif %}.
-        These are the requirements its spec numbered. <strong>Nothing checked
-        them</strong> — not this list, and not the contract, which cannot read
-        a spec.</p>
+        These are the requirements its spec numbered.</p>
+        <p><strong>Nothing established that they were built.</strong> On a
+        contract carrying <code>spec_requirements_cited.py</code> each one
+        carries a <code>spec:</code> token on a line this change added — which
+        is a claim the agent signed, not a verification. Reading the diff
+        against this list is still the only thing that can tell you whether
+        the claim is true.</p>
         <ul class="reqs">
           {% for q in u.reqs %}
           <li class="{{ 'd1' if q.depth else 'd0' }}"><span class="rid">{{ q.id }}</span>{{ q.title }}</li>

@@ -564,17 +564,23 @@ def unread_specs(rows: List[Dict[str, Any]]) -> List[UnreadSpec]:
     thing that must be caught within a day should not depend on which of the
     two the reader opened.
 
-    WHAT WOULD MAKE THIS SHORTER, WHICH IS THE REAL FIX
-    ----------------------------------------------------
-    §9.12's marker convention: `draft_spec_shape.py` requires each numbered
-    requirement to carry an id, the runner passes `spec_md` to checks as a
-    fact, and a checker requires each id to appear in an added line as an
-    unambiguous token. Roughly eighty lines. It would have failed task 53. It
-    proves a claim was made rather than met -- which converts a silent
-    omission into a written, attributable one -- and it would cut this list
-    from every requirement of every merge down to the ones nothing claimed.
-    Until it exists, this is three features a night at eight requirements
-    each, and that is a reading job rather than a glance.
+    WHAT THE MARKER CONVENTION CHANGED, AND WHAT IT DID NOT
+    --------------------------------------------------------
+    §9.12's convention was built on 10 Sep 2026:
+    `contracts/checks/spec_requirements_cited.py` refuses a change whose
+    numbered requirements are cited nowhere in its diff, and
+    `draft_spec_shape.py` refuses a draft that numbers none.
+
+    So on the two contracts that carry it, a merge can no longer happen with
+    a requirement unmentioned. That is NOT the same as the requirement being
+    built: an agent can write `// spec:2.5` and change nothing. What it buys
+    is that the omission is now written down and attributable in the diff.
+
+    This list therefore stays exactly as long as it was -- every numbered
+    requirement of every unattended merge -- and its job has narrowed from
+    "find what was skipped" to "check that the claims are true". That is
+    still a reading job. Anything shorter would need something that reads
+    the spec against the diff and means it, and nothing cheap does that.
     """
     out: List[UnreadSpec] = []
     for r in rows:

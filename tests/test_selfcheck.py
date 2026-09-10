@@ -41,7 +41,13 @@ def spec(writable, prose_paths, work_type="dd_api"):
     # only its FIRST line carries the template's indent and the rest sit at
     # column 0 -- dedent then finds a common prefix of zero, strips nothing,
     # and the YAML is invalid in a way that looks like the check's fault.
-    return ("# A spec\n\n```fleet-spec\n" + block + "```\n\n## The change\n\n"
+    # `### 1. ...` IS NOT DECORATION. draft_spec_shape rule 7 refuses a draft
+    # that numbers no requirements (specs/auto-approval.md §9.12 step 1), so
+    # a fixture without one fails for a reason that has nothing to do with
+    # what these tests are about -- and every test here would then be
+    # asserting on the numbering message instead of on path judging.
+    return ("# A spec\n\n```fleet-spec\n" + block + "```\n\n"
+            "### 1. The change\n\n"
             + prose + "\n\nProse enough to be a document, describing what the\n"
             "change does and why it is worth making, at some length.\n")
 

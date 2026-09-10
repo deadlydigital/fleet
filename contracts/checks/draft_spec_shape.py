@@ -42,14 +42,30 @@ WHAT IT ENFORCES
   4. no declared writable path is on `protected_path_floor` for that repo
   5. the writable paths are inside the repo the spec names
   6. paths cited in prose, narrowly, resolve
+  7. the spec NUMBERS ITS REQUIREMENTS, so the task it produces can be held
+     to them. specs/auto-approval.md §9.12 step 1: the specs already number
+     them and this makes the convention enforceable rather than habitual.
+     contracts/checks/spec_requirements_cited.py refuses a code task whose
+     numbered requirements are cited nowhere in its diff, and that check
+     reports could-not-run against a spec that numbers nothing -- so without
+     this rule, a spec-writer that stopped numbering would silently remove
+     the only gate that reads a spec at all.
 
 WHAT IT CANNOT ENFORCE, and the asymmetry is why review is still required.
 It cannot tell whether the spec describes work worth doing, whether the
 approach is right, whether the paths it names are the RELEVANT ones, or whether
 a path that resolves today is the one the author meant. A spec that names
 `api/app.py` for work belonging in `analytics/services/` passes every check
-here. That is what a human read is for, and it is a smaller read than checking
-paths by hand -- which is the trade §3 makes.
+here. Rule 7 counts requirements; it cannot tell whether they are the right
+ones, or whether the numbering carves the work sensibly.
+
+THAT HUMAN READ IS GONE. §3 traded a hand path-check for a human review of the
+spec, and on 10 Sep 2026 `draft_spec` came off console/automerge's
+NEVER_UNATTENDED, so a draft merges at 03:30 with nobody reading it. The
+asymmetry above did not change; what changed is that nothing on the other side
+of it is covered any more. See console/automerge.py's docstring for what that
+costs and console/morning.py's unread_specs() for the after-the-fact list that
+is all that is left.
 """
 from __future__ import annotations
 
@@ -61,6 +77,12 @@ from pathlib import Path
 import yaml
 
 FLEET = Path("/home/ubuntu/fleet")
+
+#: One parser for what counts as a numbered requirement, shared by this
+#: check, contracts/checks/spec_requirements_cited.py, and the console. See
+#: rule 7 above.
+sys.path.insert(0, str(FLEET))
+from console import requirements                              # noqa: E402
 CONTRACTS = FLEET / "contracts"
 REPO_ROOT = Path("/home/ubuntu")
 
@@ -273,9 +295,27 @@ def main() -> int:
                              f"and whose directory does not either: {unknown}")
             return fail(f"{rel} " + "; and ".join(parts))
 
+        # 7. NUMBERED REQUIREMENTS, parsed by the same function the console
+        #    renders and spec_requirements_cited.py enforces. Imported, not
+        #    reimplemented: three readers agreeing on what a requirement is
+        #    is the whole point, and a fourth definition here would be the
+        #    one that disagrees.
+        reqs = requirements.parse(text)
+        if not reqs:
+            return fail(
+                f"{rel} numbers no requirements, so nothing downstream can "
+                f"be held to it. Number them as `### 2. The page sends them` "
+                f"or `**2.5 The table cells set the filters.**` -- a bare "
+                f"`**1. Something**` does not count, because that is how a "
+                f"paragraph is emphasised. The code task this produces is "
+                f"refused by spec_requirements_cited.py unless each numbered "
+                f"requirement is cited in its diff, and a spec with none "
+                f"turns that gate off.")
+
         print(f"ok: {rel} -- work_type '{work_type}' has a contract, "
               f"{len(writable)} writable path(s) resolve and none is protected, "
-              f"{len(cited)} prose path(s) checked.")
+              f"{len(cited)} prose path(s) checked, "
+              f"{len(reqs)} numbered requirement(s).")
     return 0
 
 

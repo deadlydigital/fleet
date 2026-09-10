@@ -77,7 +77,7 @@
 work_type: dd_api
 repo: deadly-digital-platform
 base_branch: main
-contract_version: 1
+contract_version: 2
 
 # WRITABLE PATHS ARE ENUMERATED, NOT GLOBBED, AND THAT IS DELIBERATE.
 #
@@ -215,6 +215,24 @@ creatable_paths:
 # api/.venv is gitignored and absent from a worktree, so the interpreter and
 # ruff are named by absolute path. They are read, never written.
 verification:
+  # FIRST, AND CHEAPEST. A git diff and a regex, well under a second.
+  #
+  # specs/auto-approval.md §9.12, built 10 Sep 2026. Every other check here is
+  # a fact about the tree and none of them reads the spec: task 53 shipped its
+  # §2.5 unbuilt with all of them green. `auto_merge: false` caught that and is
+  # gone, and `draft_spec` came off console/automerge's NEVER_UNATTENDED the
+  # same day, so nothing reads a spec at any point now.
+  #
+  # It proves a claim was MADE, not that it was MET -- an agent can write
+  # `// spec:2.5` and change nothing. That is still worth the annotation cost,
+  # because it turns a silent omission into a written, attributable one sitting
+  # in the diff. Run against task 53's real spec and real diff it reports 8 of
+  # 8 requirements cited nowhere.
+  #
+  # Ordered first on this file's own argument, three paragraphs up: task 55
+  # spent 107 seconds of tsc and vitest to be failed by the last line for a
+  # reason the last line could have given in under a second.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/spec_requirements_cited.py
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python /home/ubuntu/fleet/contracts/checks/ruff_no_new_findings.py
   # ONE FILE PER PYTEST PROCESS. api/CLAUDE.md forbids suite and directory runs

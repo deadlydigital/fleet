@@ -14,6 +14,21 @@ fleet_test_reader, fleet_test_proposer and fleet_test_console, which are the
 read side, the write side and the deciding side of the proposal layer, kept
 apart here exactly as they are kept apart in production. Nothing here touches
 production.
+
+A FIXTURE THAT IS MORE PERMISSIVE THAN PRODUCTION IS NOT A FIXTURE
+------------------------------------------------------------------
+Added 10 Sep 2026, after a test asserted that a draft spec may merge
+unattended, passed, and was wrong: `tests/test_automerge._contract()` defaults
+carry `creatable_paths`, `contracts/draft-spec.yaml` does not and never will,
+and the gate the change turned on reads exactly that field. The real path was
+refused; the test could not fail for the reason it existed.
+
+So: when a test is about a contract, a grant, a ceiling or any other value
+that DECIDES something, read the real artefact -- `yaml.safe_load` the
+contract, ask the database for the function, glob the migrations. The
+template list below is derived rather than typed for the same reason, and its
+comment records the same failure arriving by a different route.
+
 """
 from __future__ import annotations
 

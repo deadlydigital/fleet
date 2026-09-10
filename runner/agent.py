@@ -135,6 +135,69 @@ why. That is a real answer. Landing the easy half is not.
 """
 
 
+CITE_CHECK = "spec_requirements_cited.py"
+
+
+def _cite_note(task: dict, contract: dict) -> str:
+    """The requirement ids, listed, when the contract runs the citation gate.
+
+    THE IDS ARE PRINTED RATHER THAN LEFT TO BE PARSED, for the reason
+    `_paired_note` prints the pairs and `paths_pack` prints the tree: three
+    specs failed on paths and every failing one had a real sibling in the
+    same directory, because recall is not knowledge. An agent asked to
+    "cite every numbered requirement" will miss one, and the one it misses
+    costs a whole run.
+
+    The list comes from `console.requirements.parse` -- the same parser the
+    check enforces with and the same one the console renders. If the prompt
+    listed a different set from the gate, the agent would satisfy the prompt
+    and fail the gate.
+
+    Keyed on the contract actually running the check, so a contract without
+    it gets no paragraph and no annotation burden.
+    """
+    if not any(CITE_CHECK in c for c in (contract.get("verification") or [])):
+        return ""
+    import sys
+    sys.path.insert(0, "/home/ubuntu/fleet")
+    from console import requirements
+    reqs = requirements.parse(task.get("spec_md"))
+    if not reqs:
+        return ""
+    # LEAVES ONLY, because that is what the check asks for: it satisfies a
+    # parent from any cited child, so `### 2. The page sends them` needs no
+    # token of its own when 2.1 and 2.5 carry theirs. Listing it anyway would
+    # ask for a citation the gate does not want, and a prompt that asks for
+    # more than the gate enforces teaches the agent that the list is
+    # approximate.
+    ids = [q.id for q in reqs]
+    leaves = [q for q in reqs
+              if not any(r.startswith(q.id + ".") for r in ids)]
+    listed = "\n".join(f"  - `spec:{q.id}`  {q.title}" for q in leaves)
+    return f"""
+## Cite every numbered requirement
+
+This spec numbers {len(leaves)} requirement(s). For each one, put its token on
+a line THIS CHANGE ADDS -- in a comment, a test name, or a docstring:
+
+{listed}
+
+Example: `// spec:2.5 clicking a Payment cell sets the filter`.
+
+WHY, STATED PLAINLY, BECAUSE THE RULE IS ONLY WORTH FOLLOWING IF YOU KNOW
+WHAT IT IS FOR. Nothing else in this run reads the spec. `tsc` proves it
+compiles, the suite proves nothing broke, and the added-test gate proves one
+test discriminates -- none of them can tell that a numbered requirement was
+skipped. Task 53 shipped its §2.5 unbuilt with all four green.
+
+So this does not check that you implemented anything. It makes each
+requirement a claim you signed. **Do not cite a requirement you did not
+implement.** If one is genuinely out of scope, leave it uncited and say so
+in your reply: a refused branch that explains itself is useful, and a token
+written over work that was not done is a lie rather than an oversight.
+"""
+
+
 def build_prompt(task: dict, contract: dict, *, paths_file=None) -> str:
     """The spec, plus the boundary stated plainly.
 
@@ -170,6 +233,7 @@ def build_prompt(task: dict, contract: dict, *, paths_file=None) -> str:
     protected = "\n".join(f"  - {p}" for p in contract["protected_paths"])
     creatable_note = _creatable_note(contract)
     paired_note = _paired_note(contract)
+    cite_note = _cite_note(task, contract)
     paths_note = ""
     if paths_file:
         paths_note = f"""
@@ -202,7 +266,7 @@ to make them pass, and do not change any migration. If the task appears to
 require editing a protected path, stop and say so instead: a branch that
 explains why it could not be done is useful, and one that quietly widened its
 own boundary is not.
-{creatable_note}{paired_note}
+{creatable_note}{paired_note}{cite_note}
 Keep the whole change under {contract['max_diff_lines']} changed lines.
 Do not commit anything. Do not create branches. Do not run git.
 

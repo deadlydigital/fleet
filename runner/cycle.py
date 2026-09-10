@@ -409,7 +409,15 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 facts={"FLEET_BASE_SHA": base_sha,
                        "FLEET_HEAD_SHA": change.head_sha,
                        "FLEET_TASK_ID": str(task["id"]),
-                       "FLEET_CONTRACT": json.dumps(contract)})
+                       "FLEET_CONTRACT": json.dumps(contract),
+                       # THE SPEC ITSELF, for contracts/checks/
+                       # spec_requirements_cited.py. specs/auto-approval.md
+                       # §9.12 step 2: a check cannot reach the database and
+                       # should not start, so the one thing that knows what the
+                       # spec asked for has to hand it over. Never truncated --
+                       # a requirement clipped off the end is a requirement the
+                       # gate stops asking about.
+                       "FLEET_SPEC_MD": task.get("spec_md") or ""})
         finally:
             worktree.unlink_dependencies(links)
         result.verification = verification

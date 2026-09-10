@@ -101,7 +101,7 @@ base_branch: main
 # is what keeps a run attributable to the contract that actually held it: task
 # 53 ran under 4 and was held to the orders pairing, task 55 was failed by it,
 # and nothing from here is. Same argument rank.RANK_VERSION makes.
-contract_version: 5
+contract_version: 6
 
 # ---------------------------------------------------------------------------
 # WRITABLE
@@ -348,6 +348,24 @@ worktree_links:
 # under a second. Order costs nothing when everything passes and costs a run's
 # wall clock when the cheap check is the one that fails.
 verification:
+  # FIRST, AND CHEAPEST. A git diff and a regex, well under a second.
+  #
+  # specs/auto-approval.md §9.12, built 10 Sep 2026. Every other check here is
+  # a fact about the tree and none of them reads the spec: task 53 shipped its
+  # §2.5 unbuilt with all of them green. `auto_merge: false` caught that and is
+  # gone, and `draft_spec` came off console/automerge's NEVER_UNATTENDED the
+  # same day, so nothing reads a spec at any point now.
+  #
+  # It proves a claim was MADE, not that it was MET -- an agent can write
+  # `// spec:2.5` and change nothing. That is still worth the annotation cost,
+  # because it turns a silent omission into a written, attributable one sitting
+  # in the diff. Run against task 53's real spec and real diff it reports 8 of
+  # 8 requirements cited nowhere.
+  #
+  # Ordered first on this file's own argument, three paragraphs up: task 55
+  # spent 107 seconds of tsc and vitest to be failed by the last line for a
+  # reason the last line could have given in under a second.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/spec_requirements_cited.py
   - cd platform && ./node_modules/.bin/tsc --noEmit
   - cd platform && ./node_modules/.bin/vitest run --reporter=dot
   # The added test must FAIL against the tree before the change. The runner is
