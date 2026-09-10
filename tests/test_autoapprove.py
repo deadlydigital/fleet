@@ -73,9 +73,20 @@ GLOB_MISSING = {"grep_count": {"glob": "console/*.py",
 #: candidate names, and naming the wrong one is itself a probe failure.
 PLATFORM = "deadly-digital-platform"
 API_PRESENT = {"path_exists": "api/analytics/routes/orders.py"}
+#: A SENTINEL, not a real gap, and it became one on 10 Sep 2026. This asserted
+#: that platform/app/api/analytics/orders/route.ts does not mention
+#: `payment_method` -- true when it was written, and false the moment task 53
+#: forwarded the four order filters through that proxy. Twelve tests failed on
+#: a merge, which is gate 5 doing precisely its job: a candidate whose claim has
+#: stopped being true is not approved.
+#:
+#: The fleet-side constants in this file already use `zzz_not_present_anywhere`
+#: for the same reason. A fixture that encodes a real gap is a fixture with an
+#: expiry date nobody wrote down, and the thing under test here is the SHAPE of
+#: an absent-feature probe, not the absence of that particular feature.
 PLATFORM_FEATURE_MISSING = {
     "grep_count": {"glob": "platform/app/api/analytics/orders/route.ts",
-                   "pattern": "payment_method", "expected": 0}}
+                   "pattern": "zzz_not_present_anywhere", "expected": 0}}
 
 
 class TestKeyOneReadsTheProbes:

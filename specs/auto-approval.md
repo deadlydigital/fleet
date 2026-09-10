@@ -1244,6 +1244,132 @@ reconciliation `contracts/candidate-producer.yaml` refuses by name.
 
 ---
 
+### 9.9 Nothing in a contract can tell whether a spec was implemented
+
+Task 53, 10 Sep 2026. `auto_merge: false` is the only thing that caught it.
+
+`drafts/order-filters-frontend.md` §2.5 says the Payment, Country and Coupon
+values in the table must set the corresponding filter when clicked, because
+exact matching is unusable if the user cannot discover the exact string and no
+endpoint lists the distinct values. **It was not implemented.** The diff does
+not touch row rendering at all.
+
+All four checks passed, in the runner and again at accept:
+
+    tsc --noEmit                    exit 0
+    vitest run                      exit 0
+    new_test_bites.sh               exit 0   (the added test does bite)
+    paired_paths.py                 exit 0   "2 paired group(s) --
+                                              1 landed whole, 1 untouched"
+
+None of them can fail for this, and that is not a gap to be closed by adding a
+fifth. `tsc` proves it compiles. `vitest` proves 319 tests pass. The bite check
+proves the ONE test the change added fails without the change — which says
+nothing about the requirements the change did not add a test for.
+`paired_paths` proves both halves of a pair moved; §2.5 lives entirely inside
+one of them, so the group was satisfied by the file being touched at all.
+
+**The pairing group added this morning did work**, on its first task, and it
+proves exactly what it claims: both files landed. It cannot prove what is in
+them.
+
+So the honest statement of the gate is narrower than it reads: **a green run
+establishes that the tree typechecks, that the suite passes, that one new test
+bites, and that no pair landed in half. It establishes nothing about whether
+the spec was followed.** The contract's own header says this — *"It does not
+establish that the page says a true thing. See auto_merge below, which is
+`false` for exactly that reason"* — and this is the first frontend task to
+prove it rather than assert it.
+
+**What that makes `auto_merge: false`.** Not a caution to be relaxed once the
+checks have been green a few times. It is the only reader of the spec in the
+entire path, and the thing it catches is invisible to every automated check
+that exists or could cheaply be written. A partially-implemented spec merges
+green.
+
+Accepted anyway, deliberately: 2.1, 2.2, 2.3 and 3 are present and correct, the
+four filters work, and §2.5 is entered as its own candidate (c38) rather than
+queued as a follow-up fix — so it competes on merit rather than inheriting the
+priority of the task that missed it.
+
+---
+
+### 9.10 The accept path had four defects and task 53 was the first to meet them
+
+All four were in the path, none in the branch, and each hid the next.
+
+**1. Re-verification never linked the dependency tree.** `console/reverify.py`
+had no reference to `worktree_links`, so in a trial clone — which has no
+`node_modules`, it being gitignored — every frontend check failed at
+`exit 127`. **FIXED**: the links are created after the boundary is judged, as
+`runner/cycle.py` does and for the same reason.
+
+**2. The console had been running code from 9 Sep 10:05 for three days.**
+`creatable_paths` landed in `runner/boundary.py` at 9 Sep 14:08 — four hours
+after the process started — so the running console enforced the boundary rules
+of whenever it was last restarted. It refused task 53's added test file as
+*"protected by platform/\_\_tests\_\_/\*\*"*, a rule the codebase had
+retired before that process ever applied it. The contract is read fresh from
+the database on every request, so everything about the refusal looked current.
+**FIXED by restarting**, and the class is not: nothing reports the console's
+code version, and a long-lived web process silently freezes its own rules at
+boot.
+
+**3. `MemoryMax=512M` against a 709 MiB `tsc`.** The console aborted it with
+SIGABRT (exit 134) and reported *"the branch verifies on its own and FAILS when
+merged into main as it stands now. The base moved under it."* The base had not
+moved: main **was** the branch's merge base. Nothing in the path distinguishes
+a check that failed from a check the sandbox killed. **FIXED**: 2G, measured
+(`tsc` 709 MiB / 13s, `vitest` 352 MiB / 73s plus workers), bounded rather than
+infinity because this process also serves HTTP. `fleet-runner.service` runs the
+same commands at `MemoryMax=infinity`, so the two paths that must agree about
+whether a branch passes were never given the same room to answer in.
+
+**4. NOT FIXED: `ProtectHome=read-only` versus the dependency link.** With
+memory raised, `vitest` exits 1 inside the console and 0 outside it. The trial
+clone's `platform/node_modules` is a symlink into the checkout, and vitest
+writes `node_modules/.vite/vitest/results.json` — **the same file that failed
+task 49 this morning**, from the opposite side. There it was a write the
+tampering guard caught; here it is a write the sandbox forbids.
+
+That is one root cause with two faces: **`link_dependencies` points a
+path verification WRITES TO at a shared checkout.** The console must not be
+given write access to it — *"the console writes to no checkout"* is the
+property `702bce0` exists to state — so the fix is to stop the write landing
+there: link `node_modules` per entry with a local `.vite`, rather than linking
+the directory whole. That is a change to `runner/worktree.link_dependencies`
+and it belongs in daylight, not at the end of a session.
+
+**Task 53 was therefore accepted by running the accept route's own functions —
+preflight, reverify, merge_and_push, decide.record, in that order — outside the
+console's sandbox.** Not a hand `git merge`: the same code, the same trial
+clone, the same push verification, the same `HUMAN_DECISION` record. The base
+had not moved, so re-verification re-established what the run established.
+
+---
+
+### 9.11 Gate 2 assumes a newer batch re-verified the older one
+
+Found by causing it, 10 Sep 2026. Entering §2.5 as candidate c38 required a
+batch row; a new batch (11) was created because the source is a draft spec
+rather than a findings document. **Batch 11 immediately suppressed all nine of
+batch 10's candidates** as `older_batch`.
+
+Gate 2's argument is sound for the case it was written against: *"Batch 9
+re-verified batch 8's rows against a newer sha, so an older row is superseded
+by construction."* It does not hold here. Batch 11 is one hand-written row from
+a different document; it re-verified nothing. Nine rows re-verified this
+morning are now unreachable, and the brief will report them held for a reason
+that is not true.
+
+The narrow fix is to supersede on the SOURCE DOCUMENT rather than on the batch
+id — an older row is superseded when a newer batch re-read the same document —
+which is a change to a ranking gate and is not made here. **The immediate
+question is whose pool it is**: c38 can be moved into batch 10, or batch 11 can
+stand and batch 10 wait for the next producer run. Left as found, and reported.
+
+---
+
 ## 10. The first dry run over the live pool, and what it found
 
 Run 9 Sep 2026 against the twelve open candidates, at platform `6fd8ddd`,

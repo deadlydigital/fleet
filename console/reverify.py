@@ -166,6 +166,33 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         change = boundary.derive(trial, base_sha)
         verdict = boundary.enforce(change, contract)
 
+        # THE DEPENDENCY TREE, LINKED IN AS THE RUNNER LINKS IT.
+        #
+        # Without this, re-verification could not run ANY task whose checks
+        # need an installed tree, and it failed the same way every time:
+        #
+        #     cd platform && ./node_modules/.bin/tsc --noEmit exited 127
+        #
+        # node_modules is gitignored, so a CLONE has none -- the same fact
+        # runner/cycle.py links them for, and the same fact vitest_one_file.sh
+        # links them for inside the bite check's `git archive` tree. This was
+        # the third place that needed it and the only one that did not have it,
+        # which stayed invisible because task 53 is the first frontend task to
+        # reach accept: every earlier accept was a draft_spec or an api task,
+        # whose checks are python and need nothing installed.
+        #
+        # AFTER the boundary is judged, for the reason link_dependencies gives:
+        # the links must not be able to influence what the diff contains. Here
+        # that is belt and braces -- nothing writes to this clone between the
+        # merge and the checks -- but the ordering is the property, not the
+        # circumstance.
+        #
+        # Nothing is unlinked afterwards: the clone is thrown away whole, and
+        # on the keep_on_success path it is the caller's to delete. What must
+        # NOT happen is the link outliving the clone, and discard_trial_clone
+        # removes the directory rather than following into it.
+        links = worktree.link_dependencies(trial, contract.get("worktree_links", {}))
+
         # The SAME facts the original run was given, including the frozen
         # contract. A check that can read its contract on the first run and not
         # on the re-verification is a check that reports could-not-run at

@@ -69,7 +69,29 @@ NoNewPrivileges=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-MemoryMax=512M
+# 2G since 10 Sep 2026, MEASURED rather than chosen, and it is not a web
+# app's number because this is not only a web app. The accept route re-runs
+# THE CONTRACT'S OWN VERIFICATION in a trial clone -- that is the whole point
+# of it -- and for the frontend contract that is tsc and a 319-test vitest run.
+#
+#   tsc --noEmit          peak RSS 709 MiB, 13s
+#   vitest run            peak RSS 352 MiB per process, 73s, plus a worker pool
+#
+# At 512M tsc aborted with SIGABRT (exit 134, V8's out-of-memory abort) and the
+# console reported "the branch verifies on its own and FAILS when merged into
+# main as it stands now. The base moved under it." -- a confident, specific,
+# entirely wrong sentence. The base had not moved: main was the branch's own
+# merge base. Nothing distinguishes a check that failed from a check the
+# sandbox killed.
+#
+# fleet-runner.service runs the same commands with MemoryMax=infinity, so the
+# two paths that must agree about whether a branch passes were never given the
+# same room to answer in.
+#
+# Bounded rather than infinity: this process also serves HTTP, and an unbounded
+# web service is a worse failure than a capped one. 2G is ~2.9x the measured
+# tsc peak with room for vitest's workers, on a host with 7.8G.
+MemoryMax=2G
 
 [Install]
 WantedBy=multi-user.target
