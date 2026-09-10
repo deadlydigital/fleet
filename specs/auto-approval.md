@@ -1292,6 +1292,21 @@ four filters work, and §2.5 is entered as its own candidate (c38) rather than
 queued as a follow-up fix — so it competes on merit rather than inheriting the
 priority of the task that missed it.
 
+**And `dd_api` still defaults `auto_merge: true`, which is the same gap with no
+reader at all.** That default was chosen deliberately for the parity push and
+the argument for it holds; what did not exist until now is a written account of
+what it costs. A dd_api task that implements four of five numbered requirements
+merges, deploys, and is recorded MERGED with every check green — the frontend
+equivalent of exactly what task 53 did, minus the person who caught it. The
+consequence is recorded against the decision itself, in
+`contracts/deadly-digital-platform-api.yaml` beside `auto_merge: true`, so it
+is a known trade rather than something rediscovered later. §9.12 costs the
+cheapest partial reader that would narrow it.
+
+It also changes *why* §7 reverses that default: not only that a bad merge
+becomes expensive once there are customers, but that a partially-built feature
+is not a bad merge and triggers no revert.
+
 ---
 
 ### 9.10 The accept path had four defects and task 53 was the first to meet them
@@ -1367,6 +1382,71 @@ id — an older row is superseded when a newer batch re-read the same document �
 which is a change to a ranking gate and is not made here. **The immediate
 question is whose pool it is**: c38 can be moved into batch 10, or batch 11 can
 stand and batch 10 wait for the next producer run. Left as found, and reported.
+
+---
+
+### 9.12 The cheapest partial reader, costed
+
+Asked for on 10 Sep 2026, against §9.9 and `dd-analytics-frontend.yaml`'s
+`auto_merge: false` being the only reader of a spec. **Not built. Costed.**
+
+The brief is narrow on purpose: catch **a numbered requirement with no
+corresponding change**. Not "is the change correct" — nothing cheap does that.
+
+**What does not work, measured rather than assumed.** Grepping the diff for the
+requirement number is worse than nothing. Against task 53's real diff:
+
+    §2.1  1 match     implemented
+    §2.2  0 matches   implemented
+    §2.3  0 matches   implemented
+    §2.4  0 matches   not applicable
+    §2.5  1 match     NOT IMPLEMENTED
+
+Both "matches" are stray digits and two implemented requirements score zero. A
+reader built on that would refuse working changes and pass the one that was
+missing — the worst possible arrangement, because it would be believed.
+
+**What would work, and what it costs.** Traceability by explicit marker:
+
+1. `draft_spec_shape.py` requires each requirement to carry a stable id. The
+   specs already number them (`**2.5 The table cells set the filters.**`); this
+   makes the convention enforceable rather than habitual.
+2. `runner/cycle.py` passes the task's `spec_md` to checks as a fact, beside
+   `FLEET_CONTRACT`. One line. Checks cannot reach the database and should not
+   start.
+3. A checker extracts the ids and requires each to appear in an ADDED line as
+   an unambiguous token — `spec:2.5` — in a comment, a test name, or a
+   docstring. Refuse when an id appears nowhere.
+
+Roughly 80 lines of checker, one fact, one shape rule.
+
+**It would have failed task 53.** No line of that diff carries such a marker
+for any requirement.
+
+**What it proves, stated so it is not oversold: that a claim was made, not that
+it was met.** An author can write `// spec:2.5` and change nothing. That is
+still worth having, because it converts a silent omission into a written,
+attributable claim sitting in the diff — visible to review, and a lie rather
+than an oversight. It moves the failure from invisible to answerable.
+
+**The cost that is not lines of code.** No such convention exists today: zero
+fleet-authored commits in the platform repository cite a spec section. So this
+imposes an annotation burden on every future task, and the burden is heaviest
+on exactly the small changes where it is least needed.
+
+**Where it belongs, and where it does not.** On `dd_api` it narrows the silence
+that `auto_merge: true` buys — that path has no reader at all, so a mechanical
+claim-check is strictly more than nothing. On the frontend contract, where a
+person already reads the spec, it adds annotation cost for a check weaker than
+the reader it sits beside.
+
+**A cheaper thing that is not a check, and may be worth more.** The console's
+review page renders the diff and the spec as prose. Parsing the numbered
+requirements out of `spec_md` and rendering them as a checklist beside the diff
+costs almost nothing, catches nothing automatically, and makes the one real
+reader systematic rather than attentive. §9.9 exists because a person read a
+250-line spec and a 300-line diff and did not notice one missing item out of
+seven. That is what a checklist is for.
 
 ---
 

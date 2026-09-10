@@ -25,6 +25,11 @@ header { border-bottom:1px solid var(--line); padding:.6rem 1rem;
   display:flex; gap:1.2rem; align-items:baseline; flex-wrap:wrap }
 header a { color:var(--fg); text-decoration:none; padding:.15rem 0 }
 header a.on { border-bottom:2px solid var(--accent) }
+.stale-code { margin:0; padding:.7rem 1rem; background:var(--hi);
+  border-bottom:2px solid var(--bad); color:var(--fg); font-size:13px }
+.stale-code strong { color:var(--bad) }
+.stale-code .stale-fix { margin:.4rem 0 .2rem }
+.stale-code ul { margin:.3rem 0 0; padding-left:1.2rem; color:var(--dim) }
 header .who { margin-left:auto; color:var(--dim); font-size:12px;
   font-family:ui-monospace,monospace }
 main { padding:1rem; max-width:1400px }
@@ -147,6 +152,24 @@ details.ask > summary:hover { color:var(--accent) }
   <a href="/candidates" class="{% block nav_cand %}{% endblock %}">Candidates</a>
   <span class="who">read-only as {{ running_as }}</span>
 </header>
+{# A LOUD BANNER, ABOVE EVERYTHING, and not a line in a footer. A stale
+   process renders a page that looks entirely current -- the database is read
+   fresh, the timestamps are now -- and on 10 Sep 2026 one refused a good
+   branch under a rule the tree had retired four hours after it booted. The
+   reader had no way to tell which code answered. See console/version.py. #}
+{% if code and code.stale %}
+<div class="stale-code">
+  <strong>This console is running stale code.</strong>
+  It loaded <code>{{ code.loaded }}</code>; the tree is now
+  <code>{{ code.on_disk }}</code>. Decisions are refused until it is restarted,
+  because what it would enforce is not what the repository says to enforce.
+  <div class="stale-fix"><code>sudo systemctl restart fleet-console.service</code></div>
+  <details>
+    <summary>{{ code.changed | length }} file(s) have moved since it loaded them</summary>
+    <ul>{% for f in code.changed %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
+  </details>
+</div>
+{% endif %}
 <main>{% block body %}{% endblock %}</main>
 </body>
 </html>

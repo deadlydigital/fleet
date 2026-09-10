@@ -254,6 +254,39 @@ verification:
 # REVERSE THIS ONCE THERE ARE CUSTOMERS. specs/unattended-operation.md §7 lists
 # it with the rest of what goes back. `true` here is a statement about this
 # body of work on this product at this moment; it is not a design.
+#
+# WHAT IT COSTS, MEASURED ON 10 SEP 2026 AND WRITTEN DOWN SO IT IS A KNOWN
+# TRADE RATHER THAN A DISCOVERY
+# ---------------------------------------------------------------------------
+# Task 53 shipped §2.5 of its own spec unbuilt -- the order table's Payment,
+# Country and Coupon cells were to set the corresponding filter, and the diff
+# does not touch row rendering at all. Every gate above's frontend equivalent
+# passed: the tree typechecked, 319 tests passed, the added test bit, and both
+# halves of the paired group landed.
+#
+# NONE OF THOSE CAN FAIL FOR A MISSING REQUIREMENT, and adding a fifth would
+# not change that. tsc proves it compiles. The suite proves nothing broke.
+# new_test_bites.sh proves the ONE test the change added fails without the
+# change -- which says nothing about the requirements the change added no test
+# for. pytest_unit_per_file.sh is the same shape one language over.
+#
+# That task was caught because dd-analytics-frontend.yaml sets
+# `auto_merge: false`, so a person read the spec against the diff. **On THIS
+# contract nobody does.** A dd_api task that implements four of five numbered
+# requirements merges, deploys, and is recorded as MERGED with every check
+# green. Nothing in the path would say otherwise, and the first evidence would
+# be somebody using the feature.
+#
+# That is the trade being made here, stated plainly: unattended merge on this
+# contract buys back a human reading per feature, and pays for it by removing
+# the only reader of the spec. It is defensible while the product has no users
+# and a revert is cheap. It stops being defensible on the same day §7 says it
+# does -- and the reason to reverse it is now this one as much as the risk of
+# a bad merge, because a partially-built feature is not a bad merge and no
+# revert gets triggered by it.
+#
+# specs/auto-approval.md §9.9 records the instance and §9.12 costs the cheapest
+# partial reader that would narrow it.
 auto_merge: true
 
 max_diff_lines: 400

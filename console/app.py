@@ -24,7 +24,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from console import (approve, config, db, decide, deploys, gitdiff, merge,
-                     morning, queries, reverify)
+                     morning, queries, reverify, version)
 from runner import worktree
 
 RUNNING_AS: str = ""
@@ -87,7 +87,11 @@ def render(request: Request, template: str, status_code: int = 200,
     return templates.TemplateResponse(
         request, template,
         {"running_as": RUNNING_AS, "writing_as": WRITING_AS,
-         "diff_css": gitdiff.diff_css(), "now": time.time(), **extra},
+         "diff_css": gitdiff.diff_css(), "now": time.time(),
+         # ON EVERY PAGE, not only the decision routes. A stale process
+         # renders a perfectly current-looking page from three-day-old rules,
+         # and the reader has no way to tell -- see console/version.py.
+         "code": version.status(), **extra},
         status_code=status_code)
 
 
@@ -166,7 +170,17 @@ def index(request: Request):
 
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz() -> str:
-    return f"ok as {RUNNING_AS}"
+    """Identity AND code version. A health check that says only "ok" answers
+    the least interesting question a long-lived process raises."""
+    c = version.status()
+    lines = [f"ok as {RUNNING_AS}",
+             f"code loaded {c['loaded']}",
+             f"code on disk {c['on_disk']}"]
+    if c["stale"]:
+        lines.append(f"STALE: {len(c['changed'])} file(s) have moved since this "
+                     f"process loaded them: {', '.join(c['changed'][:5])}"
+                     + (" ..." if len(c["changed"]) > 5 else ""))
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- page 1
@@ -360,6 +374,16 @@ def accept(request: Request, task_id: int,
     In that order, and never the other way round: a verdict recorded before
     the merge would be a claim about something that had not happened yet.
     """
+    # STALE CODE DECIDES NOTHING. console/version.py: this process enforces
+    # the rules of whenever it was last restarted, and on 10 Sep 2026 that
+    # produced a refusal under a boundary rule the tree had already retired.
+    # Refusing to decide is the same answer this codebase gives everywhere it
+    # cannot stand behind an answer.
+    if version.is_stale():
+        return render(request, "decided.html", status_code=409, task_id=task_id,
+                      outcome={"ok": False, "loud": True,
+                               "headline": "Refused: this console is running stale code",
+                               "detail": version.REFUSAL.splitlines()})
     if not same_origin(request):
         return render(request, "decided.html", status_code=403, task_id=task_id,
                       outcome={"ok": False, "headline": "Refused",
@@ -463,6 +487,16 @@ def reject(request: Request, task_id: int,
            reason: str = Form(...), rendered_at: float = Form(...),
            note: str = Form("")):
     """Record the verdict. The branch is not touched."""
+    # STALE CODE DECIDES NOTHING. console/version.py: this process enforces
+    # the rules of whenever it was last restarted, and on 10 Sep 2026 that
+    # produced a refusal under a boundary rule the tree had already retired.
+    # Refusing to decide is the same answer this codebase gives everywhere it
+    # cannot stand behind an answer.
+    if version.is_stale():
+        return render(request, "decided.html", status_code=409, task_id=task_id,
+                      outcome={"ok": False, "loud": True,
+                               "headline": "Refused: this console is running stale code",
+                               "detail": version.REFUSAL.splitlines()})
     if not same_origin(request):
         return render(request, "decided.html", status_code=403, task_id=task_id,
                       outcome={"ok": False, "headline": "Refused",
