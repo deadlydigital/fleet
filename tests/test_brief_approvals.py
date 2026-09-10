@@ -21,7 +21,7 @@ from brief import pass_ as P
 from brief import sources as S
 from brief.claims import Claim
 from brief.render import render
-from console import autoapprove
+from console import autoapprove, rank
 
 NOW = datetime(2026, 9, 10, 7, 45, tzinfo=timezone.utc)
 
@@ -228,7 +228,11 @@ class TestFromARealApproval:
             {"since": datetime.now(timezone.utc) - timedelta(hours=1)}
         ).fetchall()
         assert len(rows) == 1
-        assert rows[0]["mechanics"]["rank_version"] == 1
+        # rank.RANK_VERSION rather than a literal: the whole point of the
+        # column is that last week's batches stay attributable to the ranking
+        # that made them, and a test pinned to 1 asserts the version never
+        # moves rather than that it is recorded.
+        assert rows[0]["mechanics"]["rank_version"] == rank.RANK_VERSION
         assert rows[0]["approved"][0]["candidate_id"] == top
         # The signal survives the whole chain: block -> column -> mechanics
         # row -> brief. That chain is what dropped it before there was a loader.

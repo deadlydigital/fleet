@@ -200,6 +200,21 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
                     f"{where} has an hib_signal without both value and as_of. "
                     f"The age of the figure is what decides whether it can be "
                     f"leaned on.")
+            elif "coverage" in sig:
+                # THE SHAPE WHEN IT IS THERE, from the contract check rather
+                # than a second copy of it. 028's numbers are what key 2 ranks
+                # on and a half-stated ratio is worse than none.
+                #
+                # BUT THE KEY IS NOT REQUIRED HERE, where the producer's own
+                # check does require it. That asymmetry is the same one this
+                # module's header already argues for the probes: the check
+                # governs what a producer may EMIT, and the loader loads
+                # documents that were written before the contract changed --
+                # batch 9's is committed and carries four signals with no
+                # coverage. A loader that refused it would refuse to record
+                # what the producer actually wrote, which is the fact worth
+                # keeping. Absent reads as "not a ratio", the same as null.
+                problems += mod.check_coverage(where, sig)
 
         probes = c.get("probes")
         if not isinstance(probes, list) or not probes:

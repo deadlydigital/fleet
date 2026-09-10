@@ -1152,3 +1152,92 @@ Not "watching it work". Three questions, in the order they will be answerable:
 3. **Does the band ever discriminate?** It cannot on this pool. It needs a
    batch that is not eight-ninths Daily, which needs a producer run, which
    needs §8.1's producer timer.
+
+---
+
+## 11. Coverage as key 2 — what it fixes, and the limit stated up front
+
+Built 10 Sep 2026: `028_hib_signal_coverage.sql`, `console/rank.py` (rank_v2),
+and a producer-contract change in `contracts/checks/candidate_block_shape.py`.
+
+### 11.1 Why: the tie was not the exception, it was being masked
+
+On 10 Sep the ranker approved nothing — c20 and c21 are both `frontend-only`
+and both Daily, so no key separated them and §2.3 refused. **The two nights
+before that produced an answer only because the overlap gate was hiding c21 and
+c22 behind queued task 49.** Task 49 failed at 02:07 and released them. So the
+discriminator on 9 and 10 September was *an unrelated task's queue state* —
+§7.2 worries gate 3 is too blunt; this is the same bluntness manufacturing
+discriminators rather than suppressing rows.
+
+At pace 1 the only comparison that matters is top-versus-next-eligible, and in
+a sorted list those are **by construction the two most similar rows in the
+pool**. A discriminator further down the order is never consulted. Raising the
+pace does not help: at pace 2 the cut lands on c21 vs c22, which also tie.
+
+### 11.2 The one real discriminator that was in the evidence
+
+`hib_signal` carried it and 025 deliberately refused to parse it:
+
+    c20  payment_method  2,782,530 of 2,844,177   97.83%
+    c21  refund_total            1 of 2,844,177    0.0000352%
+
+025 was right that no sort key gets that out of a sentence, and right about
+what the second version is. 028 is that: `hib_signal.coverage`
+`{metric, populated, total}`, required as a **key** and nullable as a **value**
+— because "all seven RFM buckets populated" is a real signal and is not a
+ratio. The sentence stays and the brief still prints it verbatim.
+
+Key 2 is three statements, not a scale: `data-present`, `no-figure`,
+`data-absent`. **A row that supplied a bad number ranks below one that supplied
+none** — the alternative rewards silence. `no-figure` is not zero: "the
+document stated no fraction" and "the column is empty" are different facts, and
+collapsing them is precisely how a ranker gets net revenue wrong.
+
+The floor is `fleet_hib_coverage_floor()` = 1%, and it is **measured rather
+than chosen**. Every figure the source document states about production:
+
+    refund_total       0.0000352%          discount_total     5.1348070%
+    coupon_code        5.1380768%          utm_source        70.6952837%
+    payment_method    97.8325189%          billing_country   99.8543691%
+
+One gap, four and a half orders of magnitude wide. 1% sits inside it with
+1,459× of margin below and 5.1× above, so **every threshold in that range sorts
+this pool identically** and the choice cannot be what makes the ranking come
+out one way rather than another. That is the whole claim; it is not a claim
+about where a column stops being worth reporting on in general.
+
+And it agrees with a judgement a person already made independently:
+`decision_log` 23 records that the net-revenue netting is not exercised by live
+data at all — *"net_revenue therefore equals revenue in every window on every
+tenant today"*.
+
+### 11.3 The limit, and it is shorter than four nights
+
+Simulated at pace 1 over the live pool, assuming the two figures were
+machine-readable: coverage separates nights 1 through 4 and then **c23, c24,
+c26 and c27 tie four-deep** — CSV export, scheduled digest, cross-store
+roll-up, product cost — all `create / daily / no-figure`. `TestTheFourNightLimit`
+holds that as a test so "coverage fixed the ranker" cannot be believed by
+reading the code.
+
+**And on the pool as it stands today it buys nothing at all.** The first dry
+run at rank_v2 reads `no-figure` on all twelve rows, because the existing
+signals are prose in rows that are already loaded. They are not backfilled, and
+deliberately: deriving the numbers would mean parsing the sentence — the parse
+025 refused and 028 exists to make unnecessary — and rewriting a loaded row is
+the reconciliation `contracts/candidate-producer.yaml` refuses by name. **The
+key becomes live when the next producer run emits coverage objects, which the
+shape check now requires.** Until then it is correct, tested against the real
+figures, and inert.
+
+### 11.4 What no key can fix
+
+The four rows at the bottom are separated by what HIB's team would actually
+open. Nobody has asked — the producer block is required to carry
+`unasked_question` for exactly this reason — and nothing observes it:
+`deadly_digital` has three schemas and no event, tracking, session, page-view
+or activity table anywhere. principles.md says to rank against HIB as *"a real
+merchant whose behaviour can be observed"*. It is not observed.
+
+That is a question for a person and no ranking key substitutes for it.

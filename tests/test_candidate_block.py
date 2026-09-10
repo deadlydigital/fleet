@@ -244,10 +244,88 @@ class TestHibSignalIsAFactAndCarriesItsAge:
             [candidate(hib_signal={"value": "HIB ships to 40 countries"})]))
         assert code == 1 and "as_of" in out
 
-    def test_a_signal_with_a_value_and_an_as_of_is_accepted(self, tmp_path):
+    def test_a_signal_with_a_value_an_as_of_and_a_coverage_is_accepted(
+            self, tmp_path):
         code, out = run(tmp_path, block([candidate(
             hib_signal={"value": "HIB ships to 40 countries",
-                        "as_of": "2026-07-14"})]))
+                        "as_of": "2026-07-14", "coverage": None})]))
+        assert code == 0, out
+
+
+# ---- the figure, as a number and not only as a sentence --------------------
+
+class TestCoverageIsStatedAsNumbers:
+    """028 and specs/auto-approval.md §11.
+
+    `value` stays a sentence -- it is what the brief prints and what a person
+    judges, and 025 was right that no sort key gets "refund_total non-zero on
+    1 of 2,844,177" out of prose. This is the half a ranker can read, and
+    until it existed the one real discriminator in the pool was unreachable.
+    """
+
+    SIG = {"value": "payment_method populated on 2,782,530 of 2,844,177 orders",
+           "as_of": "2026-08-28"}
+
+    def _sig(self, **over):
+        s = dict(self.SIG)
+        s.update(over)
+        return s
+
+    def test_the_coverage_key_is_required_on_a_signal(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig())]))
+        assert code == 1 and "no `coverage` key" in out
+
+    def test_null_coverage_is_a_real_answer(self, tmp_path):
+        """"all seven RFM buckets populated" is a signal and is not a ratio."""
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            value="all seven RFM buckets populated on tenant 2",
+            coverage=None))]))
+        assert code == 0, out
+
+    def test_a_numerator_without_a_denominator_is_refused(self, tmp_path):
+        """The source document's own shape: "populated on 146,136 orders"."""
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            coverage={"metric": "coupon_code", "populated": 146136}))]))
+        assert code == 1 and "of how many" in out
+
+    def test_a_denominator_without_a_numerator_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            coverage={"metric": "coupon_code", "total": 2844177}))]))
+        assert code == 1 and "missing ['populated']" in out
+
+    def test_a_ratio_that_cannot_say_what_it_counted_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            coverage={"populated": 1, "total": 2844177}))]))
+        assert code == 1 and "no `metric`" in out
+
+    def test_a_zero_denominator_is_not_a_measurement(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            coverage={"metric": "x", "populated": 0, "total": 0}))]))
+        assert code == 1 and "not a measurement" in out
+
+    def test_more_populated_than_total_is_not_a_fraction(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            coverage={"metric": "x", "populated": 9, "total": 4}))]))
+        assert code == 1 and "not a fraction of anything" in out
+
+    def test_the_real_c20_figure_is_accepted(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            coverage={"metric": "payment_method", "populated": 2782530,
+                      "total": 2844177}))]))
+        assert code == 0, out
+        assert "1 of them a coverage ratio" in out
+
+    def test_the_real_c21_figure_is_accepted_and_is_near_zero(self, tmp_path):
+        """The row whose own signal argues against building it.
+
+        Accepted, because refusing it would hide the finding. It ranks itself
+        down -- which is what 025 said a ranker reading the SENTENCE could
+        never do.
+        """
+        code, out = run(tmp_path, block([candidate(hib_signal=self._sig(
+            value="refund_total non-zero on 1 of 2,844,177 orders",
+            coverage={"metric": "refund_total", "populated": 1,
+                      "total": 2844177}))]))
         assert code == 0, out
 
 

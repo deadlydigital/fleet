@@ -52,16 +52,42 @@ from .approve import REPEAT_FAILURE_STOP
 #: Bumped when any key changes meaning or order. Recorded on every decision, so
 #: last week's batches stay attributable to the ranking that made them instead
 #: of being silently re-explained by this week's.
-RANK_VERSION = 1
+#:
+#: v2 (10 Sep 2026): coverage inserted as key 2, band moves to key 3. 028.
+RANK_VERSION = 2
 
 #: Key 1's three classes, lower first.
 FRONTEND_ONLY, MODIFY, CREATE = 0, 1, 2
 
 CLASS_NAMES = {FRONTEND_ONLY: "frontend-only", MODIFY: "modify", CREATE: "create"}
 
-#: Key 2. A NULL band sorts last and does not gate.
+#: Key 3 since v2. A NULL band sorts last and does not gate.
 BAND_ORDER = {"daily": 0, "weekly": 1, "monthly": 2, "rarely": 3}
 NO_BAND = 4
+
+#: KEY 2, and the three values are not a scale -- they are three different
+#: STATEMENTS, and the middle one is why this is not a ratio sort.
+#:
+#:   DATA_PRESENT   the signal says the column this would report on is
+#:                  populated, at or above fleet_hib_coverage_floor()
+#:   NO_FIGURE      the signal states no population fraction, or there is no
+#:                  signal. NOT zero: "the document declared no figure" and
+#:                  "the column is empty" are different facts and ordering
+#:                  them together is how a ranker gets net revenue wrong
+#:   DATA_ABSENT    the signal says the column is effectively empty. A report
+#:                  over an empty column is not a feature -- specs/metorik-
+#:                  gap.md's own words -- so it sorts BELOW a row that made no
+#:                  claim either way
+#:
+#: That ordering is the whole point and it is worth stating plainly: a
+#: candidate that supplied a bad number ranks below one that supplied none.
+#: The alternative rewards silence, and the producer is required to state the
+#: figure precisely so that silence is not the cheap option.
+COVERAGE_PRESENT, COVERAGE_NONE, COVERAGE_ABSENT = 0, 1, 2
+
+COVERAGE_NAMES = {COVERAGE_PRESENT: "data-present",
+                  COVERAGE_NONE: "no-figure",
+                  COVERAGE_ABSENT: "data-absent"}
 
 #: Gate 3 looks at every task that is not terminal. A task in any of these
 #: states may still write the files it declared.
@@ -196,7 +222,46 @@ def work_class(probes: Sequence[dict]) -> tuple[int, Dict[str, Any]]:
     return CREATE, why
 
 
-def rank(candidate: Dict[str, Any]) -> tuple:
+def coverage_ratio(candidate: Dict[str, Any]) -> float | None:
+    """How much of the data this row would report on exists, or None.
+
+    Read from the STRUCTURED half of hib_signal, never from the sentence. 025
+    refused to parse the sentence and was right to; 028 is why there is
+    something else to read.
+    """
+    cov = (candidate.get("hib_signal") or {}).get("coverage")
+    if not isinstance(cov, dict):
+        return None
+    try:
+        populated = float(cov["populated"])
+        total = float(cov["total"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return populated / total if total > 0 else None
+
+
+def coverage_class(candidate: Dict[str, Any],
+                   coverage_floor: float | None) -> tuple[int, float | None]:
+    """Key 2, and the ratio that produced it.
+
+    `coverage_floor` is passed IN, from fleet_hib_coverage_floor(), for the
+    reason prior_failures is: this stays pure, and a literal here would be the
+    second copy of a ceiling that drifts from the one in the database.
+
+    A floor of None means THE KEY IS OFF -- every row scores NO_FIGURE and the
+    order is v1's. That is the safe direction for a caller that has not been
+    taught to read the floor: it loses the discriminator rather than inventing
+    a threshold.
+    """
+    ratio = coverage_ratio(candidate)
+    if coverage_floor is None or ratio is None:
+        return COVERAGE_NONE, ratio
+    return (COVERAGE_PRESENT if ratio >= coverage_floor
+            else COVERAGE_ABSENT), ratio
+
+
+def rank(candidate: Dict[str, Any], *,
+         coverage_floor: float | None = None) -> tuple:
     """The sort key. Lower sorts first. PURE -- no database, no filesystem.
 
     Pure so that a dry run means something: the same inputs give the same
@@ -204,19 +269,29 @@ def rank(candidate: Dict[str, Any]) -> tuple:
     rather than in the weather.
     """
     klass, _ = work_class(candidate.get("probes") or [])
+    cov, _ratio = coverage_class(candidate, coverage_floor)
     band = BAND_ORDER.get(candidate.get("band"), NO_BAND)
-    return (klass, band, candidate["id"])
+    return (klass, cov, band, candidate["id"])
 
 
-def key_values(candidate: Dict[str, Any]) -> Dict[str, Any]:
+def key_values(candidate: Dict[str, Any], *,
+               coverage_floor: float | None = None) -> Dict[str, Any]:
     """The keys, named, for the record and the dry run."""
     klass, why = work_class(candidate.get("probes") or [])
+    cov, ratio = coverage_class(candidate, coverage_floor)
     return {
         "key1_class": CLASS_NAMES[klass],
         "key1_why": why,
-        "key2_band": candidate.get("band"),
-        "key3_id": candidate["id"],
-        "sort_key": [klass, BAND_ORDER.get(candidate.get("band"), NO_BAND),
+        "key2_coverage": COVERAGE_NAMES[cov],
+        # The ratio AND the floor it was read against, because "data-absent"
+        # is a verdict and the morning should be able to see the number and
+        # the line it fell under rather than take the word for it.
+        "key2_ratio": ratio,
+        "key2_floor": coverage_floor,
+        "key3_band": candidate.get("band"),
+        "key4_id": candidate["id"],
+        "sort_key": [klass, cov,
+                     BAND_ORDER.get(candidate.get("band"), NO_BAND),
                      candidate["id"]],
     }
 

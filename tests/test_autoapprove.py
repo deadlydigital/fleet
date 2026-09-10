@@ -125,6 +125,22 @@ class TestKeyOneReadsTheProbes:
         outright, which is the answer that matters."""
         assert rank.work_class([])[0] == rank.CREATE
 
+    def test_with_no_floor_the_coverage_key_is_off_and_v1_order_stands(self):
+        """A caller that has not been taught to read the floor loses the key.
+
+        It does NOT get a threshold this module invented -- that is the safe
+        direction, and it is why coverage_floor has no default value of its
+        own.
+        """
+        rich = {"id": 1, "band": "daily", "probes": [EXISTS],
+                "hib_signal": {"coverage": {"metric": "m", "populated": 99,
+                                            "total": 100}}}
+        poor = {"id": 2, "band": "daily", "probes": [EXISTS],
+                "hib_signal": {"coverage": {"metric": "m", "populated": 1,
+                                            "total": 1000000}}}
+        assert rank.rank(rich)[1] == rank.rank(poor)[1] == rank.COVERAGE_NONE
+        assert rank.rank(rich) < rank.rank(poor)   # by id alone, as in v1
+
     def test_the_keys_sort_class_then_band_then_id(self):
         assert rank.rank({"id": 9, "band": "daily",
                           "probes": [API_PRESENT, PLATFORM_FEATURE_MISSING]}) \
@@ -467,3 +483,137 @@ class TestDryRun:
         real = autoapprove.sweep()
         assert dry["approve_ids"] == real["approve_ids"]
         assert dry["reason"] == real["reason"]
+
+
+# ---- key 2: the data the report would be over ------------------------------
+
+FLOOR = 0.01
+
+C20 = {"metric": "payment_method", "populated": 2782530, "total": 2844177}
+C21 = {"metric": "refund_total", "populated": 1, "total": 2844177}
+
+
+def _cov(cid, cov, band="daily", probes=None):
+    return {"id": cid, "band": band, "probes": probes or [EXISTS],
+            "hib_signal": None if cov is None else
+            {"value": "measured", "as_of": "2026-08-28", "coverage": cov}}
+
+
+class TestCoverageRanks:
+    """028. The discriminator that was in the evidence and out of reach.
+
+    On 10 Sep 2026 the ranker approved nothing: c20 and c21 are both
+    frontend-only and both Daily. Their signals are 2,782,530 of 2,844,177 and
+    1 of 2,844,177, and 025 stored both as prose because no sort key gets that
+    out of a sentence. This is the key that reads the numbers instead.
+    """
+
+    def test_the_real_pair_is_separated_and_in_the_right_direction(self):
+        """c20 over c21, which is what a person decided independently.
+
+        decision_log 23: the netting arithmetic is not exercised by live data
+        at all -- "net_revenue therefore equals revenue in every window on
+        every tenant today".
+        """
+        assert rank.rank(_cov(20, C20), coverage_floor=FLOOR) \
+            < rank.rank(_cov(21, C21), coverage_floor=FLOOR)
+        # ... and NOT by candidate id, which is the thing §2.3 refuses.
+        assert rank.rank(_cov(99, C20), coverage_floor=FLOOR) \
+            < rank.rank(_cov(1, C21), coverage_floor=FLOOR)
+
+    def test_a_row_with_no_figure_sorts_between_the_two(self):
+        """"the document stated no fraction" is not "the column is empty".
+
+        Ordering them together is exactly how a ranker gets net revenue wrong,
+        and it is the distinction 025 refused to lose.
+        """
+        present = rank.rank(_cov(1, C20), coverage_floor=FLOOR)
+        silent = rank.rank(_cov(1, None), coverage_floor=FLOOR)
+        absent = rank.rank(_cov(1, C21), coverage_floor=FLOOR)
+        assert present < silent < absent
+
+    def test_a_bad_number_ranks_below_no_number_and_that_is_deliberate(self):
+        """Otherwise silence is the cheap option and the producer takes it."""
+        assert rank.rank(_cov(1, C21), coverage_floor=FLOOR) \
+            > rank.rank(_cov(2, None), coverage_floor=FLOOR)
+
+    def test_coverage_outranks_the_band(self):
+        """A Weekly row over populated data beats a Daily row over none.
+
+        The band is one person's estimate of how often an agency would open
+        the report; coverage is a measurement of whether the report would have
+        anything in it. §2.2 ranks a measurement above an estimate.
+        """
+        assert rank.rank(_cov(1, C20, band="weekly"), coverage_floor=FLOOR) \
+            < rank.rank(_cov(2, None, band="daily"), coverage_floor=FLOOR)
+
+    def test_the_work_class_still_outranks_coverage(self):
+        """Key 1 did not move. A frontend-only row with no figure still beats
+        a create row with a perfect one."""
+        frontend = {"id": 1, "band": "daily", "hib_signal": None,
+                    "probes": [API_PRESENT, PLATFORM_FEATURE_MISSING],
+                    "repo": PLATFORM}
+        creating = _cov(2, C20, probes=[ABSENT_FILE])
+        assert rank.rank(frontend, coverage_floor=FLOOR) \
+            < rank.rank(creating, coverage_floor=FLOOR)
+
+    def test_the_floor_comes_from_the_argument_not_the_module(self):
+        """Same rows, two floors, two answers -- so the floor is doing work.
+
+        028 puts it in the database with the other ceilings; a literal in
+        rank.py would be the second copy that drifts.
+        """
+        five_percent = _cov(1, {"metric": "coupon_code", "populated": 146136,
+                                "total": 2844177})
+        assert rank.coverage_class(five_percent, 0.01)[0] == rank.COVERAGE_PRESENT
+        assert rank.coverage_class(five_percent, 0.10)[0] == rank.COVERAGE_ABSENT
+
+    def test_the_ratio_and_the_floor_are_both_recorded(self):
+        """"data-absent" is a verdict; the morning gets the number too."""
+        k = rank.key_values(_cov(21, C21), coverage_floor=FLOOR)
+        assert k["key2_coverage"] == "data-absent"
+        assert k["key2_ratio"] == pytest.approx(1 / 2844177)
+        assert k["key2_floor"] == FLOOR
+
+    def test_a_half_stated_ratio_is_not_read_as_zero(self):
+        """A numerator with no denominator reads as NO FIGURE, never as empty.
+
+        The shape check refuses to let a producer emit one; this is what
+        happens if a hand-loaded row carries it anyway, and guessing a
+        denominator would be the invented number this whole key avoids.
+        """
+        half = _cov(1, {"metric": "coupon_code", "populated": 146136})
+        assert rank.coverage_ratio(half) is None
+        assert rank.coverage_class(half, FLOOR)[0] == rank.COVERAGE_NONE
+
+
+class TestTheFourNightLimit:
+    """WHAT THIS KEY DOES NOT FIX, as a test rather than as a caveat.
+
+    Coverage is complete on 2 of the 9 rows in the live pool. It separates the
+    pair that tied on 10 Sep and then runs out: c23, c24, c26 and c27 are four
+    `create / daily / no-figure` rows -- CSV export, scheduled digest,
+    cross-store roll-up, product cost -- and nothing in the system tells them
+    apart. What would is what HIB's team actually opens, which nobody has
+    asked and nothing observes.
+
+    This test exists so that "coverage fixed the ranker" cannot be believed by
+    reading the code.
+    """
+
+    def test_four_rows_alike_but_for_their_ids_still_tie(self):
+        rows = [_cov(cid, None) for cid in (23, 24, 26, 27)]
+        keys = {rank.rank(r, coverage_floor=FLOOR)[:3] for r in rows}
+        assert len(keys) == 1, "the pool's bottom four are not separable"
+
+    def test_and_the_ranker_refuses_rather_than_taking_the_first(
+            self, dsns, console, admin):
+        """The refusal is the designed answer and it still fires."""
+        _pool(admin)
+        b = _batch(console)
+        for title in ("CSV export", "Scheduled digest", "Cross-store roll-up"):
+            _cand(console, b, title=title, band="daily",
+                  probes=[ABSENT_FILE], repo="fleet")
+        p = autoapprove.plan()
+        assert p["approve_ids"] == []
+        assert "indistinguishable on every key" in p["refused"]

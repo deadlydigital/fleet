@@ -83,6 +83,7 @@ def _ceilings(conn) -> Dict[str, Any]:
         "SELECT fleet_autoapprove_per_night() AS per_night,"
         " fleet_max_approval_batch() AS max_batch,"
         " fleet_max_queued_tasks() AS max_queued,"
+        " fleet_hib_coverage_floor() AS coverage_floor,"
         " (SELECT count(*) FROM tasks WHERE status='QUEUED') AS queued_now"
     ).fetchone()
     credit = conn.execute("SELECT * FROM fleet_month_credit()").fetchone()
@@ -113,7 +114,7 @@ def _cut(ceilings: Dict[str, Any], task_max_cost: float) -> Dict[str, Any]:
 
 
 def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
-            considered: int) -> str:
+            considered: int, coverage_floor: float | None = None) -> str:
     """The sentence, built from what actually separated the cut.
 
     Raises NothingToApprove when nothing did. This is the function that makes
@@ -121,7 +122,7 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
     """
     top = approved[0]
     last = approved[-1]
-    keys_last = rank.key_values(last)
+    keys_last = rank.key_values(last, coverage_floor=coverage_floor)
 
     head = (f"Approved {len(approved)} of {considered} open candidate(s) "
             f"(rank_v{rank.RANK_VERSION}). ")
@@ -140,7 +141,7 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
                 f"an alternative, because there was none.")
 
     nxt = eligible_below[0]
-    keys_next = rank.key_values(nxt)
+    keys_next = rank.key_values(nxt, coverage_floor=coverage_floor)
 
     if keys_last["key1_class"] != keys_next["key1_class"]:
         why = (f"its probes make it a {keys_last['key1_class']} candidate and "
@@ -151,16 +152,29 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
             pf = keys_last["key1_why"]["platform_feature_absent"]
             why += (f": {', '.join(ap[:2])} already returns the value and "
                     f"{', '.join(pf[:2])} does not carry it to a person")
-    elif keys_last["key2_band"] != keys_next["key2_band"]:
-        why = (f"both are {keys_last['key1_class']} work, and its band is "
-               f"{keys_last['key2_band']} against {keys_next['key2_band']} for "
+    elif keys_last["key2_coverage"] != keys_next["key2_coverage"]:
+        # THE FIGURE, NOT THE VERDICT. "data-present beats data-absent" is a
+        # restatement of the sort; the two ratios are the evidence, and 028
+        # exists so this sentence can carry them.
+        def _pct(k):
+            return ("no population figure stated" if k["key2_ratio"] is None
+                    else f"{k['key2_ratio']:.4%} of the rows it would report on")
+        why = (f"both are {keys_last['key1_class']} work, and the data it "
+               f"needs is present on {_pct(keys_last)} against "
+               f"{_pct(keys_next)} for the next eligible row ({nxt['id']}), "
+               f"read against a floor of {keys_last['key2_floor']:.2%}")
+    elif keys_last["key3_band"] != keys_next["key3_band"]:
+        why = (f"both are {keys_last['key1_class']} work with the same "
+               f"coverage reading, and its band is "
+               f"{keys_last['key3_band']} against {keys_next['key3_band']} for "
                f"the next eligible row ({nxt['id']})")
     else:
         # NO DISCRIMINATOR. Approve nothing.
         raise NothingToApprove(
             f"candidates {last['id']} and {nxt['id']} are indistinguishable on "
             f"every key that means anything: both {keys_last['key1_class']}, "
-            f"both band {keys_last['key2_band']}, and only the candidate id "
+            f"both {keys_last['key2_coverage']}, "
+            f"both band {keys_last['key3_band']}, and only the candidate id "
             f"separates them. Approving on that is approving because it was "
             f"first, which is a decision nobody made and a reason nobody wrote. "
             f"Nothing was approved.")
@@ -191,12 +205,18 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
 
     head = rank.platform_head("deadly-digital-platform")
 
+    # From the database, never a literal here. 028 puts the floor beside the
+    # other ceilings on 013's precedent, and a copy in this file is the drift
+    # approve.py's stale contract literal already demonstrated once.
+    floor = float(ceilings["caps"]["coverage_floor"])
+
     scored = []
     for c in candidates:
         g = rank.gate(c, newest_batch=newest, live_tasks=tasks,
                       prior_failures=c["prior_failures"])
-        scored.append({**dict(c), "gate": g, "keys": rank.key_values(c),
-                       "sort": rank.rank(c)})
+        scored.append({**dict(c), "gate": g,
+                       "keys": rank.key_values(c, coverage_floor=floor),
+                       "sort": rank.rank(c, coverage_floor=floor)})
 
     # THE GATES ARE AHEAD OF THE SORT. An ineligible row is not ranked into
     # position and then skipped; it never enters the order. It is still listed,
@@ -214,6 +234,7 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
     credit = ceilings["credit"]
     result: Dict[str, Any] = {
         "rank_version": rank.RANK_VERSION,
+        "coverage_floor": floor,
         "platform_sha": head,
         "considered": len(candidates),
         "newest_batch": newest,
@@ -307,7 +328,8 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
         return result
 
     try:
-        result["reason"] = _reason(take, below, len(candidates))
+        result["reason"] = _reason(take, below, len(candidates),
+                                   coverage_floor=floor)
     except NothingToApprove as exc:
         result["approve_ids"] = []
         result["reserved_gbp"] = 0.0
@@ -328,6 +350,7 @@ def mechanics_of(p: Dict[str, Any]) -> Dict[str, Any]:
     """
     return {
         "rank_version": p["rank_version"],
+        "coverage_floor": p["coverage_floor"],
         "platform_sha": p["platform_sha"],
         # WHAT THE CEILING SAW, recorded on the decision. A morning that wants
         # to know whether the repeat stop was consulted at all -- as opposed to
@@ -415,8 +438,9 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
         mark = "  " if r["eligible"] else "x "
         k = r["keys"]
         line = (f"  {mark}c{r['candidate_id']:<3} {str(k['key1_class']):<14}"
-                f" {str(k['key2_band'] or '-'):<8} rf={r['prior_failures']} "
-                f"{r['title'][:44]}")
+                f" {str(k['key2_coverage']):<13}"
+                f" {str(k['key3_band'] or '-'):<8} rf={r['prior_failures']} "
+                f"{r['title'][:30]}")
         print(line)
         # THE IDENTITY THE COUNT WAS TAKEN OVER, printed under every row. A
         # count of 0 means nothing until you can see what it was 0 OF -- which

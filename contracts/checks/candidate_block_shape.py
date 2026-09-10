@@ -183,6 +183,67 @@ def objective_ids() -> set[str]:
     return set(load(FLEET / "objectives-2026-Q4.yaml").by_id)
 
 
+def check_coverage(where: str, sig: dict) -> list[str]:
+    """`hib_signal.coverage`: the same figure as two numbers, or an explicit null.
+
+    028 and specs/auto-approval.md §11. `value` is a SENTENCE and stays one --
+    it is what the morning brief prints and what a person judges. This is the
+    half a ranker can read, and until it existed the one real discriminator in
+    the pool was unreachable: c20 and c21 are both frontend-only and both
+    Daily, and their signals are 2,782,530 of 2,844,177 against 1 of 2,844,177.
+
+    REQUIRED KEY, NULL PERMITTED -- the third time this table uses that shape.
+    "all seven RFM buckets populated on tenant 2" is a real signal and is not a
+    ratio, so `coverage: null` is a legitimate and different answer from having
+    not thought about it.
+
+    BOTH NUMBERS OR NEITHER. The source document writes "coupon_code populated
+    on 146,136 orders" with the denominator two sections away, and a numerator
+    alone is not a coverage figure -- it is the half-a-fact 025's constraint
+    already refuses for {value, as_of}.
+    """
+    if "coverage" not in sig:
+        return [f"{where} has an hib_signal with no `coverage` key. It may be "
+                f"null -- a signal that is not a population figure is a real "
+                f"signal -- but the key is required, because 'this is not a "
+                f"ratio' and 'nobody worked out whether it was' are different "
+                f"facts and only a required key keeps them apart."]
+    cov = sig["coverage"]
+    if cov is None:
+        return []
+    if not isinstance(cov, dict):
+        return [f"{where} has a `coverage` that is not a mapping: {cov!r}"]
+
+    problems = []
+    if not str(cov.get("metric") or "").strip():
+        problems.append(
+            f"{where} has a `coverage` with no `metric`. A ratio that cannot "
+            f"say what it counted is a number nobody can check.")
+    missing = [k for k in ("populated", "total") if cov.get(k) is None]
+    if missing:
+        problems.append(
+            f"{where} has a `coverage` missing {missing}. Both or neither: "
+            f"the source document says 'coupon_code populated on 146,136 "
+            f"orders' and leaves the denominator two sections away, and "
+            f"'populated on 146,136' answers nothing without 'of how many'.")
+        return problems
+    try:
+        populated = float(cov["populated"])
+        total = float(cov["total"])
+    except (TypeError, ValueError):
+        problems.append(f"{where} has a non-numeric populated/total: "
+                        f"{cov.get('populated')!r} of {cov.get('total')!r}")
+        return problems
+    if total <= 0:
+        problems.append(f"{where} has a coverage total of {total}, and a "
+                        f"denominator of zero is not a measurement")
+    elif populated < 0 or populated > total:
+        problems.append(
+            f"{where} has coverage {populated} of {total}, which is not a "
+            f"fraction of anything")
+    return problems
+
+
 def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> list[str]:
     problems: list[str] = []
     where = f"candidate {n}"
@@ -257,6 +318,8 @@ def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> l
                     f"{where} has an hib_signal without both value and as_of. "
                     f"The age of this signal is the thing that decides whether "
                     f"it can be leaned on.")
+            else:
+                problems += check_coverage(where, sig)
 
     paths = c.get("suggested_paths") or []
     if not isinstance(paths, list):
@@ -402,10 +465,12 @@ def main(argv=None) -> int:
 
     probes = sum(len(c.get("probes") or []) for c in candidates)
     signals = sum(1 for c in candidates if c.get("hib_signal"))
+    ratios = sum(1 for c in candidates
+                 if isinstance((c.get("hib_signal") or {}).get("coverage"), dict))
     print(f"ok: {rel} -- {len(candidates)} candidate(s), {probes} probe(s) "
           f"re-executed at HEAD and all holding, {signals} carrying an "
-          f"hib_signal, none setting a disposition, ordering declared "
-          f"unranked.")
+          f"hib_signal ({ratios} of them a coverage ratio), none setting a "
+          f"disposition, ordering declared unranked.")
 
     # PRINTED WHETHER OR NOT IT IS A PROBLEM. A batch where every row serves
     # one objective may be perfectly honest, and it is also the exact shape of
