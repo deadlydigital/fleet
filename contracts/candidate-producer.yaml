@@ -28,7 +28,8 @@
 #   * agent_tools has NO Bash, so there is no shell
 #   * .env is gitignored and therefore absent from a fresh worktree, so there
 #     is no credential and no route to the database at all
-#   * writable_paths is ONE file
+#   * writable_paths is ONE file per batch -- a dated pattern that
+#     matches one name, never a directory
 #   * candidate_block_shape.py REFUSES a block containing disposition,
 #     work_type, batch_id, spec_task_id or work_task_id -- the shape cannot
 #     express pre-approval
@@ -58,9 +59,22 @@ repo: fleet
 base_branch: master
 contract_version: 1
 
-# ONE file. A producer emits one batch from one document.
+# ONE file, and now a DATED PATTERN rather than one dated name.
+#
+# specs/auto-approval.md §8.1 named this as the blocker it was: the value here
+# was the literal `research/candidates-metorik-gap-2026-09-09.md`, so the
+# SECOND run of this task needed a contract edit before it could write
+# anything, and a timer firing against an unedited contract would produce a
+# task that cannot write its output. That is a contract that works exactly
+# once.
+#
+# The glob is still one file per batch -- `*` does not cross a directory
+# separator here, so `research/candidates-metorik-gap-2026-09-10/anything.md`
+# is outside it -- and candidate_block_shape.py independently refuses a change
+# touching more than one markdown file. The task's spec names the day's
+# filename; this says which names are permissible.
 writable_paths:
-  - research/candidates-metorik-gap-2026-09-09.md
+  - research/candidates-metorik-gap-*.md
 
 protected_paths:
   # the fleet floor, which the database requires by name

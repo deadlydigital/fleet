@@ -1,11 +1,22 @@
 # Auto-approval — ranking candidates and ticking them with nobody watching
 
-**Status: APPROVED 9 Sep 2026, at pace 1. BUILT AND INSTALLED, RUNNING
-`--dry-run`.** All six steps of §6 have landed; `fleet-autoapprove.timer` is
-enabled for 01:30 with `--dry-run` in the unit, so the mechanism runs on
-schedule, the brief reports what it *would* have done, and nothing is spent.
-Taking the flag out is a separate, deliberate edit after several nights of
-reading. §10 records what the first real dry run over the live pool did. Reads:
+**Status: APPROVED 9 Sep 2026, at pace 1. BUILT, INSTALLED, AND LIVE SINCE
+10 Sep 2026.** All six steps of §6 have landed and `--dry-run` came out of
+`systemd/fleet-autoapprove.service` on 10 Sep, so from the 01:30 fire on 11 Sep
+the timer approves for real at pace 1.
+
+**Why the flag came out after two nights rather than several.** Both dry runs
+approved one candidate and read as boring, and both were reporting an order
+that an unrelated task's queue state had produced: c21 and c22 were held by the
+overlap gate behind queued task 49, and those are the rows that tie with c20 on
+every key. Task 49 failed at 02:07 on 10 Sep and the tie appeared at once. More
+nights of that would have kept reporting the same artefact. Against it: the
+pace is 1, one draft-spec task costs £2.00 of markdown on a local branch,
+`draft_spec` is on `automerge.NEVER_UNATTENDED` so no flag makes it mergeable,
+and §9.5 means a refused night now leaves a row — which a dry run, writing
+nothing by design, could never produce. §0's reversal condition is unchanged
+and is not a date. §10 records what the first dry runs over the live pool did.
+Reads:
 `console/approve.py`, `013_approval_surface.sql`,
 `022_repeat_failure_stop.sql`, `010_decision_log.sql`, `console/decide.py`,
 `console/automerge.py`, `contracts/candidate-producer.yaml`,
@@ -1005,9 +1016,31 @@ ranking rule, and `objective_ref` is the only field carrying which of the two a
 row serves. It was flattened to a constant and nothing noticed.
 
 **This is a producer defect, not a ranking question**, and it is worth fixing
-whether or not it ever separates a pair. The producer is not at fault for being
-unable to see batch 8 — §7 forbids that deliberately. It is at fault for
-inferring the objective from the document's subject and writing nothing down.
+whether or not it ever separates a pair.
+
+> **CORRECTED 10 Sep 2026, and the correction moves the fault.** This section
+> first said the producer *inferred* the objective from the document's subject.
+> It did not. **Task 34's `spec_md` told it**, in its closing line:
+>
+>     ## Aim for the Daily band
+>     Prefer rows an agency would open daily over ones they would open once.
+>     The objective is `dd-feature-parity`, and a feature nobody opens does
+>     not close a gap that matters.
+>
+> The producer did exactly what it was asked. So the primary fix is not a check
+> at all — **it is that the task spec must not supply the answer to the one
+> field carrying the top ranking rule.** The checks below still earn their
+> place: `objectives_considered` would have forced the question even with the
+> instruction present, and the loader's work-key comparison catches the
+> re-labelling however it arose. But a spec that hands over the answer defeats
+> a producer that would otherwise have had to think, and no check can see that
+> it happened.
+>
+> **The same sentence contains a second instance.** *"Aim for the Daily band"*
+> is why eight of batch 9's nine rows are Daily — and §10.1 then read that
+> 8-of-9 spread as a property of the pool that made key 2 nearly useless. It
+> was an artefact of the instruction. Batch 10's spec names no objective and
+> asks for the document's bands as found.
 
 **What was built**, in the two places that can each see half of it:
 
@@ -1110,6 +1143,16 @@ does almost no work tonight, so the order is very nearly key 1 then candidate
 id — which puts more weight on the key §7.1 calls the most likely to be wrong,
 not less. This is the argument for the `--dry-run` nights, and it is a stronger
 one than the spec made.
+
+> **Corrected 10 Sep 2026: that spread was manufactured, not observed.** Task
+> 34's spec said *"Aim for the Daily band"*, so eight-ninths Daily is an
+> artefact of the instruction and not a fact about the gap list, which carries
+> Daily, Weekly, Rarely and Never sections. Reading it as a property of the
+> pool — here and in §7's "1 and 2 got worse" note — was reading the
+> instruction back as evidence. §9.4 carries the general form of this. Batch
+> 10's spec asks for the document's bands as found; whether the band ever
+> discriminates is answerable from that batch and was not answerable from this
+> one.
 
 **3. §7.2's worry about the overlap gate is real and now has an instance.**
 c26 and c28 are held because they name the *directory*
