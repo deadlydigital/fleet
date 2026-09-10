@@ -25,6 +25,15 @@ header { border-bottom:1px solid var(--line); padding:.6rem 1rem;
   display:flex; gap:1.2rem; align-items:baseline; flex-wrap:wrap }
 header a { color:var(--fg); text-decoration:none; padding:.15rem 0 }
 header a.on { border-bottom:2px solid var(--accent) }
+.checklist { list-style:none; margin:.6rem 0 1.2rem; padding:0 }
+.checklist li { padding:.18rem 0; border-bottom:1px solid var(--line) }
+.checklist li:last-child { border-bottom:0 }
+.checklist li.depth-1 { padding-left:1.6rem }
+.checklist li.depth-2 { padding-left:3.2rem }
+.checklist label { display:flex; gap:.55rem; align-items:baseline; cursor:pointer }
+.checklist input { margin:0; flex:none; position:relative; top:2px }
+.checklist .rid { flex:none; color:var(--dim); min-width:2.4rem }
+.checklist input:checked ~ span { color:var(--dim); text-decoration:line-through }
 .stale-code { margin:0; padding:.7rem 1rem; background:var(--hi);
   border-bottom:2px solid var(--bad); color:var(--fg); font-size:13px }
 .stale-code strong { color:var(--bad) }

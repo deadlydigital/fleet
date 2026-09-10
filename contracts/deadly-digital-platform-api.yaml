@@ -280,13 +280,33 @@ verification:
 # That is the trade being made here, stated plainly: unattended merge on this
 # contract buys back a human reading per feature, and pays for it by removing
 # the only reader of the spec. It is defensible while the product has no users
-# and a revert is cheap. It stops being defensible on the same day §7 says it
-# does -- and the reason to reverse it is now this one as much as the risk of
-# a bad merge, because a partially-built feature is not a bad merge and no
-# revert gets triggered by it.
+# and a revert is cheap.
 #
-# specs/auto-approval.md §9.9 records the instance and §9.12 costs the cheapest
-# partial reader that would narrow it.
+# AND IT IS A SECOND, SEPARATE REASON TO REVERSE THIS -- not a restatement of
+# the first one.
+#
+# The argument written above for reversing at customers is about the COST OF
+# FAILURE: a bad merge is cheap now and expensive later. This is not that. A
+# partially-built feature IS NOT A BAD MERGE. Every check is green, the diff
+# is correct as far as it goes, nothing is broken, and no revert is triggered
+# by it -- there is nothing for a revert to undo. It does not appear in
+# `decision_outcomes`, it does not fail a gate, and it does not show up in the
+# morning brief. The only way it surfaces is somebody using the feature and
+# finding a piece of it absent.
+#
+# So reversing this default at customers is ALSO about restoring a reader, and
+# that half of the argument does not get cheaper or more expensive with the
+# number of users -- it is missing today, on a product with none. The cost-of-
+# failure half says "not yet". The reader half says "this is already the
+# situation, and it is only tolerable because nobody is looking at the
+# product either".
+#
+# Which is why the frontend contract's `auto_merge: false` caught task 53 and
+# nothing here would have. specs/auto-approval.md §9.9 records that instance,
+# §9.12 costs the cheapest partial reader that would narrow it, and the
+# console's review page now renders the spec's numbered requirements as a
+# checklist beside the diff -- which helps a person reading, and reaches this
+# contract not at all, because on this path nobody opens that page.
 auto_merge: true
 
 max_diff_lines: 400

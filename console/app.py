@@ -24,7 +24,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from console import (approve, config, db, decide, deploys, gitdiff, merge,
-                     morning, queries, reverify, version)
+                     morning, queries, requirements, reverify, version)
 from runner import worktree
 
 RUNNING_AS: str = ""
@@ -239,6 +239,13 @@ def task_detail(request: Request, task_id: int):
     return render(
         request, "task_detail.html",
         task=task,
+        # THE SPEC, AS A LIST, BESIDE THE DIFF. specs/auto-approval.md §9.9:
+        # no contract check reads the spec, so on a contract with
+        # auto_merge: false this page is the only reader -- and the reader who
+        # missed §2.5 of task 53 had 250 lines of prose against 300 lines of
+        # diff. Parsed on the GET because it is derived from spec_md and
+        # storing it would be a second copy that goes stale against the row.
+        checklist=requirements.parse(task.get("spec_md")),
         blocker=blocker,
         reject_reasons=decide.REJECT_REASONS,
         reason_help=decide.REASON_HELP,

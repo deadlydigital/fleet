@@ -113,6 +113,31 @@
   claims, and this table explains why more than one was needed.</p>
 {% endif %}
 
+{# ---- the spec, as a list, because the diff is the other half of it ---- #}
+{% if checklist %}
+<h2>What the spec asked for</h2>
+<div class="note">
+  {{ checklist|length }} numbered requirement{{ '' if checklist|length == 1 else 's' }},
+  taken from this task's own spec. <strong>Nothing here is checked for you and
+  nothing is recorded</strong> — the ticks are a scroll position, not a state.
+  Every contract check can pass with a requirement unbuilt, which is what
+  happened to task 53's §2.5, so this list exists to make walking the diff
+  against the spec systematic rather than attentive. Say what you checked in
+  the note when you decide.
+</div>
+<ul class="checklist">
+  {% for r in checklist %}
+  <li class="depth-{{ r.depth }}">
+    <label>
+      <input type="checkbox">
+      <code class="rid">{{ r.id }}</code>
+      <span>{{ r.title }}</span>
+    </label>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
 {# ---- the diff, which is what you are here for ---- #}
 <h2>Diff</h2>
 {% if not diff.ok %}

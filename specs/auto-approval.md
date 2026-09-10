@@ -1440,13 +1440,29 @@ claim-check is strictly more than nothing. On the frontend contract, where a
 person already reads the spec, it adds annotation cost for a check weaker than
 the reader it sits beside.
 
-**A cheaper thing that is not a check, and may be worth more.** The console's
-review page renders the diff and the spec as prose. Parsing the numbered
-requirements out of `spec_md` and rendering them as a checklist beside the diff
-costs almost nothing, catches nothing automatically, and makes the one real
-reader systematic rather than attentive. §9.9 exists because a person read a
-250-line spec and a 300-line diff and did not notice one missing item out of
-seven. That is what a checklist is for.
+**A cheaper thing that is not a check — BUILT 10 Sep 2026** rather than the
+marker convention above, which is not built. `console/requirements.py` parses
+the numbered requirements out of `spec_md` and `task_detail.html` lists them
+above the diff. On task 53 it renders the eight the spec states, §2.5 among
+them, with the identifiers intact so a reviewer can search the diff for
+`has_discount` rather than for `hasdiscount`.
+
+Two shapes count, both taken from specs that exist: a numbered heading
+(`### 2. The page sends them`) and a numbered bold lead
+(`**2.5 The table cells set the filters.**`). A bare `**1. Something**` does
+not, because that is how paragraphs are emphasised; content inside a fence does
+not, because those are examples; and unnumbered prose that reads like an
+instruction does not, because **a checklist containing things the spec did not
+number is one the reviewer learns to distrust, and the first item they dismiss
+is the one that mattered**.
+
+It checks nothing, ticks nothing and records nothing — the page says so in as
+many words, because a tick that looked persisted would be a claim about state.
+`decision_log.reason` is where a reviewer says what they checked.
+
+§9.9 exists because a person read a 250-line spec against a 300-line diff and
+did not notice one missing item out of eight. That is what a list is for, and
+it is the whole of what this does.
 
 ---
 
