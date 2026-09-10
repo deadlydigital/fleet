@@ -212,6 +212,36 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
     """
     repo_path = config.repo_root() / task["repo"]
     rel = draft_path(patch_payload)
+
+    # FETCH FIRST, because the merge did not happen here.
+    #
+    # console/reverify.py merges in a throwaway clone and merge_and_push
+    # pushes THAT commit -- "the console writes to no checkout", which is the
+    # property 702bce0 exists to state. So `merged_sha` is on origin and is not
+    # in this checkout, and the first run of this function failed on exactly
+    # that:
+    #
+    #     git show d7205ca8:drafts/order-table-cells-set-the-filters.md failed:
+    #     fatal: path '...' does not exist in 'd7205ca8'
+    #
+    # The path existed; the COMMIT did not. Reading it from the branch instead
+    # would be reading what was proposed rather than what landed, which is the
+    # distinction this argument rests on -- so fetch, and read the merge.
+    # ONLY WHEN IT IS ACTUALLY ABSENT. An unconditional fetch spends a network
+    # round trip on every accept and fails outright in a checkout with no
+    # remote -- which is every test fixture, and would be a repository somebody
+    # is working in locally.
+    have = subprocess.run(
+        ("git", "-C", str(repo_path), "cat-file", "-e", f"{merged_sha}^{{commit}}"),
+        capture_output=True, timeout=30).returncode == 0
+    if not have:
+        try:
+            _git(repo_path, "fetch", "--quiet", "origin")
+        except QueueRefused as exc:
+            raise QueueRefused(
+                f"the merge {merged_sha[:12]} is not in this checkout and it "
+                f"could not be fetched, so the spec that landed cannot be "
+                f"read: {exc}")
     markdown = _git(repo_path, "show", f"{merged_sha}:{rel}")
     block = spec_block(markdown)
 

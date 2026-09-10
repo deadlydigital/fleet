@@ -146,6 +146,11 @@ def _identity(conn, candidate_id) -> str:
 
 
 def _pool(admin, gbp="158.00"):
+    # Pace pinned with the pool. These tests build two tied candidates and
+    # expect the night to refuse; that needs a cut of 1 to have a top two at
+    # all. 029 raised the deployed pace to 3 and they began approving both.
+    from tests.test_autoapprove import _pace
+    _pace(admin, 1)
     admin.execute("DELETE FROM model_credit_pool"
                   " WHERE period_month = date_trunc('month', now())::date")
     admin.execute(

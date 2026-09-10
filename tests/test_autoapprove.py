@@ -48,7 +48,34 @@ def _cand(console, batch_id, *, title="Do the thing", band="daily",
     return row["id"]
 
 
+def _pace(admin, n: int = 1):
+    """Pin the pace this test means, rather than inheriting the deployed one.
+
+    029 raised fleet_autoapprove_per_night() from 1 to 3 and twenty-four tests
+    failed -- all of them written when the pace was 1 and reading it from the
+    database. That is the tests being coupled to a ceiling they are not about:
+    a test of the DISCRIMINATOR ("no key separates the top two, so approve
+    nothing") needs a cut of 1 to have a top two at all, and says nothing about
+    what the pace should be.
+
+    AND THE COUPLING WAS WORTH FINDING. At a pace of 3 with three eligible
+    rows there is no row below the line, so `_reason` takes its
+    "only candidate that passed the gates" branch and §2.3's refusal cannot
+    fire. The refusal does not apply when nothing was chosen OVER anything --
+    but it stops applying quietly, and specs/auto-approval.md §9.14 records
+    that rather than leaving it to be noticed when it matters.
+    """
+    admin.execute(
+        f"CREATE OR REPLACE FUNCTION fleet_autoapprove_per_night()"
+        f" RETURNS int LANGUAGE sql IMMUTABLE AS $$ SELECT {int(n)} $$")
+    admin.commit()
+
+
 def _pool(admin, gbp="158.00"):
+    # Pace pinned with the pool: both are ceilings a test inherits from the
+    # deployed database unless it says otherwise, and 029 proved that inheriting
+    # them silently is how twenty-four tests change meaning under a migration.
+    _pace(admin, 1)
     admin.execute("DELETE FROM model_credit_pool"
                   " WHERE period_month = date_trunc('month', now())::date")
     admin.execute(

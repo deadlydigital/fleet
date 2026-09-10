@@ -166,7 +166,7 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
     """
     from pathlib import Path
 
-    from . import config, db, decide, merge, reverify
+    from . import autoqueue, config, db, decide, merge, reverify
     from runner import worktree
 
     out: list[dict[str, Any]] = []
@@ -265,8 +265,43 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
                        "push_verified": result.push_verified,
                        "remote_sha": result.remote_sha})
             log(f"task {tid}: MERGED unattended as {result.base_sha_after[:12]}")
+
+            # THE CHAIN CONTINUES ITSELF, AND THIS IS UNREACHABLE TODAY.
+            #
+            # console/app.py does the same call on the accept route, which is
+            # the only path a draft spec can currently take: `draft_spec` is on
+            # NEVER_UNATTENDED above, so this sweep never sees one and this
+            # branch never runs.
+            #
+            # It is here because the branch is the half of "remove the last
+            # human step" that is NOT a judgement call. If draft_spec ever
+            # comes off that tuple, the loop must not stop at a merged draft
+            # that nobody built -- and discovering that afterwards, at 03:30,
+            # is how a night ends with a spec merged and no work queued.
+            # Taking draft_spec off the tuple is the decision; this is the
+            # plumbing, and it is cheaper to have it ready than to have the
+            # decision blocked on writing it.
+            #
+            # A refusal is logged and does NOT fail the sweep: the draft is
+            # merged and pushed either way, and the other tasks in this sweep
+            # have nothing to do with it. It is the one place in the loop where
+            # a failure leaves work stranded rather than refused, so it says so
+            # loudly and the morning brief carries the merge without a task.
+            queued = None
+            if (contract.get("work_type") == "draft_spec"
+                    and not result.already_merged):
+                try:
+                    queued = autoqueue.from_accepted_draft(
+                        task, patch, result.base_sha_after)
+                    log(f"task {tid}: queued task {queued.task_id} from its "
+                        f"spec, under {queued.contract_file}")
+                except Exception as exc:                          # noqa: BLE001
+                    log(f"task {tid}: MERGED but the code task was NOT queued "
+                        f"-- {exc}")
+
             out.append({"task_id": tid, "merged": True,
-                        "sha": result.base_sha_after})
+                        "sha": result.base_sha_after,
+                        "queued_task_id": queued.task_id if queued else None})
         except Exception as exc:                                  # noqa: BLE001
             # A sweep that dies on one task must not skip the rest, and must
             # not leave a task looking considered when it was not.
