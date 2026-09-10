@@ -352,6 +352,61 @@ the most pleasant to read.
   as `relation does not exist` — it did not crash and did not omit them, which
   is the discipline working, but it was still wrong.
 
+## 7.1 An unknown that never changes stops being read — found 10 Sep 2026
+
+**Recorded, not fixed.** The brief carried this claim on every pass from 9 Sep
+onward, byte-identical:
+
+    overnight.deployed.frontend  UNCOMPUTED
+    'deadly-digital-platform' carries no GIT_SHA (not instrumented yet —
+     expected until the first stamped build)
+
+It was correct every time. The running dashboard was seven days behind
+`origin/main`, task 49's comparison-window selector had merged and no merchant
+could see it, and the fleet said so every morning. **It was acted on when a
+person opened the page**, not when the brief said it — and the brief had been
+saying it since before there was anything to find.
+
+**This is a brief defect as much as an instrumentation one**, and §6's test —
+*"how to tell a useful brief from a plausible one"* — does not currently catch
+it. A claim can be true, sourced, dated, and still carry no information, if it
+carried the same information yesterday and nothing marks that.
+
+**The asymmetry is already in the schema.** `Claim.with_previous()` carries
+yesterday's value forward and computes `delta_num`, so a *number* that has not
+moved is visibly steady. An **UNCOMPUTED claim gets none of that**: no previous,
+no delta, no age. So a figure holding at 41 for a week reads as steady, and an
+unknown holding for a week reads exactly like an unknown that appeared this
+morning. The second is the one that needs escalating and it is the one that
+looks newest.
+
+**Everything needed to fix it is already stored.** `brief_claims` has `run_id`,
+`metric_key`, `status` and `uncomputed_reason`, so *"this metric_key has been
+UNCOMPUTED with this same reason for N consecutive briefs"* is a query, not a
+new column. Two candidate shapes, neither chosen here:
+
+* **Age the claim.** Render *"unknown for 7 consecutive briefs, first said
+  2026-09-03"* instead of repeating the sentence. The reader sees the run
+  length, which is the fact that was missing.
+* **Escalate on persistence.** An UNCOMPUTED claim that survives N briefs stops
+  being an UNCOMPUTED claim and becomes a finding in its own right — *the
+  instrument has been broken for a week* is a different statement from *the
+  instrument cannot say*.
+
+The second is closer to what a reader needs and further from what the section
+currently is, which is why this is recorded rather than built: it is a change
+to what the brief is for, and §6 should decide it rather than a defect report.
+
+**The instrumentation half is fixed.** `platform/Dockerfile` and
+`platform/docker-compose.yml` had carried the `GIT_SHA` wiring since 26 Aug —
+the message's *"not instrumented yet"* was itself wrong, and it told the reader
+to expect the state it was reporting. The image was rebuilt with the documented
+command on 10 Sep and the frontend drift check reported `OK` for the first
+time. That removes this instance and not the class: the next instrument to go
+quiet will read the same way.
+
+---
+
 ## 8. Still open
 
 1. **Cadence and trigger.** Daily is stated; the time and whether it is systemd

@@ -1,0 +1,118 @@
+# Task contract: the deploy path for a repository that has none.
+#
+# WHY THIS EXISTS AS ITS OWN CONTRACT AND NOT INSIDE dd-analytics-frontend
+#
+# A deploy script is not analytics frontend work. dd-analytics-frontend.yaml is
+# scoped to the analytics tree and verifies with tsc, vitest,
+# new_test_bites.sh and paired_paths.py -- and NOT ONE OF THOSE FOUR SAYS
+# ANYTHING ABOUT A DEPLOY SCRIPT. tsc does not read shell, vitest has nothing
+# to run, the bite check would have no test to bite, and paired_paths would
+# have no pair. A contract whose checks cannot judge its output is a contract
+# that passes everything.
+#
+# WHAT WENT WRONG, WHICH IS WHY THERE IS A WORK TYPE AT ALL
+#
+# `console/autodeploy.py` runs ./deploy.sh in the API directory. There is no
+# platform/deploy.sh, so the frontend has never had a deploy path in the fleet.
+# Task 49 merged on 10 Sep and the merchant still saw a dashboard built on
+# 3 Sep, because nothing rebuilds the platform container and nothing could say
+# it hadn't: the image reported GIT_SHA=unknown, so drift-check read UNKNOWN --
+# "not instrumented yet" -- every fifteen minutes from 3 Sep to 10 Sep.
+#
+# platform/Dockerfile had carried `ARG GIT_SHA` since 26 Aug, and
+# platform/docker-compose.yml had carried the build arg AND the documented
+# command. The instrumentation was complete for eight days and the one command
+# that used it was never run. That is what a deploy script is for: making the
+# right invocation the only invocation.
+#
+# WHAT THIS TASK MAY AND MAY NOT DO
+#
+# It writes ONE shell script. It does not touch the Dockerfile or the compose
+# file -- both already carry what they need, and a task that edits them is a
+# task rewriting the thing it was asked to invoke. It gets no database
+# credential and no shell during verification beyond `bash -n`.
+#
+# IT DOES NOT DEPLOY. Verification is a SHAPE check, because running the
+# script would build an image and swap a production container, which is the one
+# thing a verification step must not do. The first real deploy is a person
+# running it and watching, and `run_autodeploy.py` still carries --dry-run.
+
+work_type: dd_infra
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 1
+
+# ONE file, and it does not exist yet -- which is the point.
+writable_paths:
+  - platform/deploy.sh
+
+protected_paths:
+  # The deadly-digital-platform floor, which the database requires by name.
+  # Everything the frontend contract protects is protected here too: this task
+  # is further from the product than that one, not closer.
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - api/analytics/routes/interventions.py
+  - api/analytics/services/gdpr.py
+  - api/analytics/services/trigger_router.py
+  - api/app.py
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/services/email_sender.py
+  - api/services/gdpr_identity.py
+  - api/services/gdpr_replay_scrub.py
+  - api/tests/**
+  - api/worker.py
+  - platform/app/api/admin/billing/**
+  - platform/app/api/analytics/churn/intervene/**
+  - platform/app/api/analytics/interventions/**
+  - platform/app/api/auth/**
+  - platform/app/api/billing/**
+  - platform/app/api/campaigns/**
+  - platform/app/api/domains/**
+  - platform/app/api/flows/**
+  - platform/app/api/gdpr/**
+  - platform/app/api/inline-css/**
+  - platform/app/api/listmonk/**
+  - platform/app/api/scheduled-campaigns/**
+  - platform/app/api/suppression/**
+  - platform/app/api/track/**
+  - platform/app/(dashboard)/analytics/interventions/**
+  - platform/app/(dashboard)/campaigns/**
+  - platform/app/(dashboard)/flows/**
+  - platform/app/(dashboard)/settings/billing/**
+  - platform/app/(dashboard)/settings/domains/**
+  - platform/app/(dashboard)/settings/privacy/**
+  - platform/lib/api-auth.ts
+  - platform/lib/auth.ts
+  - platform/lib/csrf.ts
+  - platform/lib/roles.ts
+  - platform/middleware.ts
+  - platform/playwright.config.ts
+  - platform/__tests__/**
+  - platform/vitest.config.ts
+  # AND THE TWO FILES THIS TASK IS ABOUT, which the floor does not cover
+  # because nothing else has ever needed them protected. They already carry the
+  # GIT_SHA wiring; a task that edits them is rewriting its own instructions.
+  - platform/Dockerfile
+  - platform/docker-compose.yml
+
+# No web, no database, no other repo. A deploy script for this repository is
+# written by reading this repository -- api/deploy.sh is the model and it is
+# right here.
+agent_tools:
+  - Read
+  - Grep
+  - Glob
+  - Write
+  - Edit
+
+verification:
+  # Shape, not execution. Every rule in it is a failure that has already
+  # happened on this host, and api/deploy.sh -- the one deploy script here that
+  # works -- passes all six, which is what calibrates them.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/deploy_script_shape.py
+
+max_diff_lines: 300
+max_cost_gbp: 3.00
+timeout_seconds: 1800

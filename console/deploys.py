@@ -62,6 +62,11 @@ STALE_AFTER = timedelta(hours=1)
 GOVERNED_BY: Dict[str, Optional[str]] = {
     "dd_api": "api",
     "dd_frontend": "frontend",
+    # A deploy SCRIPT is not itself deployed. It is the thing that does the
+    # deploying, so no deployment can be behind it -- and answering
+    # NOTHING_TO_SHIP is the honest verdict rather than CANNOT_SAY, which would
+    # put it in the same bucket as the frontend defect it exists to fix.
+    "dd_infra": None,
     "dd_docs": None,
     "research": None,
     "draft_spec": None,

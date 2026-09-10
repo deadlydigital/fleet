@@ -39,7 +39,12 @@ from typing import Any, Optional
 
 #: Work types whose whole purpose is to be read by a person. No contract flag
 #: makes these eligible.
-NEVER_UNATTENDED = ("draft_spec", "research", "candidate_producer")
+NEVER_UNATTENDED = ("draft_spec", "research", "candidate_producer",
+                    # A script that swaps production containers is read
+                    # by a person before it lands, whatever its checks
+                    # said. The shape check proves it is shaped like a
+                    # deploy; nothing proves it deploys.
+                    "dd_infra")
 
 #: The check whose passing is the only evidence that the NEW behaviour works
 #: rather than that nothing broke. See contracts/checks/new_test_bites.sh.
