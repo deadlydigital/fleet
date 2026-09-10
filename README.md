@@ -1447,6 +1447,39 @@ Each row also carries `verified_sha`, checked to be a real commit. The probes
 are the guard; the sha is the receipt — which is what lets a batch approved a
 week later be checked against what moved rather than trusted.
 
+### And a `premise`, which is a different claim from a probe
+
+Required since 10 Sep 2026 (`030`, §9.9.1). A probe says what is **missing** —
+the gap is real and still open. A premise says what must **already be true**
+for the work to be the work described:
+
+```yaml
+premise:
+  - claim: the order table renders payment_method as one of its columns
+    probe: {grep_count: {glob: ..., pattern: "key: 'payment_method'", expected: 1}}
+```
+
+Candidate 38 is why. It proposed making the Payment, Country and Coupon cells
+of the order table set the matching filter, and its rationale said those values
+"are inert". **The table did not have those columns.** All four of its probes
+held — the filter box exists, no cell is wired to it, the API takes the
+parameter, the file exists — because every one of them tested the gap. The task
+cost £2.25 and the agent, correctly on what it found, added three columns no
+spec had asked for.
+
+Same closed vocabulary, same `run_probe()`, executed in both places a probe is:
+by `candidate_block_shape.py` when the producer emits it, and again by
+`console/rank.py` **gate 6** at the approval, against the sha about to be spent
+on. A failing premise is not a failing probe and gets its own rule name, because
+they point opposite ways — `probes_failed` means the gap closed, drop the row;
+`premise_failed` means the ground is not there, so the row is a *different piece
+of work* from the one described.
+
+The claim is required in prose as well as in predicate form. The predicate is
+what runs; the sentence is what a later reader checks it **against**, and that
+question — does this probe test the claim, or something adjacent — is the one
+no machine here can answer.
+
 ## The §7 prohibitions are in the contract, not a prompt
 
 | prohibition | enforced by |
@@ -1513,8 +1546,12 @@ a claim about the world checkable, it just adds a reproducibility problem to
 manage. It cannot prove a feature is *complete*: `payment_method` appearing in
 `orders.py` is not the filter working. It cannot tell whether a row marked
 Missing is missing for a good reason, nor whether a candidate's probes test the
-claim it made rather than something adjacent. Those are a read, and this exists
-to make that read smaller, not to replace it.
+claim it made rather than something adjacent. `premise` narrows that last one
+without closing it: the claim now has to be written beside the predicate, in
+the row and on the decision, so what a reader checks is one sentence rather
+than the whole rationale — a producer can still file an adjacent probe under a
+true-sounding claim and this will run it, find it holds, and pass. Those are a
+read, and this exists to make that read smaller, not to replace it.
 
 ## A test that named a work type by hand
 

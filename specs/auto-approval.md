@@ -1385,7 +1385,95 @@ diff. It is a probe on the premise: `candidates.probes` already carries
 the Payment column existed. A spec whose premise is a claim about the tree can
 carry that claim as a probe, and a false premise then fails at approval — before
 a run is paid for, and before an agent has to decide alone what to do about it.
-Not built here; recorded as the next thing §9.12 should cost.
+
+**BUILT 10 Sep 2026**, `030_candidate_premise.sql` and gate 6.
+
+    candidates.premise          [{claim: <sentence>, probe: <one predicate>}]
+    candidate_block_shape.py    REQUIRES one, and re-executes it at emit
+    console/load_candidates.py  carries it whole; re-executes nothing
+    console/rank.py gate 6      re-executes it at the approval, at HEAD
+    console/autoapprove.py      records claim + verdict on the decision
+
+**Run against the tree c38 was actually approved against** (platform 6f3525a,
+10 Sep, before task 55), the premise it should have carried and the probes it
+did carry answer differently — which is the whole claim of this section,
+measured rather than argued:
+
+    claim: the order table renders payment_method, billing_country and
+           coupon_code as columns of its own
+      grep_count key: '(payment_method|billing_country|coupon_code)'
+        at 6f3525a          FAILED   = 0, expected 3
+        at main (post-55)   HELD     = 3, expected 3
+
+    and the three c38 shipped, at 6f3525a:
+        path_exists  orders/page.tsx                       HELD
+        grep_count   aria-label="Filter by payment method"  HELD  (= 1)
+        grep_count   onClick={() => setPaymentMethod        HELD  (= 0)
+
+Gate 6 would have refused it at 14:11 with `premise_failed`, before the draft
+task and before the run.
+
+A premise is not a probe and the difference is the whole point. `probes` say
+what is MISSING; a premise says what must ALREADY BE TRUE for the work to be
+the work described. c38's four probes were all of the first kind — the filter
+box exists, no cell is wired to it, the API takes the parameter, the file
+exists — which is why they held while the sentence the rationale rested on was
+false. The rules are separate for the same reason: `probes_failed` means the
+gap closed, so drop the row; `premise_failed` means the ground is not there, so
+the row is a **different piece of work** from the one proposed and wants
+re-proposing rather than re-running.
+
+**Why the producer and not the draft spec, since both restated the false
+claim.** Three documents carried it. `drafts/order-filters-frontend.md` §2.5
+said "make the value in the Payment, Country and Coupon cells set the
+corresponding filter" and its human-check step said "set a payment method that
+exists in the Payment column"; c38's rationale said the values "are inert";
+`drafts/order-table-cells-set-the-filters.md` said they were "on screen, in the
+Payment, Country and Coupon columns of the very table being filtered". Each
+cited the one before it. None looked.
+
+The candidate is where it belongs anyway, for two reasons that are about the
+mechanism rather than about which document was first:
+
+1. **The approval is the only step that re-executes anything.** Gate 6 runs at
+   01:30 against the sha it is about to spend money at. A draft spec has no
+   equivalent: `console/autoqueue.py` queues the work task on the draft
+   MERGING, and the only human decision in that window is the acceptance —
+   which is a judgement about intent, not a re-execution of claims.
+2. **It fails earliest and cheapest.** A premise probe on c38 would have failed
+   at 14:11 on 10 Sep, before the spec task and before the work task: the £2
+   draft and the £2.25 run, both. A draft-time probe would have saved only the
+   second.
+
+**What draft-spec time would still add, and what it would cost.** A draft can
+introduce a premise its candidate never had — task 54's did, in more detail
+than c38's — so the second net is real. It needs a `premise:` key in the
+```fleet-spec` block, `draft_spec_shape.py` re-executing it against the tree as
+part of the draft task's own verification, and `autoqueue.py` re-executing it
+again at queue time, because a draft can sit between merge and queue. That is
+three places rather than one, it changes the contract every draft runs under,
+and it is a separate decision from this one. Not built. What is recorded here
+is that the mechanism generalises and where it would go.
+
+**And the hole this leaves, stated so it is not read as closed.** Every
+candidate in the pool on 10 Sep — all 41, the 20 still pending among them —
+predates the key. Gate 6 does not refuse an empty premise, because doing so
+would stop unattended approval dead for rows whose producers were never asked
+for one. `mechanics.premise.silent` counts them and the sweep prints the count;
+`candidate_block_shape.py` refuses a NEW block without one, so the pool turns
+over from the producer end. Once it has, an empty premise should join an empty
+probe list as ineligible. That is one line in `rank.check_premise` and it is
+not written yet.
+
+Two things this still cannot do. It cannot tell whether the probe tests the
+claim or something adjacent — a producer may file a true-sounding sentence over
+a probe about something else, and gate 6 will run it, find it holds, and pass.
+What changed is that the sentence is now written down beside the predicate, in
+the row and on the decision, so the reader's question is one sentence rather
+than a whole rationale. And it cannot make a producer state the LOAD-BEARING
+premise rather than a safe one: "the orders page exists" is a premise, it will
+hold forever, and it establishes nothing. Both are a read, and this makes the
+read smaller rather than replacing it.
 
 #### 9.9.2 What the pairing cost while it was doing this
 

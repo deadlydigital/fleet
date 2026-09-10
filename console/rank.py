@@ -398,6 +398,74 @@ def check_probes(candidate: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def check_premise(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """GATE 6. Re-execute what the work RESTS ON, not what it fills.
+
+    specs/auto-approval.md §9.9.1, and candidate 38 is the whole argument.
+    c38's four probes held at 14:11 on 10 Sep and the work was still a
+    different piece of work from the one described, because every probe tested
+    the GAP -- the filter box exists, no cell is wired to it, the API takes the
+    parameter -- and the sentence its rationale actually rested on was that the
+    Payment, Country and Coupon values were on screen. They were not columns of
+    that table and never had been. £2.25, and an agent that correctly added
+    three columns nobody had specified.
+
+    A FAILING PREMISE IS NOT A FAILING PROBE, and they get different rules so
+    the brief can say which happened. They point a reader in opposite
+    directions:
+
+        probes_failed    the gap closed. Somebody built it, or the document
+                         was stale. Drop the row.
+        premise_failed   the ground is not there. The row may still be worth
+                         doing and it is NOT the work the rationale describes,
+                         so what it needs is re-proposing, not re-running.
+
+    AN EMPTY PREMISE DOES NOT FAIL HERE, AND THAT IS A HOLE WITH A DATE ON IT.
+    Every candidate in the pool on 10 Sep 2026 -- all 41, including the 20 still
+    pending -- was emitted before this key existed, so refusing an empty one
+    would stop unattended approval dead tonight for rows whose producers were
+    never asked. What closes the hole from the other end is
+    contracts/checks/candidate_block_shape.py, which refuses a NEW block that
+    omits a premise: batch 11 onwards cannot be emitted without one. Once the
+    pending pool is rows that were emitted under that rule, an empty premise
+    should join an empty probe list as ineligible, and until then this returns
+    `declared: 0` and says so on the decision rather than passing quietly.
+    """
+    mod = _shape_check()
+    premise = candidate.get("premise") or []
+    repo_path = mod.REPOS.get(candidate.get("repo"))
+
+    if repo_path is None:
+        return {"ok": False, "declared": len(premise), "held": 0,
+                "why": f"repo {candidate.get('repo')!r} is not one this host has"}
+    if not premise:
+        return {"ok": True, "declared": 0, "held": 0, "results": [],
+                "why": None,
+                "note": ("declares no premise, so nothing about the ground "
+                         "this work stands on was re-executed. Not a pass on "
+                         "the premise -- there was none to check.")}
+
+    results = []
+    for entry in premise:
+        if not isinstance(entry, dict) or not isinstance(entry.get("probe"), dict):
+            results.append({"held": False, "claim": str((entry or {}).get("claim", ""))[:120],
+                            "probe": "unreadable premise entry"})
+            continue
+        held, desc = mod.run_probe(repo_path, entry["probe"])
+        results.append({"held": bool(held),
+                        "claim": str(entry.get("claim", ""))[:120],
+                        "probe": desc})
+    held = sum(1 for r in results if r["held"])
+    failed = [r for r in results if not r["held"]]
+    return {
+        "ok": held == len(results), "declared": len(results), "held": held,
+        "results": results,
+        "why": None if held == len(results) else
+               f"{len(failed)} premise(s) no longer hold at HEAD: "
+               + "; ".join(f"{r['claim']!r} -- {r['probe']}" for r in failed[:2]),
+    }
+
+
 def gate(candidate: Dict[str, Any], *, newest_batch: int,
          live_tasks: Sequence[Dict[str, Any]],
          prior_failures: int = 0) -> Dict[str, Any]:
@@ -484,5 +552,15 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
                 "detail": probes["why"], "probes": probes,
                 "prior_failures": prior_failures}
 
+    # 6. AND THE GROUND IS STILL THERE. Behind the probes rather than ahead of
+    #    them, though both cost the same: a row whose gap has closed is not
+    #    work at all, and reporting the premise for it would name the less
+    #    important of two true things.
+    premise = check_premise(candidate)
+    if not premise["ok"]:
+        return {"eligible": False, "rule": "premise_failed",
+                "detail": premise["why"], "probes": probes,
+                "premise": premise, "prior_failures": prior_failures}
+
     return {"eligible": True, "rule": None, "detail": None, "probes": probes,
-            "prior_failures": prior_failures}
+            "premise": premise, "prior_failures": prior_failures}

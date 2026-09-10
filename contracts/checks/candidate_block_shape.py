@@ -33,16 +33,46 @@ Evaluated with pathlib and re. Nothing is shelled out, so a probe cannot
 become an arbitrary command, and the agent that writes one has no shell to
 test it with anyway.
 
+THE PREMISE, WHICH IS A DIFFERENT CLAIM FROM THE PROBES
+
+    premise:
+      - claim: <the sentence the work rests on, in words>
+        probe: {grep_count: {...}}      one predicate, same vocabulary
+
+`probes` say what is MISSING -- the gap is real and still open. A `premise`
+says what must ALREADY BE TRUE for the work to be the work described. Required
+since 10 Sep 2026, and candidate 38 is why.
+
+c38 proposed making the Payment, Country and Coupon cells of the order table
+set the matching filter, and its rationale said those values "are inert". They
+were not in the table at all: the page rendered wc_order_id, created_at,
+billing_email, status and total, and never those three. Its four probes all
+held -- the filter box exists, nothing wires a cell to it, the API accepts the
+parameter, the file exists -- because every one of them tested the GAP and none
+tested the GROUND. The task cost £2.25 and the agent, correctly on the facts it
+found, added three columns nobody had specified. See specs/auto-approval.md
+§9.9.1.
+
+A premise is re-executed here, exactly like a probe, and again at the approval
+in console/rank.py against the sha about to be spent on.
+
 WHAT THIS CANNOT ESTABLISH
 
 It proves presence and absence in a repository. It cannot prove a claim about
 the world -- whether Metorik still ships a feature, whether merchants want
 one, whether the agency-use band is right. It cannot prove a feature is
 COMPLETE: `payment_method` appearing in `orders.py` is not the filter working.
-It cannot tell whether a row marked Missing is missing for a good reason, nor
-whether a candidate's probes test the claim it actually made rather than
-something adjacent. Those are a read, and this check exists to make that read
-smaller rather than to replace it.
+It cannot tell whether a row marked Missing is missing for a good reason.
+
+AND IT STILL CANNOT TELL WHETHER A PREDICATE TESTS THE CLAIM IT IS FILED
+UNDER, which is the whole of what the premise key moves rather than solves. A
+producer may write `claim: the columns are rendered` over a probe that greps
+for something adjacent, and this will run the probe, find it holds, and pass.
+What changed is that the sentence now has to be WRITTEN DOWN beside the
+predicate, in the row, on the decision record -- so the question a reader has
+to ask is one specific sentence rather than the whole rationale. Those are a
+read, and this check exists to make that read smaller rather than to replace
+it.
 """
 from __future__ import annotations
 
@@ -82,6 +112,10 @@ PER_CANDIDATE_SHA = "verified_sha"
 
 MIN_RATIONALE_WORDS = 12
 MIN_UNASKED_WORDS = 20
+#: Short enough that one clause satisfies it, long enough that `the columns
+#: exist` does not. The claim is prose because a reader checks the predicate
+#: against it; see check_premise().
+MIN_PREMISE_WORDS = 6
 
 #: `objectives_considered`, and the two objectives a batch must have weighed.
 #:
@@ -343,6 +377,83 @@ def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> l
             held, desc = run_probe(repo, probe)
             if not held:
                 problems.append(f"{where} probe FAILED at HEAD -- {desc}")
+
+    problems += check_premise(where, repo, c)
+    return problems
+
+
+def check_premise(where: str, repo: Path, c: dict) -> list[str]:
+    """The ground the work stands on, stated and then re-executed.
+
+    REQUIRED, AND AN EMPTY LIST IS NOT A PREMISE. "This work needs nothing to
+    be true first" is not a thing a candidate can say: every candidate that
+    describes work on an existing file asserts something about that file, and
+    c38's whole failure was that the assertion lived in the rationale where
+    nothing could run it.
+
+    ONE ENTRY IS ENOUGH and no maximum is imposed. The point is not coverage
+    of every sentence in the rationale -- that is unbounded and would produce
+    probes written to satisfy a count. It is that the LOAD-BEARING sentence,
+    the one whose falseness changes what the work is, exists as a predicate.
+    """
+    problems: list[str] = []
+    premise = c.get("premise")
+    if "premise" not in c:
+        problems.append(
+            f"{where} omits premise. State what must ALREADY be true for this "
+            f"work to be the work you are describing, as a claim in words and "
+            f"a probe that establishes it. Candidate 38's rationale rested on "
+            f"the order table rendering three columns it had never rendered, "
+            f"and its four probes all held because every one of them tested "
+            f"the gap rather than the ground.")
+        return problems
+    if not isinstance(premise, list) or not premise:
+        problems.append(
+            f"{where} has an empty premise. A candidate that needs nothing to "
+            f"be true first is one nothing can be wrong about, and zero "
+            f"predicates holding is a check that cannot fail.")
+        return problems
+
+    for i, entry in enumerate(premise, 1):
+        at = f"{where} premise {i}"
+        if not isinstance(entry, dict):
+            problems.append(f"{at} is not a mapping of claim and probe")
+            continue
+        claim = str(entry.get("claim") or "").strip()
+        if len(claim.split()) < MIN_PREMISE_WORDS:
+            problems.append(
+                f"{at} has a {len(claim.split())}-word claim, under "
+                f"{MIN_PREMISE_WORDS}. The sentence is what a reader checks "
+                f"the predicate AGAINST; without it there is only the "
+                f"predicate, and the open question is whether the predicate "
+                f"tests the claim or something adjacent.")
+        probe = entry.get("probe")
+        if not isinstance(probe, dict) or len(probe) != 1:
+            problems.append(
+                f"{at} has no single probe from the vocabulary "
+                f"({', '.join(PROBE_KINDS)}); a claim with nothing to run is "
+                f"the rationale sentence that cost c38 a run.")
+            continue
+        # THE KIND BEFORE THE RUN. run_probe() reports an unknown kind as a
+        # predicate that did not hold, which is true and reads as "the claim
+        # has stopped being true at HEAD" -- a producer told that will go and
+        # adjust a claim that was never executable. Named as a vocabulary
+        # problem here, where it is one.
+        if next(iter(probe)) not in PROBE_KINDS:
+            problems.append(
+                f"{at} has a probe {next(iter(probe))!r}, which is not in the "
+                f"vocabulary ({', '.join(PROBE_KINDS)}). A premise is executed "
+                f"by the same run_probe() as a probe and cannot become "
+                f"anything else by being filed under a different key.")
+            continue
+        held, desc = run_probe(repo, probe)
+        if not held:
+            problems.append(
+                f"{at} FAILED at HEAD -- {desc}\n"
+                f"      claim: {claim}\n"
+                f"      The ground this candidate stands on is not there. That "
+                f"is not a probe to adjust: it means the work is a different "
+                f"piece of work from the one described.")
     return problems
 
 

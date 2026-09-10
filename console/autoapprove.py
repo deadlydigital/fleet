@@ -56,14 +56,40 @@ class NothingToApprove(Exception):
     """Not an error. The night had no answer it could defend."""
 
 
+def _require_030(conn) -> None:
+    """The column gate 6 reads, checked before the night rather than during it.
+
+    THE CODE AND THE SCHEMA DEPLOY BY DIFFERENT MEANS AND THAT IS THE HAZARD.
+    The units run from the ~/fleet working tree, so an edit to this file is
+    live at the next timer; a migration is applied by hand, by the one identity
+    that owns the table. Between those two moments this module selects a column
+    that does not exist, and what the timer would otherwise leave is an
+    UndefinedColumn traceback in journalctl at 01:30.
+
+    Not caught and worked around: a sweep that quietly skipped the premise
+    would report `declared: 0` for every row, which is indistinguishable from
+    the pool's real state and would read as a verified night. Named instead, so
+    the failure says which migration to apply.
+    """
+    ok = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name='candidates' AND column_name='premise'").fetchone()
+    if not ok:
+        raise RuntimeError(
+            "candidates.premise does not exist, so gate 6 cannot re-execute "
+            "what a candidate rests on. Apply 030_candidate_premise.sql as the "
+            "owner of the table. Nothing was decided.")
+
+
 def _open_candidates(conn) -> List[Dict[str, Any]]:
     # work_identity AND prior_failures come from the SAME FUNCTIONS
     # console/approve.py enforces with, on this read-only connection. §7.H: the
     # dry run and the real decision must not be two predicates that agree only
     # until somebody edits one -- which is how this defect stayed invisible,
     # since the stop lived inside approve_batch() and a dry run never called it.
+    _require_030(conn)
     return conn.execute(
-        "SELECT id, batch_id, title, repo, band, hib_signal, probes,"
+        "SELECT id, batch_id, title, repo, band, hib_signal, probes, premise,"
         " suggested_paths, disposition, objective_ref, work_key,"
         " candidate_work_identity(id) AS work_identity,"
         " candidate_prior_failures(id) AS prior_failures"
@@ -274,6 +300,12 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
              # was true, and the whole argument for storing predicates rather
              # than a verdict is that the individual answers are the evidence.
              "probes": (s["gate"].get("probes") or {}).get("results"),
+             # THE CLAIM AND ITS VERDICT, on the same argument as the probes
+             # above: a later reader must be able to ask whether the predicate
+             # tested the claim, and that question needs the sentence. A row
+             # that declared none records an empty list, which reads as
+             # "nobody stated one" -- see the premise tally below.
+             "premise": (s["gate"].get("premise") or {}).get("results"),
              "hib_signal": s["hib_signal"]}
             for s in eligible + ineligible],
         "credit": {
@@ -318,6 +350,22 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
             "reached_gate_4": sum(1 for s in scored if "probes" in s["gate"]),
             "of_candidates": len(scored),
         },
+        # THE GROUND, COUNTED SEPARATELY FROM THE GAP. `silent` is the line
+        # that matters and it is the one that will read as good news if it is
+        # not labelled: a candidate declaring no premise passes gate 6 without
+        # anything being checked, because every row in the pool on 10 Sep 2026
+        # predates the key. Zero premises held out of zero declared is not a
+        # verified pool. See rank.check_premise.
+        "premise": {
+            "declared": sum(s["gate"].get("premise", {}).get("declared", 0)
+                            for s in scored),
+            "held": sum(s["gate"].get("premise", {}).get("held", 0)
+                        for s in scored),
+            "reached": sum(1 for s in scored if "premise" in s["gate"]),
+            "silent": sum(1 for s in scored
+                          if s["gate"].get("premise", {}).get("declared") == 0),
+            "of_candidates": len(scored),
+        },
     }
 
     if not take:
@@ -357,6 +405,7 @@ def mechanics_of(p: Dict[str, Any]) -> Dict[str, Any]:
         # consulted and silent -- cannot get that from a list of approved rows.
         "repeat": p["repeat"],
         "probes": p["probes"],
+        "premise": p["premise"],
         "cut": p["cut"],
         "ranked": p["ranked"],
         # The reading the spend was reserved against AND what was reserved, so
@@ -417,6 +466,14 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
     print(f"probes re-executed: {p['probes']['held']} of {p['probes']['run']} held"
           f"  (across the {p['probes']['reached_gate_4']} of "
           f"{p['probes']['of_candidates']} candidate(s) that reached gate 4)")
+    pr = p["premise"]
+    print(f"premise re-executed: {pr['held']} of {pr['declared']} held"
+          f"  (across the {pr['reached']} of {pr['of_candidates']} candidate(s) "
+          f"that reached gate 6)")
+    if pr["silent"]:
+        print(f"  {pr['silent']} of those declared NO premise, so nothing "
+              f"about the ground they stand on was checked. That is the state "
+              f"every row loaded before 10 Sep 2026 is in.")
     c = p["credit"]
     if c["status"] == "COMPUTED":
         print(f"credit: GBP {c['remaining']:.2f} remains of GBP {c['pool']:.2f}; "

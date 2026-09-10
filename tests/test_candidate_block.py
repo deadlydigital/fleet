@@ -62,6 +62,11 @@ def candidate(**over):
         "hib_signal": None,
         "probes": [{"grep_count": {"glob": "api/analytics/routes/*.py",
                                    "pattern": "text/csv", "expected": 1}}],
+        # Required since 10 Sep 2026: the ground, not the gap. See
+        # TestThePremiseIsTheGroundNotTheGap below and §9.9.1.
+        "premise": [{"claim": "the order list is served by a route that exists "
+                              "and can be given a format",
+                     "probe": {"path_exists": "api/analytics/routes/orders.py"}}],
         "evidence": [{"document": "specs/metorik-gap.md", "sha": GAP_SHA,
                       "status": "Missing", "agency_use_band": "Daily"}],
     }
@@ -99,6 +104,76 @@ def run(tmp_path, blk, *, max_candidates=10, body=None, files=None):
                         str(max_candidates)),
                        cwd=tmp_path, env=env, capture_output=True, text=True)
     return r.returncode, r.stdout + r.stderr
+
+
+# ---- the premise -----------------------------------------------------------
+
+
+class TestThePremiseIsTheGroundNotTheGap:
+    """§9.9.1, and candidate 38 is the whole of the argument.
+
+    c38 proposed making the Payment, Country and Coupon cells of the order
+    table set the matching filter, and said in its rationale that those values
+    "are inert". The table did not have those columns. Its four probes held --
+    the filter box exists, no cell is wired to it, the API takes the parameter,
+    the file exists -- because every one of them tested the GAP. £2.25, and an
+    agent that added three columns nobody specified.
+    """
+
+    def test_a_true_premise_passes_and_is_re_executed(self, tmp_path):
+        code, out = run(tmp_path, block())
+        assert code == 0, out
+
+    def test_a_candidate_with_no_premise_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(premise=...)]))
+        assert code == 1
+        assert "omits premise" in out
+        # The refusal has to say what to write, or the producer writes a probe.
+        assert "Candidate 38" in out
+
+    def test_an_empty_premise_is_refused_like_a_missing_one(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(premise=[])]))
+        assert code == 1
+        assert "empty premise" in out
+
+    def test_a_premise_that_does_not_hold_fails_the_batch(self, tmp_path):
+        """THE ONE THAT WOULD HAVE CAUGHT c38: a claim about a column that is
+        not rendered, written as a predicate instead of as prose."""
+        code, out = run(tmp_path, block([candidate(premise=[{
+            "claim": "the order table renders the payment method as a column",
+            "probe": {"grep_count": {
+                "glob": "api/analytics/routes/orders.py",
+                "pattern": "a string that is certainly not in this file",
+                "expected": 1}}}])]))
+        assert code == 1
+        assert "premise 1 FAILED at HEAD" in out
+        # The sentence travels with the failure. The predicate alone cannot
+        # tell a reader what was supposed to be true.
+        assert "the order table renders the payment method as a column" in out
+        assert "different piece of work" in out
+
+    def test_a_claim_with_no_probe_is_refused(self, tmp_path):
+        """c38's actual state: the sentence was in the rationale, and there was
+        nothing anywhere that could run it."""
+        code, out = run(tmp_path, block([candidate(premise=[
+            {"claim": "the values are on screen in the table and inert"}])]))
+        assert code == 1
+        assert "no single probe from the vocabulary" in out
+
+    def test_a_probe_with_no_claim_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(premise=[
+            {"claim": "yes", "probe": {"path_exists": "api/analytics/routes/orders.py"}}])]))
+        assert code == 1
+        assert "word claim, under" in out
+
+    def test_the_premise_probe_uses_the_same_closed_vocabulary(self, tmp_path):
+        """No second executor. A premise cannot become a shell command by
+        being filed under a different key from a probe."""
+        code, out = run(tmp_path, block([candidate(premise=[
+            {"claim": "the order route answers with a csv content type",
+             "probe": {"shell": "grep -r text/csv api/"}}])]))
+        assert code == 1
+        assert "not in the vocabulary" in out or "unknown probe" in out
 
 
 # ---- the live probe --------------------------------------------------------

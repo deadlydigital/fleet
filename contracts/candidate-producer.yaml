@@ -19,6 +19,20 @@
 # declares predicates that candidate_block_shape.py re-executes at HEAD; a row
 # whose claim has stopped being true cannot be emitted.
 #
+# AND SINCE 10 SEP 2026, A `premise` AS WELL AS `probes`. WHOEVER QUEUES THE
+# NEXT PRODUCER TASK MUST SAY SO IN ITS SPEC, the way task 50's spec carried a
+# section headed "Two things the check now requires that it did not for batch
+# 9". The check refuses a block without one, and an agent that has not been
+# told will spend a run discovering it.
+#
+# What it is: what must ALREADY be true for the work to be the work described,
+# as a claim in words and one predicate from the same closed vocabulary.
+# `probes` show the GAP is real; a premise shows the GROUND is there. Candidate
+# 38 carried four probes that all held and rested on the order table having
+# three columns it had never had -- £2.25, and an agent that correctly added
+# them because they were the only way to do what it had been asked. See
+# specs/auto-approval.md §9.9.1 and 030_candidate_premise.sql.
+#
 # THE PROHIBITIONS ARE IN THIS FILE, NOT IN A PROMPT
 #
 # §7 forbids a producer to set a disposition, to write to `tasks`, and to

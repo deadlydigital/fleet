@@ -215,6 +215,84 @@ class TestTheLoaderDoesNotReExecute:
             "path_exists": "api/analytics/routes/no_such_file.py"}
 
 
+class TestThePremiseIsCarriedButNotRequired:
+    """030 and §9.9.1. The premise is the ground the work stands on, and the
+    loader's job with it is the loader's job with everything: carry it whole,
+    refuse what cannot be read, and re-execute nothing.
+    """
+
+    PREMISE = (
+        "    premise:\n"
+        "      - claim: the orders route exists and already takes query "
+        "parameters\n"
+        "        probe:\n"
+        "          path_exists: api/analytics/routes/orders.py\n"
+    )
+
+    def test_a_premise_reaches_the_row_whole(self, dsns, console, tmp_path):
+        out = loader.load(_doc(tmp_path, ONE + self.PREMISE),
+                          source_sha="ce90c57")
+        row = console.execute("SELECT premise FROM candidates WHERE id=%s",
+                              (out["candidate_ids"][0],)).fetchone()
+        assert row["premise"] == [{
+            "claim": "the orders route exists and already takes query parameters",
+            "probe": {"path_exists": "api/analytics/routes/orders.py"}}]
+
+    def test_a_document_with_no_premise_still_loads(self, dsns, console,
+                                                    tmp_path):
+        """THE SAME ASYMMETRY THE PROBES AND `coverage` HAVE. Batch 9's
+        document is committed and was written before this key existed; a loader
+        that refused it would refuse to record what the producer actually
+        wrote. What refuses a NEW block without one is
+        candidate_block_shape.py, which the producer runs against its own diff.
+        """
+        out = loader.load(_doc(tmp_path, ONE), source_sha="ce90c57")
+        row = console.execute("SELECT premise FROM candidates WHERE id=%s",
+                              (out["candidate_ids"][0],)).fetchone()
+        assert row["premise"] == []
+        assert out["no_premise"] == 1
+
+    def test_a_premise_with_no_claim_is_refused(self, tmp_path):
+        body = ONE + ("    premise:\n"
+                      "      - probe:\n"
+                      "          path_exists: api/analytics/routes/orders.py\n")
+        with pytest.raises(loader.LoadRefused) as e:
+            _rows(tmp_path, body)
+        assert "no claim in words" in str(e.value)
+
+    def test_a_claim_with_no_probe_is_refused(self, tmp_path):
+        """c38's actual state, and the reason this key exists: the sentence was
+        in the rationale and nothing anywhere could run it."""
+        body = ONE + ("    premise:\n"
+                      "      - claim: the values are on screen and inert\n")
+        with pytest.raises(loader.LoadRefused) as e:
+            _rows(tmp_path, body)
+        assert "no single probe from the vocabulary" in str(e.value)
+
+    def test_a_premise_outside_the_vocabulary_is_refused(self, tmp_path):
+        body = ONE + ("    premise:\n"
+                      "      - claim: the order route answers with a csv type\n"
+                      "        probe:\n"
+                      "          shell: grep -r text/csv api/\n")
+        with pytest.raises(loader.LoadRefused) as e:
+            _rows(tmp_path, body)
+        assert "not in the vocabulary" in str(e.value)
+
+    def test_a_premise_that_has_aged_still_loads(self, dsns, console, tmp_path):
+        """The loader re-executes a premise exactly as often as it re-executes
+        a probe: never. Gate 6 does that, at the sha about to be spent on."""
+        body = ONE + ("    premise:\n"
+                      "      - claim: a file that is in neither repository is "
+                      "somehow present\n"
+                      "        probe:\n"
+                      "          path_exists: api/analytics/routes/no_such.py\n")
+        out = loader.load(_doc(tmp_path, body), source_sha="ce90c57")
+        row = console.execute("SELECT premise FROM candidates WHERE id=%s",
+                              (out["candidate_ids"][0],)).fetchone()
+        assert row["premise"][0]["probe"] == {
+            "path_exists": "api/analytics/routes/no_such.py"}
+
+
 class TestOneTransaction:
     def test_a_dry_run_writes_nothing(self, dsns, console, tmp_path):
         before = console.execute(

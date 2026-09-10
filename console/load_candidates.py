@@ -235,6 +235,45 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
                         f"{where} has a probe {next(iter(probe))!r}, which is "
                         f"not in the vocabulary ({', '.join(mod.PROBE_KINDS)})")
 
+        # PREMISE: SHAPE ONLY, AND NOT REQUIRED HERE.
+        #
+        # The same asymmetry this module's header argues for the probes, and
+        # for `coverage` above. 030 and contracts/checks/candidate_block_shape.py
+        # require a premise of anything a producer EMITS from 10 Sep 2026; the
+        # documents this loads include batch 9's, committed before the key
+        # existed and carrying none. A loader that refused them would refuse to
+        # record what the producer actually wrote.
+        #
+        # What is checked is that a premise which IS present can be read and
+        # can be run: a claim in words, and exactly one predicate. An entry
+        # that cannot be executed would reach rank.py and find nothing to do,
+        # and "nothing to run" reads downstream exactly like "it held".
+        premise = c.get("premise")
+        if premise is not None:
+            if not isinstance(premise, list):
+                problems.append(f"{where} has a premise that is not a list")
+                premise = None
+            else:
+                for i, entry in enumerate(premise, 1):
+                    at = f"{where} premise {i}"
+                    if not isinstance(entry, dict):
+                        problems.append(f"{at} is not a mapping")
+                        continue
+                    if not str(entry.get("claim") or "").strip():
+                        problems.append(
+                            f"{at} has no claim in words. The predicate is "
+                            f"what runs; the sentence is what a reader checks "
+                            f"it against, and 030 refuses the row without it.")
+                    probe = entry.get("probe")
+                    if not isinstance(probe, dict) or len(probe) != 1:
+                        problems.append(
+                            f"{at} has no single probe from the vocabulary")
+                    elif next(iter(probe)) not in mod.PROBE_KINDS:
+                        problems.append(
+                            f"{at} has a probe {next(iter(probe))!r}, which is "
+                            f"not in the vocabulary "
+                            f"({', '.join(mod.PROBE_KINDS)})")
+
         try:
             band = band_of(c)
         except LoadRefused as exc:
@@ -267,6 +306,7 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
             "band": band,
             "hib_signal": sig,
             "probes": probes if isinstance(probes, list) else [],
+            "premise": premise if isinstance(premise, list) else [],
             "work_key": keyed["key"],
             "work_key_kind": keyed["kind"],
             "work_key_why": keyed.get("why"),
@@ -363,6 +403,8 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
         "document": rel, "source_sha": source_sha,
         "candidates": len(rows),
         "probes": sum(len(r["probes"]) for r in rows),
+        "premise": sum(len(r["premise"]) for r in rows),
+        "no_premise": sum(1 for r in rows if not r["premise"]),
         "signals": sum(1 for r in rows if r["hib_signal"]),
         "bands": {b: sum(1 for r in rows if r["band"] == b)
                   for b in BANDS + (None,) if any(r["band"] == b for r in rows)},
@@ -427,12 +469,14 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
             conn.execute(
                 "INSERT INTO candidates (batch_id, title, rationale, repo,"
                 " objective_ref, evidence, suggested_paths, band, hib_signal,"
-                " probes, work_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " probes, premise, work_key)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (batch_id, r["title"], r["rationale"], r["repo"],
                  r["objective_ref"], json.dumps(r["evidence"]),
                  r["suggested_paths"], r["band"],
                  json.dumps(r["hib_signal"]) if r["hib_signal"] else None,
-                 json.dumps(r["probes"]), r["work_key"]))
+                 json.dumps(r["probes"]), json.dumps(r["premise"]),
+                 r["work_key"]))
             ids.append(conn.execute(
                 "SELECT currval('candidates_id_seq') AS id").fetchone()["id"])
     summary["batch_id"] = batch_id
@@ -582,6 +626,17 @@ def main(argv=None) -> int:
             what = "would load" if args.dry_run else f"loaded batch {out['batch_id']}:"
             print(f"{what} {out['candidates']} candidate(s), {out['probes']} "
                   f"probe(s), {out['signals']} signal(s), bands {out['bands']}")
+            # SAID OUT LOUD, because a row with no premise is approvable and a
+            # row with one is checked against the tree at 01:30. The difference
+            # is invisible in a count of candidates and it is the difference
+            # c38 turned on.
+            if out["no_premise"]:
+                print(f"  premise: {out['premise']} claim(s); "
+                      f"{out['no_premise']} candidate(s) declare NONE, so "
+                      f"nothing about the ground they stand on is re-executed "
+                      f"at the approval")
+            else:
+                print(f"  premise: {out['premise']} claim(s), on every candidate")
             wk = out["work_keys"]
             print(f"  work keys: {wk['row']} resolved to a document row, "
                   f"{wk['topic']} keyed by heading only, {wk['none']} not keyed")

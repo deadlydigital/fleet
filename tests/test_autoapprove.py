@@ -33,16 +33,23 @@ def _batch(console, doc="research/candidates.md", sha="4041d15") -> int:
 
 
 def _cand(console, batch_id, *, title="Do the thing", band="daily",
-          probes=None, paths=None, signal=None, repo="fleet") -> int:
+          probes=None, paths=None, signal=None, repo="fleet",
+          premise=None) -> int:
+    """`premise` DEFAULTS TO NONE, which is the state every row in the real
+    pool was in on 10 Sep 2026 -- 030 added the column and nothing backfilled
+    it. Tests that are about gate 6 pass one; the rest inherit the silence the
+    pool actually has, which is what keeps them testing what they are about.
+    """
     row = console.execute(
         "INSERT INTO candidates (batch_id, title, rationale, repo, band,"
-        " hib_signal, probes, suggested_paths, evidence)"
-        " VALUES (%s,%s,'because the finding said so',%s,%s,%s,%s,%s,'[]')"
+        " hib_signal, probes, premise, suggested_paths, evidence)"
+        " VALUES (%s,%s,'because the finding said so',%s,%s,%s,%s,%s,%s,'[]')"
         " RETURNING id",
         (batch_id, title, repo, band,
          json.dumps(signal) if signal else None,
          json.dumps(probes if probes is not None else [
              {"path_exists": "console/approve.py"}]),
+         json.dumps(premise or []),
          paths or [])).fetchone()
     console.commit()
     return row["id"]
@@ -291,6 +298,106 @@ class TestTheGates:
         assert row["eligible"] is False
         assert row["rule"] == "probes_failed"
         assert "cannot fail" in row["detail"]
+
+
+class TestGateSixTheGroundNotTheGap:
+    """§9.9.1. Candidate 38 passed five gates and was still wrong about the
+    tree, because every one of its probes tested the GAP.
+
+    The failure these tests describe is not hypothetical: c38 said the Payment,
+    Country and Coupon values in the order table "are inert", the table had
+    never rendered those columns, and the £2.25 run that followed added three
+    of them that no spec asked for.
+    """
+
+    def test_a_premise_that_no_longer_holds_refuses_the_candidate(
+            self, dsns, console, admin):
+        _pool(admin)
+        b = _batch(console)
+        cid = _cand(console, b, premise=[{
+            "claim": "the console still has a module that ranks candidates",
+            "probe": {"path_exists": "console/a_file_that_is_not_here.py"}}])
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["eligible"] is False
+        assert row["rule"] == "premise_failed"
+
+    def test_the_rule_is_not_probes_failed_because_they_mean_opposite_things(
+            self, dsns, console, admin):
+        """A failing probe says the gap closed: drop the row. A failing premise
+        says the ground is not there: the row is a DIFFERENT piece of work from
+        the one described. One rule name for both would send a reader the wrong
+        way, and the brief prints the rule.
+        """
+        _pool(admin)
+        b = _batch(console)
+        gone = _cand(console, b, title="the gap closed",
+                     probes=[{"path_absent": "console/rank.py"}])
+        ground = _cand(console, b, title="the ground is missing",
+                       premise=[{"claim": "the ranking module is a package "
+                                          "module in the console",
+                                 "probe": {"path_absent": "console/rank.py"}}])
+        p = autoapprove.plan()
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == gone)["rule"] == "probes_failed"
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == ground)["rule"] == "premise_failed"
+
+    def test_a_holding_premise_is_eligible_and_records_the_claim(
+            self, dsns, console, admin):
+        """The sentence is recorded beside the verdict, because the open
+        question -- does the predicate test the claim, or something adjacent --
+        cannot be asked of a predicate on its own."""
+        _pool(admin)
+        b = _batch(console)
+        cid = _cand(console, b, premise=[{
+            "claim": "the console still has a module that ranks candidates",
+            "probe": {"path_exists": "console/rank.py"}}])
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["eligible"] is True
+        assert row["premise"] == [{
+            "held": True,
+            "claim": "the console still has a module that ranks candidates",
+            "probe": "path_exists: console/rank.py exists"}]
+
+    def test_a_candidate_with_no_premise_is_not_refused_and_is_counted(
+            self, dsns, console, admin):
+        """THE HOLE, ASSERTED RATHER THAN LEFT TO BE DISCOVERED.
+
+        Every row in the pool on 10 Sep 2026 was emitted before the key
+        existed, so refusing an empty premise would have stopped unattended
+        approval dead for rows whose producers were never asked. What must NOT
+        happen is the silence reading as a pass: `silent` counts it, and
+        candidate_block_shape.py refuses a new block that omits one, so the
+        hole closes from the producer end.
+        """
+        _pool(admin)
+        b = _batch(console)
+        cid = _cand(console, b)          # no premise, like every real row
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["eligible"] is True
+        assert p["premise"]["silent"] >= 1
+        assert p["premise"]["declared"] == 0
+        # and the zero is not reported as a verified pool
+        assert p["premise"]["held"] == 0
+
+    def test_the_premise_tally_reaches_the_decision(self, dsns, console, admin):
+        """026 requires an unattended decision to carry its working. A gate
+        that ran and left no trace is a gate nobody can audit afterwards."""
+        _pool(admin)
+        b = _batch(console)
+        _cand(console, b, title="one", premise=[{
+            "claim": "the console still has a module that ranks candidates",
+            "probe": {"path_exists": "console/rank.py"}}])
+        out = autoapprove.sweep()
+        assert out["approve_ids"], out
+        row = console.execute(
+            "SELECT mechanics FROM decision_log WHERE id=%s",
+            (out["decision_id"],)).fetchone()
+        assert row["mechanics"]["premise"]["declared"] == 1
+        assert row["mechanics"]["premise"]["held"] == 1
 
 
 class TestTheCut:
