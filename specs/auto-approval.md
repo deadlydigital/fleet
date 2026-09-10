@@ -1307,6 +1307,90 @@ It also changes *why* §7 reverses that default: not only that a bad merge
 becomes expensive once there are customers, but that a partially-built feature
 is not a bad merge and triggers no revert.
 
+#### 9.9.1 The second instance runs the other way: task 55 built MORE than the spec
+
+**Added 10 Sep 2026, on merging task 55 by hand.** §9.9 was written about a
+requirement that went missing. The same silence passes a requirement that was
+*added*, and it is the same four checks that cannot see it.
+
+Task 55's spec — `drafts/order-table-cells-set-the-filters.md`, itself written
+by task 54 — rests on a premise about the tree: *"The values are on screen, in
+the Payment, Country and Coupon columns of the very table being filtered, and
+they are inert."* **They were not on screen.** The order table on `main` at
+6f3525a renders five columns: `wc_order_id`, `created_at`, `billing_email`,
+`status`, `total`. The premise came from `drafts/order-filters-frontend.md`
+§2.5 (*"make the value in the Payment, Country and Coupon cells set the
+corresponding filter"*) and its human-check step (*"Set a payment method that
+exists in the Payment column"*), both of which describe a table that has never
+existed. Two drafts asserted it and nothing checked it, because a draft's own
+gate (`draft_spec_shape.py`) reads the shape of the spec block, not the truth
+of its prose.
+
+So the agent **added three columns to the order table** — Payment, Country,
+Coupon — because you cannot click a value that is not rendered. That is the
+right call on the facts and I would not want it made differently. It is also:
+
+* not in *What to build*, which says the change is `FilterValue` and three
+  `render` functions in one file;
+* against that spec's own *What must not change* — *"With nothing clicked, the
+  request the page sends and the table it renders are byte-for-byte what they
+  are today"* — which is now false for the table, though it stays true for the
+  request;
+* a visible product change to the page an agency operator lives in, decided by
+  an agent at 15:45 and reviewed by nobody.
+
+**And every check passed.** `tsc` 0, `vitest` 0 with all 319 tests including
+`orders.render.test.tsx` — the named regression guard, which does not assert a
+column count — and `new_test_bites.sh` 0. Only `paired_paths.py` failed, for an
+unrelated and by then wrong reason (§9.9.2). Had the pairing not been there, this
+would have merged and deployed unattended.
+
+**That is two in three tasks.** Task 53 shipped four of five requirements; task
+55 shipped all nine of its numbered ones — 1.1 to 1.5, 2.1 to 2.3 and 3, each
+checked against the diff by hand on 10 Sep — and three table columns nobody
+asked for. Both were caught by something that
+was not looking for them: task 53 by `auto_merge: false`, which is now `true`,
+and task 55 by a stale pairing, which is now removed. **Neither reader is in
+the path any more.** The honest position after this change is that nothing
+compares the spec to the diff at all, in either direction, and the next
+instance will be found by somebody using the product.
+
+The cheapest thing that would have caught THIS one is not a fifth check on the
+diff. It is a probe on the premise: `candidates.probes` already carries
+`grep_count` assertions, c38's ran and passed, and none of them asked whether
+the Payment column existed. A spec whose premise is a claim about the tree can
+carry that claim as a probe, and a false premise then fails at approval — before
+a run is paid for, and before an agent has to decide alone what to do about it.
+Not built here; recorded as the next thing §9.12 should cost.
+
+#### 9.9.2 What the pairing cost while it was doing this
+
+Task 55 failed on `paired_paths.py` and on nothing else, after 107 seconds of
+`tsc` and `vitest` that had already passed. The group it broke was added the
+same morning, for task 53, and was correct for exactly one task: it said the
+orders proxy and the orders page must land together, because a page half alone
+ships four filter controls that silently return unfiltered rows. Task 53 landed
+both halves, so from that moment the parameters agreed and the danger was
+unreachable — but the group went on refusing any later change to either file
+alone, which is what task 55 was.
+
+`drafts/order-table-cells-set-the-filters.md` predicted this precisely, under a
+heading reading *"Before this is queued: `paired_paths` will refuse this
+diff"*, and listed the three ways to resolve it. **Nobody read it.** The draft
+merged at 14:17:50, `console/autoqueue.py` queued the work task at 14:21, and
+the only human decision in that window — `decision_log` 27 — was an unattended
+approval of the *candidate*, made at 14:11, three minutes before the draft that
+carried the warning existed. A section addressed to "whoever queues this" has no
+reader on a path where queueing is a function call.
+
+Both groups were removed the same day and replaced with
+`contracts/checks/proxy_passthrough.py`, which checks the property directly:
+every parameter a page sends must be one its proxy forwards. See
+`contracts/dd-analytics-frontend.yaml` above its writable list for why a pairing
+was the wrong shape in both directions, and for where a pairing that expires
+should have gone instead — on the task row, which `autoqueue` has no way to
+write.
+
 ---
 
 ### 9.10 The accept path had four defects and task 53 was the first to meet them

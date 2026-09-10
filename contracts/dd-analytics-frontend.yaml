@@ -79,10 +79,12 @@
 # ============================================================================
 #
 # A green run here establishes that the tree typechecks, that 319 tests still
-# pass, that the ONE test the change added fails without the change, and that no
-# paired group landed in half. It does not establish that the page says a true
-# thing, and it does not establish that the spec was implemented -- task 53
-# shipped a requirement unbuilt through all four.
+# pass, that the ONE test the change added fails without the change, and that
+# every parameter each analytics page sends is one its proxy forwards. It does
+# not establish that the page says a true thing, and it does not establish that
+# the spec was implemented -- task 53 shipped a requirement unbuilt through all
+# four, and task 55 added three table columns no spec asked for through all
+# four again.
 #
 # `auto_merge` was `false` for exactly that reason and is `true` since 10 Sep
 # 2026. The paragraph beside it is what that costs; it is not a tidy-up and it
@@ -91,12 +93,15 @@
 work_type: dd_frontend
 repo: deadly-digital-platform
 base_branch: main
-# 4 since 10 Sep 2026: a second paired_paths group. Bumped because this
-# version REFUSES something version 3 allowed -- an orders change landing one
-# half -- and `runs.contract_version` is what keeps a run attributable to the
-# contract that actually held it. Task 49 ran under 3 and was not held to the
-# orders pairing; anything from here is. Same argument rank.RANK_VERSION makes.
-contract_version: 4
+# 5 since 10 Sep 2026, later the same day: both paired_paths groups are gone and
+# contracts/checks/proxy_passthrough.py stands in their place. Bumped because
+# this version both ALLOWS something 4 refused -- a page-only change to either
+# analytics page -- and REFUSES something 4 allowed -- a page that sends a
+# parameter its proxy drops while both files move together. `runs.contract_version`
+# is what keeps a run attributable to the contract that actually held it: task
+# 53 ran under 4 and was held to the orders pairing, task 55 was failed by it,
+# and nothing from here is. Same argument rank.RANK_VERSION makes.
+contract_version: 5
 
 # ---------------------------------------------------------------------------
 # WRITABLE
@@ -254,70 +259,67 @@ creatable_paths:
   - platform/__tests__/unit/analytics/test_fleet_*.test.tsx
 
 # ---------------------------------------------------------------------------
-# BOTH FILES OR NEITHER.
+# THERE ARE NO `paired_paths` GROUPS HERE, AND THAT IS A DECISION.
 #
-# specs/dashboard-comparison-windows.md §"What the page will and will not see"
-# requires that the follow-up frontend task land the proxy change and the label
-# change together. Widening the proxy alone lets the overview render
-# "vs previous 366 days" over a year-on-year comparison -- a page confidently
-# describing a window it did not compare, which is worse than the unqualified
-# sentence task 28 exists to fix.
+# Two lived here until 10 Sep 2026: the dashboard proxy with the overview page
+# (added for specs/dashboard-comparison-windows.md), and the orders proxy with
+# the orders page (added the morning of 10 Sep, from
+# drafts/order-filters-frontend.md). Both are removed, and
+# contracts/checks/proxy_passthrough.py in the verification list below is what
+# replaces them.
 #
-# 024_paired_paths.sql refuses a group that cannot bite: fewer than two paths,
-# no `why`, or a path outside writable_paths. contracts/checks/paired_paths.py
-# is what reads it against the diff.
+# WHY, IN ONE SENTENCE: both groups were a PROXY FOR A PROPERTY, and the
+# property is now checked directly.
+#
+# The property either group was written to protect is FEAT-035 -- a page that
+# sends a filter the proxy silently drops, so the control appears to work,
+# returns unfiltered rows, and agrees with its own summary. "Both files move
+# together" is not that property, and it is wrong in both directions:
+#
+#   IT REFUSED SAFE WORK. A pairing cannot tell "the page sends a parameter the
+#   proxy does not forward" from "the page changed at all". Once both halves
+#   have landed -- task 49 for the dashboard, task 53 for the orders filters --
+#   the parameters agree and the danger is unreachable, but the group goes on
+#   refusing every later single-file change to either file. TASK 55 IS THE
+#   EVIDENCE: a click-to-filter change that introduced no parameter at all,
+#   tsc green, 319 tests green, the added test proven to bite, failed on the
+#   pairing alone at £2.25 and one attempt. drafts/order-table-cells-set-the-filters.md
+#   predicted it in a section headed "Before this is queued", and nothing on
+#   the unattended path read that section.
+#
+#   IT PASSED UNSAFE WORK. Co-movement is not agreement. A change that touched
+#   both files and still left `has_discount` out of the proxy's list satisfies
+#   every pairing rule there is. The failure the group existed to prevent fits
+#   inside a diff it accepts.
+#
+# The replacement is directional, which a pairing cannot be. A proxy that
+# forwards a name no page sends is dead code the next task notices, and is not
+# refused. A page that sends a name no proxy forwards is a merchant reading an
+# unfiltered figure as a filtered one, and is.
+#
+# WHAT IS LOST. Nothing checks that these files move together any more, and one
+# thing that is genuinely a pairing goes with it: a NEW page under a NEW proxy,
+# where the passthrough check has no entry in its PAIRS list and so has nothing
+# to compare. That is a real hole and it is not closed here -- it is closed by
+# whoever adds the page adding the pair, which is the same one line in a file a
+# person already has open that this contract's writable_paths ask for.
+#
+# AND WHERE A ONE-SHOT PAIRING SHOULD HAVE GONE, since the next person to want
+# one will read this. The orders group was a fact about ONE CHANGE -- task 53,
+# introducing four parameters end to end -- written into a STANDING DOCUMENT,
+# which is why it outlived what it was about by a day and cost a run. A group
+# that expires belongs on the TASK ROW: `tasks.acceptance_contract` is a
+# per-task copy, runner/cycle.py reads that copy and never this file, and
+# 024_paired_paths.sql validates it there. Task 53 was a hand INSERT and could
+# have carried it.
+#
+# There is no way to do that through console/autoqueue.py today: it resolves a
+# contract FILE and copies it wholesale, so an autoqueued task gets exactly
+# what is written here and nothing task-specific. So a one-shot pairing is
+# available by hand INSERT and not on the unattended path -- which is the path
+# everything now takes. Recorded rather than built: it wants a decision about
+# where per-task contract narrowing lives, not a key bolted onto autoqueue.
 # ---------------------------------------------------------------------------
-paired_paths:
-  - why: >-
-      task 28 shipped the comparison modes behind
-      platform/app/api/analytics/dashboard/route.ts, which forwards only start
-      and end. Widening that proxy without changing the label lets the page
-      render "vs previous 366 days" over a year-on-year comparison. The label
-      is built from the top-level span_days at
-      app/(dashboard)/analytics/page.tsx; the response carries
-      comparison.span_days for it to use instead.
-    paths:
-      - platform/app/api/analytics/dashboard/route.ts
-      - platform/app/(dashboard)/analytics/page.tsx
-
-  # ADDED 10 Sep 2026, from drafts/order-filters-frontend.md, which found the
-  # gap while being written: the group above pairs the DASHBOARD proxy with the
-  # overview page and says nothing about the ORDERS pair, and the draft's own
-  # closing line was "whoever queues this either adds a group for these two
-  # paths or reads the diff for it". Reading the diff for it is not a check --
-  # it is the thing a check exists to stop being necessary, and it is the
-  # reading that does not happen at 02:00.
-  #
-  # THE TWO HALVES ARE NOT EQUALLY DANGEROUS, and that asymmetry is the reason
-  # this group is worth more than the one above:
-  #
-  #   route.ts alone   the proxy accepts four more parameters and no control
-  #                    sends them. Nothing a user sees changes. Dead code, and
-  #                    the next task notices.
-  #
-  #   page.tsx alone   FOUR CONTROLS THAT APPEAR TO WORK. The page renders
-  #                    payment method, country, coupon and has_discount, the
-  #                    user sets one, the proxy drops it, and the table comes
-  #                    back with every row and a summary that matches. Nothing
-  #                    errors. The merchant reads an unfiltered figure as a
-  #                    filtered one.
-  #
-  # That is FEAT-035 exactly: a control that is wired to nothing is worse than
-  # a control that is missing, because the missing one is visible. tsc and
-  # vitest cannot catch it -- both halves compile and the page's own tests pass
-  # against a proxy that ignores the parameters -- so the pairing is the only
-  # thing between that and a merchant.
-  - why: >-
-      the orders proxy at platform/app/api/analytics/orders/route.ts forwards
-      only start, end, status, search, sort_by and sort_dir, while
-      api/analytics/routes/orders.py has accepted payment_method, country,
-      coupon and has_discount since task 2. Landing the page half alone ships
-      four filter controls that appear to work and silently return unfiltered
-      rows, with a summary that agrees with them; landing the proxy half alone
-      changes nothing a user can see. Land both or neither.
-    paths:
-      - platform/app/api/analytics/orders/route.ts
-      - platform/app/(dashboard)/analytics/orders/page.tsx
 
 # node_modules is gitignored, so a fresh worktree has none and neither tsc nor
 # vitest can start. The runner links the checkout's own tree in AFTER the diff
@@ -334,11 +336,17 @@ worktree_links:
 
 # THE ORDER IS THE ONE THE WORK WAS SPECIFIED IN. verify.run stops at the first
 # failure, so a cheap check placed late is wall clock spent before a verdict
-# that was available immediately: paired_paths.py is a git diff and a set
-# comparison, and moving it first would cost nothing and answer sooner. It is
-# left last because the sequence "does it compile, does it pass, does the new
-# test bite, did both halves land" is the order a reader reasons in, and 95
-# seconds is not enough to buy a different one.
+# that was available immediately: proxy_passthrough.py is two file reads and a
+# set comparison, and moving it first would cost nothing and answer sooner. It
+# is left last because the sequence "does it compile, does it pass, does the new
+# test bite, does the page ask for anything the proxy drops" is the order a
+# reader reasons in, and 95 seconds is not enough to buy a different one.
+#
+# THAT ARGUMENT IS NOW WEAKER THAN IT WAS, and it is left standing on purpose so
+# the next person can overrule it: task 55 spent 107 seconds of tsc and vitest
+# to be failed by the last line for a reason the last line could have given in
+# under a second. Order costs nothing when everything passes and costs a run's
+# wall clock when the cheap check is the one that fails.
 verification:
   - cd platform && ./node_modules/.bin/tsc --noEmit
   - cd platform && ./node_modules/.bin/vitest run --reporter=dot
@@ -346,17 +354,22 @@ verification:
   # vitest rather than pytest, the suite directory is __tests__ rather than
   # tests, and the pattern is the creatable glob above.
   - FLEET_TEST_RUNNER=/home/ubuntu/fleet/contracts/checks/vitest_one_file.sh /home/ubuntu/fleet/contracts/checks/new_test_bites.sh platform '__tests__/unit/analytics/test_fleet_*.test.tsx' '__tests__'
-  - python3 /home/ubuntu/fleet/contracts/checks/paired_paths.py
+  # Every parameter the orders page and the overview page send must be one
+  # their proxy forwards. Replaces the two paired_paths groups -- see the long
+  # comment above the writable list for why a pairing was the wrong shape.
+  - python3 /home/ubuntu/fleet/contracts/checks/proxy_passthrough.py
 
 # NOT ELIGIBLE FOR UNATTENDED MERGE, AND THE REASON IS NARROWER THAN "FRONTEND
 # WORK IS RISKY".
 #
-# Every other gate here is a fact about the tree. paired_paths.py establishes
-# that both files moved; it cannot establish that the label the page renders
-# describes the window the proxy asked for. Only a render test asserting that
-# behaviour can, and the agent chooses what its test asserts -- new_test_bites.sh
-# then proves the test discriminates between two trees, not that it
-# discriminates on the property the spec asked for.
+# Every other gate here is a fact about the tree. proxy_passthrough.py
+# establishes that the page asks for nothing the proxy drops; it cannot
+# establish that the label the page renders describes the window the proxy
+# asked for, or that the value a cell sends is the row's rather than the label
+# rendered from it. Only a render test asserting that behaviour can, and the
+# agent chooses what its test asserts -- new_test_bites.sh then proves the test
+# discriminates between two trees, not that it discriminates on the property
+# the spec asked for.
 #
 # So the one thing this contract exists to prevent is the one thing it cannot
 # check, and a green run that reads as "the comparison label is right" would be

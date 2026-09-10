@@ -230,7 +230,24 @@ class TestWhatItQueues:
         c = console.execute("SELECT acceptance_contract AS c FROM tasks"
                             " WHERE id=%s", (q.task_id,)).fetchone()["c"]
         assert c["auto_merge"] is True
-        assert c["paired_paths"] and c["creatable_paths"]
+        # EVERY optional key the contract declares, not a hand-picked pair.
+        # This asserted `paired_paths and creatable_paths` until 10 Sep 2026
+        # and failed the day the pairings were removed -- not for a key
+        # stopping being copied, but for a contract stopping declaring one.
+        # A rule written against the keys that happened to exist refuses the
+        # next contract for being different, which is the defect
+        # test_every_shipped_contract_matches_the_repo_it_names had.
+        import yaml
+        from pathlib import Path as _P
+        shipped = yaml.safe_load(
+            (_P(__file__).resolve().parent.parent / "contracts"
+             / "dd-analytics-frontend.yaml").read_text())
+        for opt in ("creatable_paths", "paired_paths", "worktree_links",
+                    "readable_repos", "agent_tools", "contract_version"):
+            if shipped.get(opt) is not None:
+                assert c.get(opt) == shipped[opt], (
+                    f"{opt} is in the contract and not in the frozen row")
+        assert c["creatable_paths"]
 
     def test_the_objective_is_carried_from_the_spec_task(self, merged_draft,
                                                          console):

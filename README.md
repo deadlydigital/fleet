@@ -529,8 +529,19 @@ frozen contract out of `$FLEET_CONTRACT` and the diff out of git.
 
 It establishes that both files moved. It cannot establish that the label is
 right, and that is the only thing the pairing is for -- so
-`dd-analytics-frontend.yaml` carries `auto_merge: false` until this has run a
+`dd-analytics-frontend.yaml` carried `auto_merge: false` until this had run a
 few times.
+
+**And on 10 Sep 2026 both of that contract's groups were removed**, replaced by
+`contracts/checks/proxy_passthrough.py`: every parameter a page sends must be
+one its proxy forwards. A pairing was a proxy for that property and was wrong
+in both directions -- it refused every later single-file change once both
+halves had landed (task 55, £2.25 and one attempt, for a diff that introduced
+no parameter at all), and it passed a change that touched both files while
+still dropping one. The key, the migration and the check above are unchanged
+and are still the right shape for a pairing that genuinely holds; what was
+wrong was using one where the property itself could be checked. The argument is
+in the contract, above its writable list.
 
 Neither backend command was lowered to make it pass, because neither can be
 made to pass (measured 30 Aug 2026 at `921e22b`):

@@ -203,10 +203,23 @@ def test_the_shipped_frontend_contract_produces_a_prompt_that_agrees_with_itself
     assert any("new_test_bites.sh" in v for v in contract["verification"])
     assert "MUST ADD exactly one new file" in prompt
 
-    assert any("paired_paths.py" in v for v in contract["verification"])
-    assert "change together, or not at all" in prompt
-    for p in contract["paired_paths"][0]["paths"]:
-        assert p in prompt
+    # AND IT AGREES IN THE OTHER DIRECTION TOO, which is the half that was
+    # never tested: the contract declared two paired groups until 10 Sep 2026
+    # and this asserted the prompt named their files. Both groups are gone --
+    # contracts/checks/proxy_passthrough.py replaced them -- so what must hold
+    # now is that the prompt does NOT tell the agent two files move together
+    # when nothing refuses it for landing one. A prompt carrying a rule the
+    # contract no longer holds is how an agent spends a run on a constraint
+    # that does not exist.
+    if contract.get("paired_paths"):
+        assert "change together, or not at all" in prompt
+        for group in contract["paired_paths"]:
+            for path in group["paths"]:
+                assert path in prompt
+    else:
+        assert "change together" not in prompt
+        assert not any("paired_paths.py" in v for v in contract["verification"])
+        assert any("proxy_passthrough.py" in v for v in contract["verification"])
 
 
 # ---- the spend cap --------------------------------------------------------

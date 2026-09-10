@@ -246,57 +246,27 @@ def test_no_base_sha_is_could_not_run(repo):
 
 # ---- and the contract that uses it ----------------------------------------
 
-#: The second group, added 10 Sep 2026. The orders proxy forwards six
-#: parameters and api/analytics/routes/orders.py has accepted four more since
-#: task 2, so the page half alone ships controls that appear to work.
-ORDERS_PROXY = "platform/app/api/analytics/orders/route.ts"
-ORDERS_PAGE = "platform/app/(dashboard)/analytics/orders/page.tsx"
+# BOTH SHIPPED GROUPS WERE REMOVED ON 10 SEP 2026, and the two tests that
+# asserted they were present went with them. What replaced them is
+# contracts/checks/proxy_passthrough.py and tests/test_proxy_passthrough.py:
+# the property either group stood for is "the page sends nothing the proxy
+# drops", a pairing could not say that, and once both halves had landed the
+# groups only refused later single-file work -- task 55, at £2.25 and one
+# attempt. The full argument is in the contract, above its writable list.
+#
+# The mechanism above is NOT removed and is not deprecated. 024 is still the
+# key, paired_paths.py is still the check, and a group is still the right shape
+# for a pairing that genuinely holds -- a new page under a new proxy, where the
+# passthrough check has no entry to compare. What the two tests below hold is
+# that any group which does arrive can bite, and that removing these did not
+# leave the contract with nothing mechanical in it.
 
 
 def _shipped_groups():
     import yaml
     c = yaml.safe_load(
         (ROOT / "contracts" / "dd-analytics-frontend.yaml").read_text())
-    return c["paired_paths"], c["writable_paths"]
-
-
-def _group_for(groups, *paths):
-    """The group naming exactly these paths, or None.
-
-    Found BY ITS PATHS rather than by position. This test asserted
-    `len(groups) == 1` and indexed `groups[0]`, so adding a second group failed
-    it -- not for a pairing being wrong, but for a pairing being new. That is
-    the same defect test_every_shipped_contract_matches_the_repo_it_names had:
-    a rule written against the cases that happened to exist, refusing the next
-    one for arriving.
-    """
-    want = sorted(paths)
-    return next((g for g in groups if sorted(g.get("paths") or []) == want), None)
-
-
-def test_the_shipped_contract_pairs_the_two_files_task_28_named():
-    groups, _ = _shipped_groups()
-    g = _group_for(groups, PROXY, PAGE)
-    assert g is not None, "the dashboard pair is not in the contract"
-    assert g["why"].strip()
-
-
-def test_the_shipped_contract_pairs_the_orders_proxy_and_page():
-    """The half that is dangerous is the PAGE half, which is why this exists.
-
-    The proxy alone accepts parameters nothing sends and changes nothing a user
-    sees. The page alone renders four filter controls, the proxy drops what
-    they set, and the table returns every row with a summary that agrees with
-    it -- a control wired to nothing, which is worse than a control that is
-    missing because the missing one is visible.
-
-    tsc and vitest cannot catch that: both halves compile, and the page's own
-    tests pass against a proxy that ignores the parameters.
-    """
-    groups, _ = _shipped_groups()
-    g = _group_for(groups, ORDERS_PROXY, ORDERS_PAGE)
-    assert g is not None, "the orders pair is not in the contract"
-    assert g["why"].strip()
+    return c.get("paired_paths") or [], c["writable_paths"]
 
 
 def test_every_shipped_group_could_actually_bite():
@@ -305,6 +275,14 @@ def test_every_shipped_group_could_actually_bite():
     The trigger refuses these at INSERT, which is one task too late to be a
     useful place to find out: the contract is edited by a person queueing work,
     and this fails in the suite they run before they queue it.
+
+    VACUOUS SINCE 10 SEP 2026, and left standing deliberately. There are no
+    groups in the shipped contract, so this iterates nothing and passes -- the
+    shape this codebase calls a check that cannot fail. It is kept because it
+    is a rule ABOUT a key rather than about a particular group, and the day
+    somebody adds the next group is the day it starts biting again, without
+    anybody remembering to bring it back. What must not happen is this being
+    read as evidence that the pairing is still doing something.
     """
     groups, writable = _shipped_groups()
     prefixes = [w.split("*", 1)[0].rstrip("/") for w in writable]
@@ -319,26 +297,33 @@ def test_every_shipped_group_could_actually_bite():
                 f"writing neither and the check cannot fail")
 
 
-def test_when_nobody_reads_the_diff_the_pairing_is_what_is_left():
-    """This asserted `auto_merge is False` until 10 Sep 2026, on the grounds
-    that "until a spec has run under this a few times, a person looks". One
-    spec ran under it -- task 53 -- and it shipped §2.5 unbuilt through four
-    green checks, which is what §9.9 records. The flip to `true` was then made
-    deliberately, with what it costs written beside it in the contract.
+def test_when_nobody_reads_the_diff_something_mechanical_is_what_is_left():
+    """This asserted `auto_merge is False` until 10 Sep 2026, then that a
+    pairing was declared, and now that the check which replaced the pairings is
+    in the verification list.
 
-    So the property worth holding is no longer "a person looks". It is that
-    the mechanical half survived the flip: with nobody comparing the spec to
-    the diff, paired_paths.py is the only thing that still says both halves of
-    a pair landed, and a contract that auto-merges with no groups has neither
-    a reader nor a pairing.
+    The property it has held throughout is the one that matters and it has
+    never been about `paired_paths` specifically: WITH NOBODY COMPARING THE
+    SPEC TO THE DIFF (§9.9), a contract that merges unattended must contain at
+    least one check that can fail for the two files disagreeing with each
+    other. tsc proves each file compiles. vitest proves the suite passes
+    against a proxy that ignores what the page sends -- task 53's own tests did
+    exactly that. The bite check proves one added test discriminates.
+
+    None of those can fail for a filter control that silently returns
+    unfiltered rows. proxy_passthrough.py is now the only line in the list that
+    can, so a contract that auto-merges without it has neither a reader nor a
+    mechanism.
     """
     import yaml
     c = yaml.safe_load(
         (ROOT / "contracts" / "dd-analytics-frontend.yaml").read_text())
     if c.get("auto_merge") is False:
-        return                      # a person looks; the pairing is a second opinion
-    assert c.get("paired_paths"), (
-        "this contract merges unattended and declares no paired_paths. Nothing "
-        "reads the spec (§9.9) and now nothing checks that both halves of a "
-        "change landed either -- the page half of the orders pair ships four "
-        "controls that silently return unfiltered rows.")
+        return                      # a person looks; the check is a second opinion
+    verification = " ".join(c.get("verification") or [])
+    assert "proxy_passthrough.py" in verification or c.get("paired_paths"), (
+        "this contract merges unattended and runs neither proxy_passthrough.py "
+        "nor any paired_paths group. Nothing reads the spec (§9.9) and now "
+        "nothing checks that the page and its proxy agree either -- a page "
+        "that sends a filter the proxy drops ships four controls that "
+        "silently return unfiltered rows.")
