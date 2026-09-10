@@ -77,6 +77,11 @@ def block(candidates=None, **over):
             "Nobody has asked HIB's team what they need, so a candidate "
             "justified by an hib_signal is justified by what HIB has rather "
             "than what its team would actually open."),
+        "objectives_considered": (
+            "Weighed dd-trustworthy against dd-feature-parity for every row. "
+            "None of these puts a wrong number in front of a person; they are "
+            "reports the product does not have at all, so parity is the "
+            "honest label and correctness work is not being deferred by it."),
         "candidates": candidates if candidates is not None else [candidate()],
     }
     b.update(over)
@@ -257,6 +262,72 @@ class TestTheBlockDoesNotPretendToRank:
     def test_the_unasked_question_is_required(self, tmp_path):
         code, out = run(tmp_path, block(unasked_question="TODO"))
         assert code == 1 and "asked HIB's team" in out
+
+
+# ---- the objective was weighed, not inferred from the document's title -----
+
+class TestTheObjectiveWasWeighed:
+    """Batch 9 put dd-feature-parity on all nine rows and said nothing.
+
+    Two of those rows are document rows a person had labelled dd-trustworthy
+    eleven days earlier. objectives-2026-Q4.yaml predicted it in its own
+    comments -- "without a baseline this objective ranks build another report
+    forever", "parity work must not outrank correctness work by default" -- and
+    the field carries principles.md's top ranking rule.
+
+    None of these checks that a label is RIGHT. That is the judgement the field
+    exists to hold and no check can make it. They check that more than one
+    objective was weighed in writing.
+    """
+
+    def test_a_block_with_no_objectives_considered_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block(objectives_considered=None))
+        assert code == 1 and "objectives_considered" in out
+
+    def test_a_token_sentence_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block(objectives_considered="parity, obviously"))
+        assert code == 1 and "objectives_considered" in out
+
+    def test_naming_one_objective_is_not_weighing(self, tmp_path):
+        code, out = run(tmp_path, block(objectives_considered=(
+            "Every row here serves dd-feature-parity, which is what the gap "
+            "list is about, and there is nothing further worth saying about "
+            "the matter at all beyond that simple observation.")))
+        assert code == 1 and "Weighing one objective is not weighing" in out
+
+    def test_naming_an_objective_that_does_not_exist_does_not_count(self, tmp_path):
+        code, out = run(tmp_path, block(objectives_considered=(
+            "Weighed dd-feature-parity against dd-correctness, which is the "
+            "one about numbers being right, and parity won for all of these "
+            "rows because none of them reports a wrong figure today.")))
+        assert code == 1 and "Weighing one objective is not weighing" in out
+
+    def test_a_substring_of_an_id_does_not_count_as_naming_it(self, tmp_path):
+        # "dd-feature-parity-ish" is not dd-feature-parity, and a bare
+        # `in` test would have said it was.
+        code, out = run(tmp_path, block(objectives_considered=(
+            "Weighed dd-feature-parity-ish reasoning against nothing else in "
+            "particular here, which is a sentence long enough to clear the "
+            "word floor while naming no real objective at all.")))
+        assert code == 1 and "Weighing one objective is not weighing" in out
+
+    def test_two_real_objectives_weighed_is_accepted(self, tmp_path):
+        code, out = run(tmp_path, block())
+        assert code == 0, out
+
+    def test_the_objective_spread_is_printed_even_when_it_passes(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(title="a"),
+                                         candidate(title="b")]))
+        assert code == 0, out
+        assert "objectives: dd-feature-parity=2" in out
+        assert "EVERY ROW" in out
+
+    def test_a_mixed_batch_is_not_flagged_as_flat(self, tmp_path):
+        code, out = run(tmp_path, block([
+            candidate(title="a", objective_ref="dd-feature-parity"),
+            candidate(title="b", objective_ref="dd-trustworthy")]))
+        assert code == 0, out
+        assert "EVERY ROW" not in out
 
 
 # ---- the ceiling lives in the contract ------------------------------------

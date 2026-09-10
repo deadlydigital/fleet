@@ -291,3 +291,181 @@ class TestBackfill:
                               (cid,)).fetchone()
         assert row["band"] is None
         assert row["probes"] == []
+
+
+# ---- the objective may not change silently ---------------------------------
+
+class TestTheObjectiveMayNotChangeSilently:
+    """c12 and c13 were dd-trustworthy; the same document rows came back as
+    c21 and c22 labelled dd-feature-parity, and nothing compared them.
+
+    Until 027's work key there was nothing to compare them BY -- the titles had
+    been rewritten, which is the producer working as designed. The producer
+    cannot catch this and must not be asked to: it is forbidden to see previous
+    batches, because that is what keeps a reappearing candidate a signal. The
+    loader can see them, so the loader is where the comparison belongs.
+    """
+
+    OBJ = "    objective_ref: dd-trustworthy\n"
+
+    def _one(self, *, objective: str, title="Forward the four order filters"):
+        body = ONE.replace("    objective_ref: null\n",
+                           f"    objective_ref: {objective}\n")
+        return body.replace("  - title: Forward the four order filters\n",
+                            f"  - title: {title}\n")
+
+    def test_the_same_work_under_a_new_objective_is_refused(
+            self, dsns, console, tmp_path):
+        first = loader.load(_doc(tmp_path, self._one(objective="dd-trustworthy"),
+                                 name="a.md"),
+                            source_sha="b198634")
+        assert first["candidates"] == 1
+
+        # Same document row, same section, RETITLED and relabelled -- which is
+        # exactly the shape batch 9 arrived in.
+        doc = _doc(tmp_path, self._one(objective="dd-feature-parity",
+                                       title="Order filters, restated"),
+                   name="b.md")
+        with pytest.raises(loader.LoadRefused) as exc:
+            loader.load(doc, source_sha="b198634")
+        assert "trust ranks above parity" in str(exc.value)
+        assert "dd-trustworthy" in str(exc.value)
+
+    def test_the_real_pair_shape_over_a_RESOLVED_document_row(
+            self, dsns, console, tmp_path):
+        """c12 -> c21, in miniature, keyed to an actual row of the gap list.
+
+        The test above happens to key by heading only, because its section is
+        not a prefix of any real row. This one resolves, so the strong path --
+        two different quotations of one document row -- is covered rather than
+        assumed. If the resolver stops resolving, this fails and the other
+        test does not.
+        """
+        short = ONE.replace(
+            "        section: 'Daily — Order filtering: status, payment, location'",
+            "        section: 'Weekly — coupon and discount performance'").replace(
+            "    objective_ref: null\n",
+            "    objective_ref: dd-trustworthy\n").replace(
+            "  - title: Forward the four order filters\n", "  - title: Coupons\n")
+        full = ONE.replace(
+            "        section: 'Daily — Order filtering: status, payment, location'",
+            "        section: 'Weekly — Coupon and discount performance: usage, "
+            "discount total, orders, AOV with/without'").replace(
+            "    objective_ref: null\n",
+            "    objective_ref: dd-feature-parity\n").replace(
+            "  - title: Forward the four order filters\n",
+            "  - title: Coupon and discount performance, restated\n")
+
+        loader.load(_doc(tmp_path, short, name="a.md"), source_sha="b198634")
+        key = console.execute(
+            "SELECT work_key FROM candidates ORDER BY id DESC LIMIT 1"
+        ).fetchone()["work_key"]
+        assert "#row:" in key, "the strong path is not being exercised"
+
+        with pytest.raises(loader.LoadRefused) as exc:
+            loader.load(_doc(tmp_path, full, name="b.md"), source_sha="b198634")
+        assert "dd-trustworthy" in str(exc.value)
+
+    def test_the_refusal_leaves_no_batch_row(self, dsns, console, tmp_path):
+        loader.load(_doc(tmp_path, self._one(objective="dd-trustworthy"),
+                         name="a.md"), source_sha="b198634")
+        before = console.execute(
+            "SELECT count(*) AS n FROM candidate_batches").fetchone()["n"]
+        with pytest.raises(loader.LoadRefused):
+            loader.load(_doc(tmp_path,
+                             self._one(objective="dd-feature-parity",
+                                       title="Order filters, restated"),
+                             name="b.md"), source_sha="b198634")
+        after = console.execute(
+            "SELECT count(*) AS n FROM candidate_batches").fetchone()["n"]
+        assert before == after
+
+    def test_a_note_permits_it_and_is_recorded_on_the_batch(
+            self, dsns, console, tmp_path):
+        """An override costs a sentence, and the sentence outlives the shell.
+
+        The same discipline approve.py's repeat_overrides carry: a person may
+        say it is different this time, and what they said is kept.
+        """
+        loader.load(_doc(tmp_path, self._one(objective="dd-trustworthy"),
+                         name="a.md"), source_sha="b198634")
+        out = loader.load(
+            _doc(tmp_path, self._one(objective="dd-feature-parity",
+                                     title="Order filters, restated"),
+                 name="b.md"),
+            source_sha="b198634",
+            objective_change_note="The netting is not exercised by live data, "
+                                  "so this is parity work now.")
+        assert len(out["relabelled"]) == 1
+        note = console.execute(
+            "SELECT note FROM candidate_batches WHERE id=%s",
+            (out["batch_id"],)).fetchone()["note"]
+        assert "OBJECTIVE CHANGED" in note
+        assert "netting is not exercised" in note
+        assert "dd-trustworthy -> dd-feature-parity" in note
+
+    def test_the_same_objective_on_the_same_work_is_not_a_change(
+            self, dsns, console, tmp_path):
+        loader.load(_doc(tmp_path, self._one(objective="dd-trustworthy"),
+                         name="a.md"), source_sha="b198634")
+        out = loader.load(_doc(tmp_path,
+                               self._one(objective="dd-trustworthy",
+                                         title="Order filters, restated"),
+                               name="b.md"), source_sha="b198634")
+        assert out["relabelled"] == []
+
+    def test_different_work_under_a_different_objective_is_not_a_change(
+            self, dsns, console, tmp_path):
+        """The check is on the WORK, not on the batch.
+
+        A new row that happens to carry a different objective from some
+        unrelated earlier row is not a re-labelling, and refusing it would make
+        the loader refuse every mixed batch after the first.
+        """
+        loader.load(_doc(tmp_path, self._one(objective="dd-trustworthy"),
+                         name="a.md"), source_sha="b198634")
+        other = ONE.replace(
+            "    objective_ref: null\n",
+            "    objective_ref: dd-feature-parity\n").replace(
+            "        section: 'Daily — Order filtering: status, payment, location'",
+            "        section: 'Weekly — Coupon and discount performance'").replace(
+            "  - title: Forward the four order filters\n",
+            "  - title: Coupons\n")
+        out = loader.load(_doc(tmp_path, other, name="c.md"),
+                          source_sha="b198634")
+        assert out["relabelled"] == []
+
+    def test_a_dry_run_reports_the_change_and_writes_nothing(
+            self, dsns, console, tmp_path):
+        loader.load(_doc(tmp_path, self._one(objective="dd-trustworthy"),
+                         name="a.md"), source_sha="b198634")
+        before = console.execute(
+            "SELECT count(*) AS n FROM candidates").fetchone()["n"]
+        out = loader.load(_doc(tmp_path,
+                               self._one(objective="dd-feature-parity",
+                                         title="Order filters, restated"),
+                               name="b.md"),
+                          source_sha="b198634", dry_run=True)
+        after = console.execute(
+            "SELECT count(*) AS n FROM candidates").fetchone()["n"]
+        assert before == after
+        assert out["batch_id"] is None
+        assert [r["before"] for r in out["relabelled"]] == [["dd-trustworthy"]]
+
+    def test_an_unkeyed_row_cannot_trigger_it(self, dsns, console, tmp_path):
+        """No work key, no comparison -- and no false positive off the title.
+
+        A row the resolver could not key falls back to (title, repo) for the
+        repeat ceiling, but NOT here: charging a title match with an objective
+        change would resurrect exactly the identity 027 removed.
+        """
+        no_section = ONE.replace(
+            "        section: 'Daily — Order filtering: status, payment, location'\n",
+            "")
+        a = no_section.replace("    objective_ref: null\n",
+                               "    objective_ref: dd-trustworthy\n")
+        b = no_section.replace("    objective_ref: null\n",
+                               "    objective_ref: dd-feature-parity\n")
+        loader.load(_doc(tmp_path, a, name="a.md"), source_sha="b198634")
+        out = loader.load(_doc(tmp_path, b, name="b.md"), source_sha="b198634")
+        assert out["relabelled"] == []

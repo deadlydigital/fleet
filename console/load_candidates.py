@@ -264,13 +264,73 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def relabelled_objectives(conn, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rows whose work has been here before under a DIFFERENT objective.
+
+    THE ONE MECHANICAL HALF OF THE OBJECTIVE DEFECT, and it needs the work key
+    027 added. Candidates 12 and 13 were labelled `dd-trustworthy` by a person
+    loading batch 8 by hand. Eleven days later the producer emitted the same
+    two rows of the same document as 21 and 22, labelled `dd-feature-parity`,
+    and nothing compared them -- because until the work key there was nothing
+    to compare them BY.
+
+    The producer cannot catch this and must not be asked to: it is forbidden to
+    see previous batches, which is what keeps a reappearing candidate a signal
+    (specs/approval-surface.md §7). The loader can see them, so the loader is
+    where the comparison belongs.
+
+    A re-scoping is legitimate -- work does change objective. What is not
+    legitimate is it happening silently, in the one field carrying
+    principles.md's top ranking rule, in a batch that said nothing about it.
+    """
+    out = []
+    for r in rows:
+        if not r["work_key"]:
+            continue
+        prior = conn.execute(
+            "SELECT id, objective_ref, batch_id FROM candidates"
+            " WHERE work_key = %s AND objective_ref IS DISTINCT FROM %s"
+            " ORDER BY id", (r["work_key"], r["objective_ref"])).fetchall()
+        if prior:
+            out.append({"title": r["title"], "work_key": r["work_key"],
+                        "now": r["objective_ref"],
+                        "before": sorted({str(p["objective_ref"]) for p in prior}),
+                        "prior_ids": [p["id"] for p in prior]})
+    return out
+
+
+def audit_objectives() -> List[Dict[str, Any]]:
+    """Work already loaded that carries more than one objective. Read-only.
+
+    The enforcement above runs at the load and cannot reach rows that are
+    already here -- c21 and c22 among them. This is the answer to "is it
+    happening right now", and it writes nothing: correcting a loaded row would
+    be reconciling, which contracts/candidate-producer.yaml refuses by name,
+    and the correction for a stale candidate is the next batch superseding it.
+    """
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT work_key, array_agg(id ORDER BY id) AS ids,"
+            " array_agg(DISTINCT objective_ref) AS objectives,"
+            " array_agg(DISTINCT batch_id) AS batches"
+            " FROM candidates WHERE work_key IS NOT NULL"
+            " GROUP BY work_key HAVING count(DISTINCT objective_ref) > 1"
+            " ORDER BY work_key").fetchall()]
+
+
 def load(document: Path, *, source_sha: str, note: str | None = None,
-         dry_run: bool = False) -> Dict[str, Any]:
+         dry_run: bool = False,
+         objective_change_note: str | None = None) -> Dict[str, Any]:
     """One batch and its rows, in one transaction.
 
     The transaction is the same argument approve.py makes: a batch row with
     half its candidates is a state nobody tracks and nobody would notice,
     because the surface would render it as a complete batch.
+
+    `objective_change_note` is a PERSON saying the objective really did change,
+    on the same argument approve.py's repeat_overrides rest on: an override
+    costs a sentence, and the sentence is recorded on the batch rather than
+    lost to a shell history. Without one, a silent re-labelling refuses.
     """
     block = parse_block(document)
     rows = validate(block)
@@ -304,11 +364,43 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
                     for r in rows if not r["work_key"]],
     }
     if dry_run:
+        with db.connect() as conn:
+            summary["relabelled"] = relabelled_objectives(conn, rows)
         summary["batch_id"] = None
         summary["candidate_ids"] = []
         return summary
 
     with db.writer() as conn:
+        # BEFORE THE BATCH ROW. A refusal must leave nothing behind, which is
+        # what test_a_refused_block_leaves_no_batch_row already holds this
+        # function to.
+        relabelled = relabelled_objectives(conn, rows)
+        summary["relabelled"] = relabelled
+        if relabelled and not (objective_change_note or "").strip():
+            lines = "; ".join(
+                f"{r['title'][:50]!r} is {r['now']} here and was "
+                f"{'/'.join(r['before'])} on candidate(s) "
+                f"{', '.join(str(i) for i in r['prior_ids'])}"
+                for r in relabelled)
+            raise LoadRefused(
+                f"{len(relabelled)} candidate(s) change the objective of work "
+                f"that has been here before: {lines}. objective_ref carries "
+                f"principles.md's top ranking rule -- trust ranks above parity "
+                f"-- and the producer cannot see previous batches, so it "
+                f"cannot know it is re-labelling. Either the earlier label was "
+                f"wrong, or this one is, or the work really was re-scoped. All "
+                f"three are decisions; none of them is a load. Say which with "
+                f"--objective-change-note, and it is recorded on the batch.")
+        if relabelled:
+            note = "\n\n".join(filter(None, [
+                note,
+                "OBJECTIVE CHANGED, and this is the sentence that permitted "
+                "it: " + objective_change_note.strip() + "\n" + "\n".join(
+                    f"  {r['title'][:60]}: {'/'.join(r['before'])} -> "
+                    f"{r['now']} (was candidate(s) "
+                    f"{', '.join(str(i) for i in r['prior_ids'])})"
+                    for r in relabelled)]))
+
         conn.execute(
             "INSERT INTO candidate_batches (source_document, source_sha,"
             " source_repo, note) VALUES (%s,%s,'fleet',%s)",
@@ -422,16 +514,38 @@ def backfill(document: Path, batch_id: int, *, dry_run: bool = False) -> Dict[st
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Load a producer's fleet-candidates block into the database.")
-    ap.add_argument("document", type=Path)
+    ap.add_argument("document", type=Path, nargs="?")
+    ap.add_argument("--audit-objectives", action="store_true",
+                    help="report work already loaded that carries more than "
+                         "one objective, and write nothing")
     ap.add_argument("--source-sha", help="the fleet commit the document is at; "
                                          "required unless --backfill-batch")
     ap.add_argument("--note", help="candidate_batches.note")
+    ap.add_argument("--objective-change-note", metavar="WHY",
+                    help="permit this batch to change the objective of work "
+                         "that has been here before, and say why. Recorded on "
+                         "the batch: objective_ref carries principles.md's "
+                         "trust-above-parity rule, and the producer cannot see "
+                         "earlier batches, so it cannot know it is re-labelling")
     ap.add_argument("--backfill-batch", type=int, metavar="N",
                     help="fill 025's three columns on an existing hand-loaded "
                          "batch instead of creating a new one")
     ap.add_argument("--dry-run", action="store_true",
                     help="parse, validate and print; write nothing")
     args = ap.parse_args(argv)
+
+    if args.audit_objectives:
+        rows = audit_objectives()
+        for r in rows:
+            print(f"  c{', c'.join(str(i) for i in r['ids'])}  "
+                  f"{' / '.join(sorted(str(o) for o in r['objectives']))}  "
+                  f"batches {r['batches']}")
+            print(f"      {r['work_key']}")
+        print(f"{len(rows)} piece(s) of work carry more than one objective")
+        return 0
+
+    if args.document is None:
+        ap.error("a document is required unless --audit-objectives")
 
     try:
         if args.backfill_batch is not None:
@@ -448,7 +562,8 @@ def main(argv=None) -> int:
                 ap.error("--source-sha is required: a batch attributable to a "
                          "document without a commit is attributable to a morning")
             out = load(args.document, source_sha=args.source_sha,
-                       note=args.note, dry_run=args.dry_run)
+                       note=args.note, dry_run=args.dry_run,
+                       objective_change_note=args.objective_change_note)
             what = "would load" if args.dry_run else f"loaded batch {out['batch_id']}:"
             print(f"{what} {out['candidates']} candidate(s), {out['probes']} "
                   f"probe(s), {out['signals']} signal(s), bands {out['bands']}")
@@ -457,6 +572,10 @@ def main(argv=None) -> int:
                   f"{wk['topic']} keyed by heading only, {wk['none']} not keyed")
             for u in out["unkeyed"]:
                 print(f"    NOT KEYED {u['title'][:50]!r}: {u['why']}")
+            for r in out.get("relabelled") or []:
+                print(f"    OBJECTIVE CHANGED {r['title'][:44]!r}: "
+                      f"{'/'.join(r['before'])} -> {r['now']} "
+                      f"(was c{', c'.join(str(i) for i in r['prior_ids'])})")
             if out["candidate_ids"]:
                 print(f"  candidates: {out['candidate_ids']}")
     except LoadRefused as exc:

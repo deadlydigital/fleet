@@ -961,6 +961,52 @@ wrong candidate and an unbounded spend, and §2.5 passes no `repeat_overrides`
 on the unattended path. What must not happen is describing it as the thing that
 catches §1.5's duplicates. It catches neither. Gates 2 and 3 do.
 
+### 9.4 The producer flattened `objective_ref`, and it carries the top ranking rule — **FIXED 10 Sep 2026** (shape check, loader)
+
+Batch 9 emitted `objective_ref: dd-feature-parity` on **all nine** candidates,
+with no justification anywhere in the block. Two of those nine are document
+rows a **person** labelled `dd-trustworthy` when batch 8 was loaded by hand —
+provably the same work, since 027's work key matches them:
+
+    c12 -> c21   net revenue                dd-trustworthy -> dd-feature-parity
+    c13 -> c22   compare any period         dd-trustworthy -> dd-feature-parity
+
+`objectives-2026-Q4.yaml` predicted this in its own comments, twice:
+*"without a baseline, this objective ranks 'build another report' forever"*
+(dd-feature-parity) and *"parity work must not outrank correctness work by
+default"* (dd-trustworthy). principles.md makes trust-above-parity the first
+ranking rule, and `objective_ref` is the only field carrying which of the two a
+row serves. It was flattened to a constant and nothing noticed.
+
+**This is a producer defect, not a ranking question**, and it is worth fixing
+whether or not it ever separates a pair. The producer is not at fault for being
+unable to see batch 8 — §7 forbids that deliberately. It is at fault for
+inferring the objective from the document's subject and writing nothing down.
+
+**What was built**, in the two places that can each see half of it:
+
+* **`contracts/checks/candidate_block_shape.py`** requires a block-level
+  `objectives_considered`: at least 25 words naming at least **two** real
+  objective ids. It does not check that a label is *right* — no check can, that
+  is the judgement the field exists to record — it checks that more than one
+  objective was weighed in writing, on the same argument `unasked_question`
+  rests on. The objective spread is printed on every passing run, with
+  "EVERY ROW" called out when a batch is flat.
+* **`console/load_candidates.py`** refuses a batch that changes the objective of
+  work already loaded under a different one, matched on `work_key`. The
+  producer cannot catch this; the loader can. A deliberate re-scoping is
+  permitted by `--objective-change-note`, which costs a sentence and records it
+  on `candidate_batches.note` — the same discipline `repeat_overrides` carry.
+* **`--audit-objectives`** reports rows already loaded that disagree, read-only.
+
+**The two live rows are NOT corrected.** `contracts/candidate-producer.yaml`
+refuses reconciliation by name — *"a candidate that reappears is signal, and
+quietly refreshing it erases that"* — and an UPDATE here would be exactly that.
+c21 and c22 are superseded the next time the producer runs, and that run can no
+longer re-label silently.
+
+---
+
 ### 9.3 A task that fails after verification writes no reason to the database
 
 Which is *why* 21 and 34 are unexplained. A task that fails a check records what

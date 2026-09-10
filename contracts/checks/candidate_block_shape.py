@@ -83,6 +83,33 @@ PER_CANDIDATE_SHA = "verified_sha"
 MIN_RATIONALE_WORDS = 12
 MIN_UNASKED_WORDS = 20
 
+#: `objectives_considered`, and the two objectives a batch must have weighed.
+#:
+#: BATCH 9 PUT `dd-feature-parity` ON ALL NINE ROWS with no justification
+#: anywhere in the block, and two of those rows are document rows a PERSON had
+#: labelled `dd-trustworthy` eleven days earlier (candidates 12 and 13 became
+#: 21 and 22 -- the same work, provably, since they share a work_key).
+#:
+#: The objectives file predicted this in its own comments, twice:
+#:
+#:     dd-feature-parity  "NEEDS A BASELINE ... Without that, this objective
+#:                         ranks 'build another report' forever."
+#:     dd-trustworthy     "Parity work must not outrank correctness work by
+#:                         default."
+#:
+#: A producer handed the Metorik gap list and a list of objective ids will
+#: infer that a gap list serves the gap objective. That inference is what
+#: flattened the one field carrying principles.md's top ranking rule -- trust
+#: above parity -- into a constant, and nothing anywhere noticed.
+#:
+#: This does NOT check that the labels are right; no check can, that is the
+#: judgement the field exists to record. It checks that more than one objective
+#: was WEIGHED, in writing, on the same argument `unasked_question` is required
+#: on: a producer made to write the uncomfortable sentence has to look at the
+#: thing the sentence is about.
+MIN_OBJECTIVES_WORDS = 25
+MIN_OBJECTIVES_NAMED = 2
+
 #: The closed probe vocabulary, named once. run_probe() below dispatches on
 #: these and console/load_candidates.py refuses a block carrying anything else,
 #: so the loader can check the vocabulary without holding a second copy of it
@@ -315,6 +342,37 @@ def main(argv=None) -> int:
             "once, on the block, so a batch approved off it does not read as "
             "evidence-backed when it is inference-backed.")
 
+    # THE OBJECTIVE HAS TO BE WEIGHED, NOT INFERRED FROM THE DOCUMENT'S TITLE.
+    #
+    # Loaded here rather than at the bottom because this check needs the ids
+    # and the per-candidate loop below needs the same set; one read, one
+    # answer.
+    objectives = objective_ids()
+    considered = str(block.get("objectives_considered") or "")
+    named = sorted(o for o in objectives
+                   if re.search(rf"(?<![\w-]){re.escape(o)}(?![\w-])", considered))
+    if len(considered.split()) < MIN_OBJECTIVES_WORDS:
+        problems.append(
+            f"the block must carry `objectives_considered`: at least "
+            f"{MIN_OBJECTIVES_WORDS} words naming which objectives were "
+            f"weighed for these rows and why they landed where they did. "
+            f"objectives-2026-Q4.yaml says of dd-feature-parity that without "
+            f"a baseline it 'ranks build another report forever', and of "
+            f"dd-trustworthy that 'parity work must not outrank correctness "
+            f"work by default'. Batch 9 put dd-feature-parity on all nine "
+            f"rows, two of which a person had labelled dd-trustworthy eleven "
+            f"days earlier, and the block said nothing about it.")
+    elif len(named) < MIN_OBJECTIVES_NAMED:
+        problems.append(
+            f"`objectives_considered` names {len(named)} objective(s) "
+            f"({', '.join(named) or 'none'}) and must name at least "
+            f"{MIN_OBJECTIVES_NAMED} by id. Weighing one objective is not "
+            f"weighing. principles.md ranks trust above parity, and the field "
+            f"that carries which of the two a row serves is the one this "
+            f"producer flattened to a constant -- so the comparison has to be "
+            f"written down, even when the answer is that every row is parity. "
+            f"Known ids: {', '.join(sorted(objectives))}.")
+
     candidates = block.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         return fail(f"{rel} declares no candidates. A producer that ran and "
@@ -333,7 +391,6 @@ def main(argv=None) -> int:
     if dupes:
         problems.append(f"{rel} emits duplicate titles: {sorted(dupes)}")
 
-    objectives = objective_ids()
     for n, c in enumerate(candidates, start=1):
         problems += check_candidate(n, c, REPOS, objectives, None)
 
@@ -349,6 +406,19 @@ def main(argv=None) -> int:
           f"re-executed at HEAD and all holding, {signals} carrying an "
           f"hib_signal, none setting a disposition, ordering declared "
           f"unranked.")
+
+    # PRINTED WHETHER OR NOT IT IS A PROBLEM. A batch where every row serves
+    # one objective may be perfectly honest, and it is also the exact shape of
+    # the defect -- so the tally goes in front of whoever reads the run rather
+    # than being inferred from nine identical lines further down the file.
+    spread: dict = {}
+    for c in candidates:
+        spread[c.get("objective_ref")] = spread.get(c.get("objective_ref"), 0) + 1
+    flat = " -- EVERY ROW, which objectives_considered had to argue for" \
+        if len(spread) == 1 and len(candidates) > 1 else ""
+    print(f"    objectives: "
+          f"{', '.join(f'{k or 'none'}={v}' for k, v in sorted(spread.items(), key=lambda kv: str(kv[0])))}"
+          f"{flat}; considered: {', '.join(named)}")
     return 0
 
 
