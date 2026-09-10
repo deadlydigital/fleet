@@ -1466,6 +1466,57 @@ it is the whole of what this does.
 
 ---
 
+### 9.13 `work_type` does not identify a contract, and three of seven are ambiguous
+
+Found on 10 Sep by building `console/autoqueue.py`, which has to answer
+"which contract does this spec's work run under" and could not.
+
+    work_type            repo                     contracts
+    dd_api               deadly-digital-platform  3   <-- AMBIGUOUS
+    dd_frontend          deadly-digital-platform  2   <-- AMBIGUOUS
+    research             fleet                    2   <-- AMBIGUOUS
+    candidate_producer / dd_docs / dd_infra / draft_spec   1 each
+
+The extra ones are **spent single-task contracts** — `dd-order-filters.yaml`
+(task 2, merged 30 Aug), `dd-acquiring-page.yaml` (task 3, 30 Aug),
+`dd-utm-source-alias.yaml` (task 7, 31 Aug), `research-metorik-gap.yaml`. They
+were correct when written and were never retired, and `dd-acquiring-page.yaml`
+still describes itself as *"the default frontend contract plus this task's own
+acceptance check"* — a default contract that `023_platform_floor.sql` deleted
+and floored.
+
+**What this has already been doing.**
+`contracts/checks/draft_spec_shape.py`'s `load_protected()` resolves a spec's
+work_type with `CONTRACTS.glob("*.yaml")` — unsorted — and returns the first
+match. So **every draft spec has been validated against whichever contract
+readdir happened to yield**, for both of the work types that auto-merge. Its
+own docstring argues carefully for judging a spec against *the* contract its
+work will run under, *"which is also the contract the resulting task will
+actually run under"*. That is the right rule; the lookup does not implement it,
+because at the time it was written each work_type had one contract.
+
+Nothing is known to have gone wrong: the spent contracts are narrow, so a spec
+declaring paths outside them would have failed the shape check loudly rather
+than passed wrongly. The defect is that which contract answers is decided by
+directory order.
+
+**What autoqueue does instead.** Among contracts matching `(work_type, repo)`,
+keep those whose writable set covers **every** declared path; if exactly one
+survives, that is the contract. Otherwise refuse. That is a real discriminator
+rather than a preference — a contract that cannot write what the spec says it
+will write is not the contract the work runs under — and it is why a spec about
+the orders page resolves to `dd-analytics-frontend.yaml` while one naming
+`Sidebar.tsx` resolves to `dd-acquiring-page.yaml`.
+
+**Not fixed here, and it is the sharpest edge on the automation.** Retiring
+four contracts is four decisions about what a boundary was for, and
+`draft_spec_shape.py`'s lookup is a producer-facing check. Both are the user's
+to make. Until then the unattended loop refuses any spec whose declared paths
+do not pick out exactly one contract — which is the safe direction, and is a
+refusal that will read as mysterious the first time it fires.
+
+---
+
 ## 10. The first dry run over the live pool, and what it found
 
 Run 9 Sep 2026 against the twelve open candidates, at platform `6fd8ddd`,

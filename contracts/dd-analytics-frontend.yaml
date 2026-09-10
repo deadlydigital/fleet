@@ -81,7 +81,12 @@
 # A green run here establishes that the tree typechecks, that 319 tests still
 # pass, that the ONE test the change added fails without the change, and that no
 # paired group landed in half. It does not establish that the page says a true
-# thing. See auto_merge below, which is `false` for exactly that reason.
+# thing, and it does not establish that the spec was implemented -- task 53
+# shipped a requirement unbuilt through all four.
+#
+# `auto_merge` was `false` for exactly that reason and is `true` since 10 Sep
+# 2026. The paragraph beside it is what that costs; it is not a tidy-up and it
+# should be read before this contract is relied on.
 
 work_type: dd_frontend
 repo: deadly-digital-platform
@@ -362,7 +367,46 @@ verification:
 # becomes a default worth inverting -- the same way
 # contracts/deadly-digital-platform-api.yaml's `true` is scoped to the parity
 # push rather than stated as a design.
-auto_merge: false
+# TRUE SINCE 10 SEP 2026, AND THIS IS THE ONE THAT COSTS SOMETHING.
+#
+# Scoped to the parity push and reversed at the first customer, on
+# specs/unattended-operation.md §7's list with the rest. Deadly Digital has no
+# users, HIB is not using it, and every change here is a revert away. That is
+# the same argument deadly-digital-platform-api.yaml makes, and it holds here.
+#
+# WHAT THIS SPECIFIC FLIP LOSES, WRITTEN HERE BECAUSE THIS IS WHERE SOMEBODY
+# WILL READ IT
+# ---------------------------------------------------------------------------
+# specs/auto-approval.md §9.9. On 10 Sep task 53 shipped §2.5 of its own spec
+# unbuilt -- the order table's cells were to set the filters, and the diff did
+# not touch row rendering at all. tsc passed, 319 vitest tests passed,
+# new_test_bites.sh passed, paired_paths.py passed. NONE OF THEM CAN FAIL FOR
+# A MISSING REQUIREMENT, and a fifth would not change that: tsc proves it
+# compiles, the suite proves nothing broke, the bite check proves the ONE test
+# the change added fails without it, and the pairing proves both halves of a
+# pair moved.
+#
+# It was caught because this line said `false` and a person compared the spec
+# to the diff. WITH IT TRUE, NOBODY MAKES THAT COMPARISON. The spec is still
+# read once, when the draft is accepted -- but that reading judges whether the
+# work is RIGHT, before it exists. Nothing afterwards asks whether it was DONE.
+#
+# AND THE CHECKLIST DOES NOT REACH THIS. The review page lists a spec's
+# numbered requirements beside the diff (console/requirements.py, built 10 Sep
+# for exactly this problem). It renders on /tasks/{id}. On the unattended path
+# nobody opens /tasks/{id}: the task is queued by console/autoqueue.py, claimed
+# by the runner, merged by automerge.py and deployed by run_autodeploy.py
+# without a request ever being made. A reader that must be visited is not a
+# reader on a path with no visitor. brief/pass_.py lists the requirements of
+# anything merged unattended, which is the only surface a person is known to
+# look at afterwards -- and "afterwards" is the whole of what is on offer here.
+#
+# So the honest statement is: a frontend feature can now ship with four of five
+# requirements, every check green, nothing failed, and no revert triggered
+# because there is nothing to revert. The first evidence is somebody using it.
+# That is the trade, and it is the reason §7's reversal is about restoring a
+# reader as much as about the cost of a bad merge.
+auto_merge: true
 
 # 600 rather than the retired contract's 800. A page, its proxy and one render
 # test is a few hundred lines; a frontend diff approaching 800 under a contract

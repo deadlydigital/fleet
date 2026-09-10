@@ -319,11 +319,26 @@ def test_every_shipped_group_could_actually_bite():
                 f"writing neither and the check cannot fail")
 
 
-def test_the_shipped_contract_does_not_merge_unattended():
-    """paired_paths.py establishes that both files moved. It cannot establish
-    that the label is right, and that is the one thing the pairing exists for.
-    Until a spec has run under this a few times, a person looks."""
+def test_when_nobody_reads_the_diff_the_pairing_is_what_is_left():
+    """This asserted `auto_merge is False` until 10 Sep 2026, on the grounds
+    that "until a spec has run under this a few times, a person looks". One
+    spec ran under it -- task 53 -- and it shipped §2.5 unbuilt through four
+    green checks, which is what §9.9 records. The flip to `true` was then made
+    deliberately, with what it costs written beside it in the contract.
+
+    So the property worth holding is no longer "a person looks". It is that
+    the mechanical half survived the flip: with nobody comparing the spec to
+    the diff, paired_paths.py is the only thing that still says both halves of
+    a pair landed, and a contract that auto-merges with no groups has neither
+    a reader nor a pairing.
+    """
     import yaml
     c = yaml.safe_load(
         (ROOT / "contracts" / "dd-analytics-frontend.yaml").read_text())
-    assert c["auto_merge"] is False
+    if c.get("auto_merge") is False:
+        return                      # a person looks; the pairing is a second opinion
+    assert c.get("paired_paths"), (
+        "this contract merges unattended and declares no paired_paths. Nothing "
+        "reads the spec (§9.9) and now nothing checks that both halves of a "
+        "change landed either -- the page half of the orders pair ships four "
+        "controls that silently return unfiltered rows.")

@@ -23,7 +23,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from console import (approve, config, db, decide, deploys, gitdiff, merge,
+from console import (approve, autoqueue, config, db, decide, deploys,
+                     gitdiff, merge,
                      morning, queries, requirements, reverify, version)
 from runner import worktree
 
@@ -479,13 +480,57 @@ def accept(request: Request, task_id: int,
                        f"UPDATE tasks SET status='MERGED' WHERE id={task_id};"]})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
+    # ---- and the next task, if this was a draft spec -------------------
+    #
+    # THE STEP THIS REPLACES WAS A HAND INSERT. approve_batch makes only
+    # draft-spec tasks, deliberately, so every code task on this host was
+    # typed by a person (tasks 49 and 53 both were). See console/autoqueue.py
+    # for what that costs as well as what it saves -- with the code task
+    # auto-merging, nobody ever compares the spec to the diff, and the
+    # requirements checklist on this page is not reached by a path that never
+    # opens this page.
+    #
+    # AFTER the verdict, never before. A task queued against a merge that was
+    # not recorded would be work nobody could trace back to a decision, and
+    # the failure it comes from -- a recorded merge with no task -- is
+    # repairable by hand while the reverse is not.
+    #
+    # A refusal here does NOT undo the merge, and must not read as though it
+    # might: the branch is in the base and pushed. It is reported loudly and
+    # the task is queued by hand.
+    queued = None
+    if (contract.get("work_type") == "draft_spec"
+            and not result.already_merged):
+        try:
+            queued = autoqueue.from_accepted_draft(
+                task, patch or {}, result.base_sha_after)
+        except autoqueue.QueueRefused as exc:
+            _record_outcome(task_id, {
+                "ok": False, "loud": True,
+                "headline": "Merged and recorded, but the code task was NOT queued",
+                "detail": [str(exc),
+                           "The draft spec is merged and pushed; that stands.",
+                           "Queue the work it describes by hand with "
+                           "`./fleet task add`."]})
+            return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+        except Exception as exc:                              # noqa: BLE001
+            log.warning("task %s: autoqueue failed: %s", task_id, exc)
+            _record_outcome(task_id, {
+                "ok": False, "loud": True,
+                "headline": "Merged and recorded, but the code task was NOT queued",
+                "detail": [f"{type(exc).__name__}: {exc}",
+                           "The draft spec is merged and pushed; that stands."]})
+            return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
     _record_outcome(task_id, {
         "ok": True,
         "headline": ("Recorded as MERGED; the branch was already in "
                      + task["base_branch"] + ", so no merge was performed"
                      if result.already_merged else
                      "Merged, pushed and recorded"),
-        "detail": result.detail})
+        "detail": result.detail + (
+            [f"Queued task {queued.task_id}: {queued.title}"] + queued.detail
+            if queued else [])})
     return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
 

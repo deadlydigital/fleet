@@ -18,10 +18,38 @@ Type=oneshot
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/fleet
-# --dry-run FOR THE FIRST NIGHTS, exactly as fleet-automerge is. It decides
-# and prints; deploy.sh is not invoked. Take the flag out when the dry runs
-# have been read and are boring -- and not before auto-merge has had its own.
-ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_autodeploy.py --dry-run
+# LIVE SINCE 10 SEP 2026. --dry-run came out with the last two human steps in
+# the parity loop, and what follows is the argument, because a flag that is
+# absent looks like a flag nobody thought about.
+#
+# WHAT IT DEPLOYS. Only what this fleet merged, and only when five refusals all
+# pass: production not drifted, the drift reading not STALE, no migration in
+# the range, the range containing a merge this fleet made, and production not
+# already on main. Those are unchanged and none of them is relaxed here.
+#
+# WHAT IT NOW DEPLOYS THAT IT DID NOT. Frontend work, unattended, end to end:
+# console/autoqueue.py queues a code task when a draft spec is accepted,
+# dd-analytics-frontend.yaml sets auto_merge: true, and this ships the result.
+# A person accepts one draft spec and the feature reaches the running site
+# without another request being made.
+#
+# AND THAT IS THE THING TO KNOW BEFORE LEAVING IT ON. specs/auto-approval.md
+# §9.9: no contract check reads the spec, and task 53 shipped a requirement
+# unbuilt through four green checks. With auto_merge true nobody compares the
+# spec to the diff, and the requirements checklist that would help renders on
+# /tasks/{id} -- a page nothing on this path ever opens. So this timer can put
+# a partially-built feature in front of a user, with every gate green and no
+# revert triggered, because a missing requirement is not a failure.
+#
+# The brief lists the requirements of anything merged unattended, which is the
+# only place a person is known to look afterwards. Afterwards is what is on
+# offer; there is no before on this path any more.
+#
+# REVERSE AT THE FIRST CUSTOMER, with the rest of
+# specs/unattended-operation.md §7. A deploy is the one step here that a revert
+# does not fully undo on its own -- it undoes the code, not the fact that
+# somebody saw it.
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_autodeploy.py
 
 # NOT sandboxed the way the console is. deploy.sh builds images, runs
 # migrations and swaps containers: it needs the docker socket and a writable

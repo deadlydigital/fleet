@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 
 import psycopg
 
+from console import requirements
 from . import sources as S
 from .claims import Claim
 from .todo import read_todo
@@ -121,7 +122,11 @@ _OVERNIGHT_RUNS_SQL = """
              ORDER BY s.id DESC LIMIT 1) AS merge_commit,
            (SELECT s.payload->'gates'->>'test_bit' FROM run_steps s
              WHERE s.run_id = r.id AND s.step_type = 'HUMAN_DECISION'
-             ORDER BY s.id DESC LIMIT 1) AS test_bit
+             ORDER BY s.id DESC LIMIT 1) AS test_bit,
+           -- THE SPEC ITSELF, for the requirements list below. Carried here
+           -- rather than fetched per row: the brief reads once and the pass
+           -- has no second connection to spend.
+           t.spec_md
       FROM runs r JOIN tasks t ON t.id = r.task_id
      WHERE r.completed_at > %(since)s
      ORDER BY r.completed_at
@@ -431,6 +436,38 @@ def _overnight_claims(r: S.Reader, since) -> List[Claim]:
         key, f"{len(rows)} run(s) finished: " + ", ".join(parts),
         source="fleet:runs", as_of=now, value_num=len(rows),
         query_key="overnight_runs", query_version=1))
+
+    # WHAT THE SPEC ASKED FOR, FOR ANYTHING THAT MERGED WITH NOBODY LOOKING.
+    #
+    # specs/auto-approval.md §9.9: no contract check reads the spec, and task
+    # 53 shipped a requirement unbuilt through four green ones. That was caught
+    # because the frontend contract set auto_merge: false and a person compared
+    # the spec to the diff. It no longer does, so nobody makes that comparison.
+    #
+    # The requirements checklist on /tasks/{id} does not help here: on the
+    # unattended path nothing opens that page. This is the only surface a
+    # person is known to read afterwards, so the list goes here -- after the
+    # fact, which is the whole of what is on offer once the merge is automatic.
+    #
+    # It CHECKS NOTHING. §9.12 measured the cheap matcher that would and found
+    # it worse than nothing. This is a list beside a merge, and the reader is
+    # the reader.
+    for x in unattended:
+        reqs = requirements.parse(x["spec_md"])
+        if not reqs:
+            continue
+        lines = "\n".join(f"      {'  ' * q.depth}{q.id}  {q.title}"
+                           for q in reqs)
+        out.append(Claim.overnight(
+            f"overnight.requirements.{x['task_id']}",
+            f"task {x['task_id']} merged unattended and nobody read its spec "
+            f"against its diff — {len(reqs)} numbered requirement(s):\n"
+            f"{lines}\n"
+            f"      nothing checked these; the diff is at "
+            f"/tasks/{x['task_id']} on the console",
+            source="fleet:tasks", as_of=x["completed_at"] or now,
+            value_num=len(reqs), query_key="overnight_requirements",
+            query_version=1))
 
     # One line per run, so a bad night is legible without opening the console.
     for x in rows:
