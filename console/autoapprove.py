@@ -347,11 +347,29 @@ def sweep(*, dry_run: bool = False) -> Dict[str, Any]:
     """Tonight's approval, or a recorded refusal to make one."""
     p = plan()
 
-    if dry_run or not p["approve_ids"]:
+    if dry_run:
         p["queued_task_ids"] = []
         p["decision_id"] = None
+        p["refusal_decision_id"] = None
         return p
 
+    if not p["approve_ids"]:
+        # THE NIGHT IS RECORDED EVEN WHEN IT DECIDES NOTHING, and until this it
+        # was not. A refusal used to leave no row anywhere, so a ranker that
+        # correctly declined to choose and a timer that never fired were
+        # indistinguishable to everything except journalctl -- which is the
+        # same defect this codebase has now found thirteen times, and the
+        # reason the tie in the pool went unnoticed for two nights.
+        p["queued_task_ids"] = []
+        p["decision_id"] = None
+        p["refusal_decision_id"] = approve.record_unattended_refusal(
+            reason=p["refused"],
+            mechanics=mechanics_of(p),
+            considered=[s["candidate_id"] for s in p["ranked"]],
+            decided_by=p["decided_by"])
+        return p
+
+    p["refusal_decision_id"] = None
     out = approve.approve_batch(
         reason=p["reason"],
         approve_ids=p["approve_ids"],
@@ -416,7 +434,12 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
             print(f"  queued task(s): {p['queued_task_ids']}  "
                   f"decision {p['decision_id']}")
     else:
-        print(f"APPROVED NOTHING: {p['refused']}")
+        print(f"{'WOULD APPROVE NOTHING' if dry_run else 'APPROVED NOTHING'}: "
+              f"{p['refused']}")
+        if p.get("refusal_decision_id"):
+            print(f"  recorded as decision {p['refusal_decision_id']} "
+                  f"(DEFERRED, unattended) -- a refused night leaves a row, so "
+                  f"a week of them is a number somebody can see")
 
 
 def main(argv=None) -> int:

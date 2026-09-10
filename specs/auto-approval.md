@@ -961,6 +961,32 @@ wrong candidate and an unbounded spend, and §2.5 passes no `repeat_overrides`
 on the unattended path. What must not happen is describing it as the thing that
 catches §1.5's duplicates. It catches neither. Gates 2 and 3 do.
 
+### 9.3 A task that fails after verification writes no reason to the database
+
+Which is *why* 21 and 34 are unexplained. A task that fails a check records what
+the check said; a task that fails after passing verification records nothing,
+so the row reads FAILED with no account of what happened — and the two rows
+that produced accepted artefacts are exactly the two in that state.
+
+**Where the reason is not:** `tasks` has no failure column at all, and
+`runs.final_outcome` is **NULL on all five** of the FAILED runs, including the
+three that genuinely failed their check. The only account of any of them is the
+`VERIFICATION_RUN` payload, which is why 23, 24 and 25 are explicable at all —
+their check exited 1 and said so. For 21 and 34 the last thing written is
+`result: PASS`, and then the run is FAILED with nothing in between. The
+database records the verdict of the check and not the fate of the task, and
+those are the same thing only when the check is what killed it.
+
+This is the reason 9.2's over-count is invisible rather than merely wrong: a
+person reading `tasks` cannot tell a task that failed from one that succeeded
+and was recorded badly, and neither can `candidate_prior_failures`. Fixing it
+is a change to the runner's terminal-state handling, not to anything here.
+
+---
+
+
+---
+
 ### 9.4 The producer flattened `objective_ref`, and it carries the top ranking rule — **FIXED 10 Sep 2026** (shape check, loader)
 
 Batch 9 emitted `objective_ref: dd-feature-parity` on **all nine** candidates,
@@ -1007,29 +1033,35 @@ longer re-label silently.
 
 ---
 
-### 9.3 A task that fails after verification writes no reason to the database
+### 9.5 A refused night wrote nothing, so the ranker was silent for the same reason breakage would be — **FIXED 10 Sep 2026** (`console/approve.record_unattended_refusal`)
 
-Which is *why* 21 and 34 are unexplained. A task that fails a check records what
-the check said; a task that fails after passing verification records nothing,
-so the row reads FAILED with no account of what happened — and the two rows
-that produced accepted artefacts are exactly the two in that state.
+`approve_batch` is the only thing that touches `decision_log` on the unattended
+path, and it is not called when there is nothing to approve. So a night where
+§2.3 correctly declined to choose left **no row anywhere**, and the brief said
+*"nothing was auto-approved since the last brief"* — the same sentence it would
+print if the timer had never fired.
 
-**Where the reason is not:** `tasks` has no failure column at all, and
-`runs.final_outcome` is **NULL on all five** of the FAILED runs, including the
-three that genuinely failed their check. The only account of any of them is the
-`VERIFICATION_RUN` payload, which is why 23, 24 and 25 are explicable at all —
-their check exited 1 and said so. For 21 and 34 the last thing written is
-`result: PASS`, and then the run is FAILED with nothing in between. The
-database records the verdict of the check and not the fate of the task, and
-those are the same thing only when the check is what killed it.
+Refusing is the designed behaviour, not an error: the pace is 1, the pool has a
+60% line, and §2.3 approves nothing when no key separates the top two. That is
+exactly why it has to be recorded. **A correct refusal every night for a week is
+a fact about the pool** — the keys have stopped separating it — and it is only
+readable if each night leaves a row to count.
 
-This is the reason 9.2's over-count is invisible rather than merely wrong: a
-person reading `tasks` cannot tell a task that failed from one that succeeded
-and was recorded badly, and neither can `candidate_prior_failures`. Fixing it
-is a change to the runner's terminal-state handling, not to anything here.
+`record_unattended_refusal()` writes one `decision_log` row: `DEFERRED`,
+`decided_via='unattended'`, the refusal sentence as `reason`, the ranked order
+and the cut as `mechanics` (required, on 026's argument — a machine writing
+prose into a NOT NULL column with nothing to check it against is 010's
+UNRECORDED problem by a new route), and the candidates considered as evidence.
+It queues nothing and touches no candidate. `brief/pass_.py` reads it and
+prints the **streak**: how many nights running have gone without an unattended
+approval between them.
 
----
-
+**It is inert while the unit carries `--dry-run`, and that is deliberate.** A
+dry run writes nothing — the invariant that makes a dry run worth reading — so
+during the observation period a refusal is still recorded only in the journal.
+Relaxing that to make the refusal visible would be a dry run with a side
+effect. The fix takes effect the day the flag comes off; until then,
+`journalctl -u fleet-autoapprove.service` is the record.
 
 ---
 

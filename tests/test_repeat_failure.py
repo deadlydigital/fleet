@@ -739,3 +739,118 @@ class TestMutationOfTheIdentity:
                 " FROM pg_proc WHERE proname='candidate_prior_failures'"
             ).fetchone()["a"]
         assert args == "p_candidate_id bigint"
+
+
+# ---- a refused night is a recorded night -----------------------------------
+
+class TestTheRefusalIsRecorded:
+    """A night that decided nothing used to leave no row anywhere.
+
+    approve_batch is the only thing that writes decision_log on this path and
+    it is not called when there is nothing to approve, so a correct refusal and
+    a dead timer left the same trace: none. Refusing IS the designed behaviour
+    -- §2.3 approves nothing when the top two are indistinguishable -- and a
+    correct refusal every night for a week is a fact about the pool that can
+    only be read if each night leaves a row.
+    """
+
+    def _two_tied(self, console, admin):
+        """Two candidates alike on every key that means anything."""
+        _pool(admin)
+        b = _batch(console)
+        a = _cand(console, b, title="One thing", section=SECTION_9,
+                  band="weekly", probes=[EXISTS])
+        c = _cand(console, b, title="Another thing",
+                  section="Weekly — product performance by category",
+                  sha=SHA_BATCH_8, band="weekly", probes=[EXISTS])
+        return a, c
+
+    def test_a_refused_night_writes_exactly_one_row(self, dsns, console, admin):
+        self._two_tied(console, admin)
+        before = admin.execute(
+            "SELECT count(*) AS n FROM decision_log").fetchone()["n"]
+
+        out = autoapprove.sweep()
+
+        assert out["approve_ids"] == []
+        assert out["decision_id"] is None
+        assert out["refusal_decision_id"] is not None
+        rows = admin.execute(
+            "SELECT id, decision, decided_via, reason, mechanics, evidence"
+            " FROM decision_log ORDER BY id DESC LIMIT 1").fetchone()
+        assert admin.execute(
+            "SELECT count(*) AS n FROM decision_log").fetchone()["n"] == before + 1
+        assert rows["decision"] == "DEFERRED"
+        assert rows["decided_via"] == "unattended"
+        assert "indistinguishable" in rows["reason"]
+        # The working, on the same argument 026 requires it for an approval.
+        assert rows["mechanics"]["ranked"]
+        assert rows["mechanics"]["cut"]["n"] >= 1
+        # And which rows it was looking at.
+        assert {e["id"] for e in rows["evidence"]} == set(self_ids(admin))
+
+    def test_it_queues_nothing_and_touches_no_candidate(
+            self, dsns, console, admin):
+        a, c = self._two_tied(console, admin)
+        tasks_before = admin.execute(
+            "SELECT count(*) AS n FROM tasks").fetchone()["n"]
+
+        autoapprove.sweep()
+
+        assert admin.execute(
+            "SELECT count(*) AS n FROM tasks").fetchone()["n"] == tasks_before
+        for cid in (a, c):
+            row = admin.execute(
+                "SELECT disposition, decided_at, approval_decision_id"
+                " FROM candidates WHERE id=%s", (cid,)).fetchone()
+            assert row["disposition"] == "PENDING"
+            assert row["decided_at"] is None
+            assert row["approval_decision_id"] is None
+
+    def test_a_dry_run_still_writes_nothing(self, dsns, console, admin):
+        """The invariant is not relaxed to make the refusal visible.
+
+        A dry run that wrote a row would be a dry run with a side effect, and
+        the whole argument for reading dry runs is that they have none. The
+        consequence is stated rather than worked around: while the unit carries
+        --dry-run, a refusal is recorded in the journal and nowhere else.
+        """
+        self._two_tied(console, admin)
+        before = admin.execute(
+            "SELECT count(*) AS n FROM decision_log").fetchone()["n"]
+
+        out = autoapprove.sweep(dry_run=True)
+
+        assert out["approve_ids"] == []
+        assert out["refusal_decision_id"] is None
+        assert admin.execute(
+            "SELECT count(*) AS n FROM decision_log").fetchone()["n"] == before
+
+    def test_a_refusal_needs_its_working_like_an_approval_does(self):
+        with pytest.raises(approve.ApprovalRefused) as exc:
+            approve.record_unattended_refusal(
+                reason="nothing separated them", mechanics={}, considered=[1])
+        assert "mechanics" in str(exc.value)
+
+    def test_a_refusal_needs_a_reason(self):
+        with pytest.raises(approve.ApprovalRefused) as exc:
+            approve.record_unattended_refusal(
+                reason="   ", mechanics={"rank_version": 1}, considered=[1])
+        assert "only thing distinguishing" in str(exc.value)
+
+    def test_an_empty_pool_is_recorded_too(self, dsns, console, admin):
+        """Nothing to do is a fact, and it is not the same as nothing running."""
+        _pool(admin)
+        out = autoapprove.sweep()
+        assert out["refusal_decision_id"] is not None
+        row = admin.execute(
+            "SELECT reason, evidence FROM decision_log WHERE id=%s",
+            (out["refusal_decision_id"],)).fetchone()
+        assert "no candidate passed the gates" in row["reason"]
+        assert row["evidence"] == []
+
+
+def self_ids(admin):
+    return [r["id"] for r in admin.execute(
+        "SELECT id FROM candidates WHERE disposition IN ('PENDING','NOT_NOW')"
+        " ORDER BY id").fetchall()]

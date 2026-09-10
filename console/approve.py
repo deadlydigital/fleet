@@ -192,6 +192,68 @@ REPEAT_FAILURE_STOP = 2
 DECIDED_VIA = ("console", "by_hand", "unattended")
 
 
+#: What a night that approved nothing is recorded as. DEFERRED and not a new
+#: word: `decision_log` already carries DEFERRED rows and they mean the same
+#: thing a refusal means -- looked at, not acted on, and here is why. A status
+#: a reader must learn is a large change to say something an existing one says,
+#: which is the argument console/decide.py made for not inventing
+#: MERGED_OUTSIDE.
+REFUSAL_DECISION = "DEFERRED"
+
+
+def record_unattended_refusal(*, reason: str, mechanics: Dict[str, Any],
+                              considered: List[int],
+                              decided_by: str | None = None) -> int:
+    """A night that approved nothing, written down. Returns the decision id.
+
+    WHY THIS EXISTS, AND IT IS THE SAME DEFECT THIRTEEN TIMES
+    ---------------------------------------------------------
+    Until this, a refused night wrote NOTHING. `approve_batch` is the only
+    thing that touches `decision_log` on the unattended path, and it is not
+    called when there is nothing to approve -- so "the ranker refused because
+    no key separated the top two" and "the timer did not fire" left the same
+    trace, which is none. The brief said "nothing was auto-approved since the
+    last brief" for both.
+
+    Refusing IS the designed behaviour: §2.3 approves nothing when the top two
+    are indistinguishable, the pace is 1, and the pool has a 60% line. A
+    correct refusal happening every night for a week is a fact about the POOL
+    -- the keys are exhausted -- and it is only legible if each night leaves a
+    row. Silence cannot be counted.
+
+    NOT AN APPROVAL, AND IT CANNOT BECOME ONE. It writes one row, cites the
+    candidates it considered, touches no candidate, and creates no task. The
+    mechanics are required for the reason 026 requires them on an approval: a
+    machine writing prose into a NOT NULL `reason` with nothing to check the
+    prose against is 010's UNRECORDED problem arriving by a new route, and a
+    refusal is not exempt from that just because it is cheap.
+    """
+    if not reason or not reason.strip():
+        raise ApprovalRefused(
+            "a refusal needs a reason more than an approval does: it is the "
+            "only thing distinguishing a night the ranker declined to choose "
+            "from a night nothing ran.")
+    if not mechanics:
+        raise ApprovalRefused(
+            "an unattended refusal must carry its mechanics, on 026's "
+            "argument. The ranked order and the rule that held each row are "
+            "what make 'nothing separated the top two' checkable rather than "
+            "a sentence a machine wrote about itself.")
+
+    with db.writer() as conn, conn.transaction():
+        conn.execute(
+            "INSERT INTO decision_log (product, subject, decision, reason,"
+            " decided_by, evidence, decided_via, mechanics)"
+            " VALUES ('fleet',%s,%s,%s,coalesce(%s, current_user),%s,"
+            " 'unattended',%s)",
+            (f"Approved none of {len(considered)} open candidate(s)",
+             REFUSAL_DECISION, reason.strip(), decided_by,
+             json.dumps([{"kind": "candidate", "id": i} for i in considered]),
+             json.dumps(mechanics)))
+        return conn.execute(
+            "SELECT currval('decision_log_id_seq') AS id").fetchone()["id"]
+
+
 def approve_batch(*, reason: str, approve_ids: List[int],
                   reject: Dict[int, str], not_now_ids: List[int],
                   decided_by: str | None,

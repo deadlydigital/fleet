@@ -160,6 +160,33 @@ _APPROVALS_SQL = """
              WHERE c.approval_decision_id = d.id) AS approved
       FROM decision_log d
      WHERE d.decided_via = 'unattended'
+       AND d.decision = 'APPROVED'
+       AND d.product = 'fleet'
+       AND d.decided_at > %(since)s
+     ORDER BY d.id
+"""
+
+#: A night that approved nothing, and the run of them it is part of.
+#:
+#: `streak` counts back to the last unattended APPROVAL, not over the window --
+#: the window is one night and the fact worth reading is "this is the fifth
+#: night running". A correct refusal is designed behaviour; five of them in a
+#: row is a statement about the POOL, that the keys have stopped separating it,
+#: and it is only visible if somebody counts.
+_REFUSALS_SQL = """
+    SELECT d.id, d.decided_at, d.reason, d.mechanics,
+           (SELECT count(*) FROM decision_log e
+             WHERE e.decided_via = 'unattended'
+               AND e.product = 'fleet'
+               AND e.decision = 'DEFERRED'
+               AND e.id > coalesce((SELECT max(f.id) FROM decision_log f
+                                     WHERE f.decided_via = 'unattended'
+                                       AND f.product = 'fleet'
+                                       AND f.decision = 'APPROVED'), 0)
+               AND e.id <= d.id) AS streak
+      FROM decision_log d
+     WHERE d.decided_via = 'unattended'
+       AND d.decision = 'DEFERRED'
        AND d.product = 'fleet'
        AND d.decided_at > %(since)s
      ORDER BY d.id
@@ -216,7 +243,8 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
         # it could defend -- and refusing to approve is the designed behaviour
         # when no key separates the top two, so it will happen.
         return [Claim.overnight(
-            key, "nothing was auto-approved since the last brief",
+            key, "0 candidate(s) were auto-approved since the last brief"
+                 " (a recorded refusal, if there was one, is below)",
             source="fleet:decision_log", as_of=now, value_num=0,
             query_key="overnight_approvals", query_version=1)]
 
@@ -305,6 +333,57 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
             value_text=str(x["id"]), query_key="overnight_approval_undo",
             query_version=1))
 
+    return out
+
+
+def _refusal_claims(r: S.Reader, since) -> List[Claim]:
+    """The nights that decided nothing, which used to leave no trace at all.
+
+    Until console/approve.record_unattended_refusal, a refused night wrote no
+    row anywhere: approve_batch is the only thing that touches decision_log on
+    this path and it is not called when there is nothing to approve. So "the
+    ranker declined because no key separated the top two" and "the timer never
+    fired" both rendered as *nothing was auto-approved since the last brief*.
+
+    That is the failure this whole section exists to prevent, arriving on the
+    section itself. A refusal is a decision; it is now recorded as one, and the
+    STREAK is the number that matters -- one refused night is Tuesday, five is
+    the pool telling you the keys are exhausted.
+    """
+    out: List[Claim] = []
+    if since is None:
+        return []
+
+    rows = r.probe("fleet:decision_log/refusals",
+                   S.rows(_REFUSALS_SQL, {"since": since}))
+    if rows is None:
+        return [Claim.uncomputed(
+            "overnight.refusals", "what the ranker declined to decide",
+            reason=(r.failed("fleet:decision_log/refusals")
+                    or "decision_log could not be read, so whether the ranker "
+                       "refused is unknown -- which is the state this claim "
+                       "exists to stop being the default"))]
+    if not rows:
+        return []
+
+    now = _utcnow()
+    for x in rows:
+        m = x["mechanics"] or {}
+        cut = m.get("cut") or {}
+        eligible = [rr for rr in (m.get("ranked") or []) if rr.get("eligible")]
+        line = (f"approved nothing: {x['reason']}")
+        if x["streak"] > 1:
+            line += (f"\n      {x['streak']} night(s) running with no "
+                     f"unattended approval between them. A refusal is correct "
+                     f"behaviour; a run of them is the pool, not the night.")
+        if eligible:
+            line += (f"\n      {len(eligible)} row(s) passed every gate and "
+                     f"the cut was {cut.get('n', '?')}, bound by "
+                     f"{', '.join(cut.get('bound_by') or ['?'])}")
+        out.append(Claim.overnight(
+            f"overnight.refusal.{x['id']}", line, source="fleet:decision_log",
+            as_of=x["decided_at"] or now, value_num=x["streak"],
+            query_key="overnight_refusal", query_version=1))
     return out
 
 
@@ -889,6 +968,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
                                 lambda c: _previous_values(c)) or {}
         # Approvals BEFORE runs, because the approval is what CAUSED them.
         claims += _approval_claims(reader, last)
+        claims += _refusal_claims(reader, last)
         claims += _overnight_claims(reader, last)
         claims += _fleet_claims(reader, last)
         claims += _sentry_claims(reader)

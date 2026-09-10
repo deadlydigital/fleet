@@ -146,7 +146,7 @@ class TestWhatTheReaderSees:
                 return None
         claims = P._approval_claims(_R(), NOW - timedelta(days=1))
         md = _render(claims)
-        assert "nothing was auto-approved since the last brief" in md
+        assert "0 candidate(s) were auto-approved since the last brief" in md
 
     def test_an_unreadable_log_is_not_a_quiet_night(self):
         class _R:
@@ -233,3 +233,78 @@ class TestFromARealApproval:
         # The signal survives the whole chain: block -> column -> mechanics
         # row -> brief. That chain is what dropped it before there was a loader.
         assert "2,782,530" in rows[0]["approved"][0]["hib_signal"]["value"]
+
+
+# ---- the night that decided nothing ----------------------------------------
+
+class TestARefusedNightIsARecordedNight:
+    """A refusal used to write no row at all, so it rendered as a quiet night.
+
+    "the ranker declined because no key separated the top two" and "the timer
+    never fired" produced the same brief, which is the exact defect this whole
+    section exists to prevent, arriving on the section itself.
+    """
+
+    def _rows(self, *, streak=1, reason=None):
+        return [{
+            "id": 31,
+            "decided_at": NOW - timedelta(hours=6),
+            "reason": reason or (
+                "candidates 20 and 21 are indistinguishable on every key that "
+                "means anything: both frontend-only, both band daily, and only "
+                "the candidate id separates them."),
+            "streak": streak,
+            "mechanics": {
+                "cut": {"n": 1, "bound_by": ["per_night"],
+                        "limits": {"per_night": 1}},
+                "ranked": [{"candidate_id": 20, "eligible": True},
+                           {"candidate_id": 21, "eligible": True},
+                           {"candidate_id": 17, "eligible": False,
+                            "rule": "older_batch"}],
+            },
+        }]
+
+    def _claims(self, rows):
+        class _R:
+            def probe(self, key, body):
+                return rows if key == "fleet:decision_log/refusals" else None
+
+            def failed(self, key):
+                return None
+        return P._refusal_claims(_R(), NOW - timedelta(days=1))
+
+    def test_the_refusal_and_its_reason_are_rendered(self):
+        md = _render(self._claims(self._rows()))
+        assert "approved nothing" in md
+        assert "indistinguishable on every key" in md
+
+    def test_a_single_refusal_does_not_claim_a_streak(self):
+        md = _render(self._claims(self._rows(streak=1)))
+        assert "night(s) running" not in md
+
+    def test_a_run_of_refusals_is_counted_and_named_as_the_pool(self):
+        """One refused night is Tuesday. Five is the keys being exhausted."""
+        md = _render(self._claims(self._rows(streak=5)))
+        assert "5 night(s) running" in md
+        assert "the pool, not the night" in md
+
+    def test_how_many_rows_passed_every_gate_is_shown(self):
+        """Refusing with two eligible rows and refusing with none are
+        different mornings: one is a tie, the other is a pool with nothing
+        approvable in it."""
+        md = _render(self._claims(self._rows()))
+        assert "2 row(s) passed every gate" in md
+        assert "bound by per_night" in md
+
+    def test_no_refusal_renders_nothing_rather_than_a_reassuring_line(self):
+        assert self._claims([]) == []
+
+    def test_an_unreadable_log_is_not_a_night_without_a_refusal(self):
+        class _R:
+            def probe(self, key, body):
+                return None
+
+            def failed(self, key):
+                return "permission denied for table decision_log"
+        claims = P._refusal_claims(_R(), NOW - timedelta(days=1))
+        assert claims and claims[0].uncomputed_reason
