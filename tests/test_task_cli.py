@@ -96,6 +96,21 @@ def test_every_shipped_contract_matches_the_repo_it_names(cli, path):
             continue
         if "*" not in g and target.suffix and target.parent.exists():
             continue
+        # ... OR it names that new file by a PATTERN, which is how a contract
+        # that runs more than once names its dated output.
+        #
+        # candidate-producer.yaml declared the literal
+        # `research/candidates-metorik-gap-2026-09-09.md` and therefore worked
+        # exactly once: the second run needed a contract edit before it could
+        # write anything (specs/auto-approval.md §8.1). A dated pattern is the
+        # fix, and this rule refused it -- not because the contract was wrong
+        # but because the rule had only ever seen the two cases that existed.
+        #
+        # The `*` must be in the LAST segment, so the directory is still a real
+        # one and `research/*/anything.md` -- a pattern that could create
+        # directories -- stays refused.
+        if "*" in g and target.parent.exists() and "/" not in g.split("*", 1)[1]:
+            continue
         missing.append(g)
 
     assert missing == [], f"{path.name} names paths that do not exist: {missing}"
