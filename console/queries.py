@@ -594,8 +594,13 @@ MORNING_AWAITING_YOU = """
           SELECT * FROM runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1
       ) r ON true
       LEFT JOIN LATERAL (
+          -- NOT coalesce(...,0). A task with no run has spent nothing we
+          -- have a record of, which is not the same as having spent zero,
+          -- and morning.money() renders NULL as the dot the rest of the page
+          -- uses. The coalesce here was the one place a missing cost reached
+          -- the reader as GBP 0.00.
           SELECT count(*) AS runs_total,
-                 coalesce(sum(committed_gbp), 0) AS spent_all_runs
+                 sum(committed_gbp) AS spent_all_runs
             FROM runs WHERE task_id = t.id
       ) agg ON true
      WHERE t.status = 'READY_FOR_REVIEW'
@@ -610,17 +615,23 @@ MORNING_AWAITING_YOU = """
 #: approved on 7 Sep and its code task was queued on 8 Sep, and a SQL window
 #: over any single timestamp would either drop it or double it.
 #:
-#: The promotion step is missing from this query and cannot be added: moving a
-#: draft from drafts/ to specs/ is a human act with no database row, by design
-#: (contracts/draft-spec.yaml keeps specs/** protected so a task cannot write
-#: its own instructions). The template says so where the gap falls rather than
-#: closing it with an inferred timestamp.
+#: `decided_via` IS SELECTED AND IT IS NOT DECORATION. Until 10 Sep 2026 every
+#: approval on this host was a person clicking Accept, and the page said "you
+#: approved it" without asking. console/autoapprove.py writes
+#: `decided_via = 'unattended'`, and decisions 26 and 27 were already machine
+#: approvals rendered as the reader's own act. A page that credits you with the
+#: ranker's decision is wrong about the one thing it exists to tell you.
+#:
+#: There is no promotion step here any more. Moving a draft from drafts/ to
+#: specs/ by hand stopped being part of this loop when console/autoqueue.py
+#: began queueing the code task off the accepted draft; the draft stays in
+#: drafts/ and the merge leaves rows like any other.
 MORNING_THREADS = """
     SELECT c.id AS candidate_id, c.title, c.repo, c.objective_ref,
            c.disposition, c.decided_at, c.batch_id,
 
            d.id AS decision_id, d.reason AS decision_reason,
-           d.decided_at AS decision_at, d.decided_by,
+           d.decided_at AS decision_at, d.decided_by, d.decided_via,
 
            s.id AS spec_task_id, s.status AS spec_status,
            s.completed_at AS spec_completed_at, s.branch_name AS spec_branch,
@@ -632,7 +643,21 @@ MORNING_THREADS = """
            w.completed_at AS work_completed_at, w.branch_name AS work_branch,
            w.acceptance_contract->>'work_type' AS work_work_type,
            wr.committed_gbp AS work_cost,
-           EXTRACT(EPOCH FROM (wr.completed_at - wr.started_at)) AS work_elapsed
+           EXTRACT(EPOCH FROM (wr.completed_at - wr.started_at)) AS work_elapsed,
+
+           -- HOW EACH MERGE HAPPENED, which `tasks.status` cannot say: it
+           -- reads MERGED whoever merged it. Since 10 Sep 2026 both of these
+           -- can be a timer, so the page stops assuming the reader did it.
+           (SELECT hd.payload->>'decided_via'
+              FROM run_steps hd JOIN runs hr ON hr.id = hd.run_id
+             WHERE hr.task_id = s.id
+               AND hd.step_type = 'HUMAN_DECISION'
+             ORDER BY hd.id DESC LIMIT 1) AS spec_merged_via,
+           (SELECT hd.payload->>'decided_via'
+              FROM run_steps hd JOIN runs hr ON hr.id = hd.run_id
+             WHERE hr.task_id = w.id
+               AND hd.step_type = 'HUMAN_DECISION'
+             ORDER BY hd.id DESC LIMIT 1) AS work_merged_via
       FROM candidates c
       LEFT JOIN decision_log d ON d.id = c.approval_decision_id
       LEFT JOIN tasks s ON s.id = c.spec_task_id
@@ -650,15 +675,28 @@ MORNING_THREADS = """
 #: Tasks that finished in the window and belong to NO candidate.
 #:
 #: Without this the page would be a lie by omission. Task 26 -- the net-refunds
-#: code task -- was inserted directly, because console/approve.py only makes
-#: draft-spec tasks, and a threads-only view would show its candidate's thread
-#: while a directly-inserted task with no candidate at all would vanish.
+#: code task -- was inserted directly, and a threads-only view would show its
+#: candidate's thread while a directly-inserted task with no candidate at all
+#: would vanish.
+#:
+#: WHAT LANDS HERE CHANGED ON 10 SEP 2026 and the old sentence would now
+#: mislead. It said a code task has no candidate "because console/approve.py
+#: only makes draft-spec tasks" -- still true of approve.py, but
+#: console/autoqueue.py writes `candidates.work_task_id`, so a code task that
+#: came from a ticked candidate is on that candidate's thread and not here.
+#: What is left is what genuinely has no candidate: candidate-producer runs,
+#: infrastructure, and anything queued by hand.
 MORNING_LOOSE_TASKS = """
     SELECT t.id, t.title, t.status, t.repo, t.branch_name, t.objective_ref,
            t.completed_at, t.created_at, t.attempts,
            t.acceptance_contract->>'work_type' AS work_type,
            r.committed_gbp,
-           EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds
+           EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS elapsed_seconds,
+           (SELECT hd.payload->>'decided_via'
+              FROM run_steps hd JOIN runs hr ON hr.id = hd.run_id
+             WHERE hr.task_id = t.id
+               AND hd.step_type = 'HUMAN_DECISION'
+             ORDER BY hd.id DESC LIMIT 1) AS merged_via
       FROM tasks t
       LEFT JOIN LATERAL (
           SELECT * FROM runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1
@@ -810,3 +848,64 @@ MORNING_RUNS_IN_WINDOW = """
 def morning_runs_in_window(since) -> int:
     row = db.one(MORNING_RUNS_IN_WINDOW, {"since": since})
     return int(row["n"]) if row else 0
+
+
+#: WHAT THE NIGHT DECIDED, approvals AND refusals, in one list.
+#:
+#: THE REFUSALS ARE THE POINT. `approve.record_unattended_refusal` exists
+#: because until it did, "the ranker refused because no key separated the top
+#: two" and "the timer never fired" left the same trace, which is none. A page
+#: reading only approvals would report both as a quiet night.
+#:
+#: So this returns every unattended decision in the window and the page pairs
+#: it with the unit's own record of whether it ran. A row and no run is
+#: impossible; a run and no row means the sweep died before it decided, and
+#: neither of those is "nothing happened".
+MORNING_UNATTENDED_NIGHT = """
+    SELECT d.id, d.subject, d.decision, d.reason, d.decided_at, d.mechanics,
+           (SELECT count(*) FROM jsonb_array_elements(d.evidence) e
+             WHERE e->>'kind' = 'candidate') AS considered
+      FROM decision_log d
+     WHERE d.decided_via = 'unattended'
+       AND (%(since)s::timestamptz IS NULL OR d.decided_at >= %(since)s)
+     ORDER BY d.decided_at DESC
+"""
+
+
+def morning_unattended_night(since) -> list[dict[str, Any]]:
+    return db.rows(MORNING_UNATTENDED_NIGHT, {"since": since})
+
+
+#: EVERY MERGE NOBODY READ, with the spec it was judged against.
+#:
+#: specs/auto-approval.md §9.9. Four green checks establish that the tree
+#: typechecks, that the suite passes, that one new test bites and that no pair
+#: landed in half. They establish nothing about whether the spec was followed,
+#: and since 10 Sep 2026 there is no reader on any path -- `auto_merge` is
+#: `true` on the frontend contract and `draft_spec` came off
+#: console/automerge.py's NEVER_UNATTENDED.
+#:
+#: `spec_md` comes back whole because console/requirements.py parses it. The
+#: parse is deliberately not done in SQL: it is a display decision about what
+#: counts as a numbered requirement, and §9.12 records what happens when that
+#: judgement is made by something that cannot be read.
+#:
+#: The merge's own identity is on the HUMAN_DECISION step rather than on the
+#: task, because `tasks.status` says MERGED whoever merged it. That column
+#: cannot answer "did a person look at this", which is the only question here.
+MORNING_UNREAD_SPECS = """
+    SELECT t.id AS task_id, t.title, t.repo, t.spec_md, t.branch_name,
+           t.acceptance_contract->>'work_type' AS work_type,
+           s.created_at AS merged_at,
+           s.payload->'merge'->>'merge_commit' AS merge_commit
+      FROM tasks t
+      JOIN runs r ON r.task_id = t.id
+      JOIN run_steps s ON s.run_id = r.id AND s.step_type = 'HUMAN_DECISION'
+     WHERE s.payload->>'decided_via' = 'unattended'
+       AND (%(since)s::timestamptz IS NULL OR s.created_at >= %(since)s)
+     ORDER BY s.created_at DESC
+"""
+
+
+def morning_unread_specs(since) -> list[dict[str, Any]]:
+    return db.rows(MORNING_UNREAD_SPECS, {"since": since})

@@ -12,11 +12,14 @@
      second background, strong enough that the one section asking something of
      the reader is visibly not the same as the three that do not. */
   --hi:#f4f1e8;
+  /* A missing value. Distinct from --dim so a dot reads as a deliberate
+     absence rather than as punctuation somebody left in. */
+  --nil:#9a9a94;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#16171a; --fg:#e6e6e3; --dim:#9a9a94; --line:#2c2e33; --panel:#1c1e22;
           --ok:#4ec27f; --warn:#d3a24a; --bad:#e2778b; --accent:#7fb0e0;
-          --hi:#232019; }
+          --hi:#232019; --nil:#6f6f69; }
 }
 * { box-sizing:border-box }
 body { margin:0; background:var(--bg); color:var(--fg);
@@ -90,62 +93,175 @@ a.t { color:var(--accent); text-decoration:none } a.t:hover { text-decoration:un
 /* ---- the morning page ------------------------------------------------
    Every rule below is shared by both colour modes: nothing here names a
    colour, only a token, so a mode that renders wrong renders wrong in one
-   place rather than in this stylesheet. */
-.stand { max-width:760px }
-.stand h2 { margin:1.9rem 0 .35rem }
-.stand h2:first-of-type { margin-top:.6rem }
-.since { color:var(--dim); font-size:12.5px; margin:.1rem 0 1.2rem;
-  font-family:ui-monospace,monospace }
+   place rather than in this stylesheet.
+
+   REDESIGNED 10 Sep 2026. What it looked like before: every element the same
+   weight, every row separated by a hairline, the whole page a table with a
+   stylesheet. The hierarchy now comes from type and space, and the borders
+   are down to one rule per section. Three things carry it:
+
+     an ANSWER LINE per section, in prose, at a size nothing else uses, so
+     the page can be finished in four sentences;
+
+     a fixed right-hand column for time and money, so the eye has a rail to
+     run down instead of a ragged edge left by `margin-left:auto`;
+
+     colour on status and nowhere else. Chrome is greyscale. A green pill
+     means a thing is settled, and the page has exactly one other green. */
+.stand { max-width:64rem }
+.stand section { margin:0 0 2.6rem }
+.stand section + section { padding-top:1.7rem; border-top:1px solid var(--line) }
+
+/* The section label. Quiet, because the answer beneath it is the content. */
+.stand h2 { font-size:.72rem; margin:0 0 .55rem; color:var(--dim);
+  text-transform:uppercase; letter-spacing:.1em; font-weight:600 }
+
+/* THE TEN-SECOND LAYER. One sentence, at a size used for nothing else. */
+.answer { font-size:1.05rem; line-height:1.45; margin:0 0 1rem;
+  max-width:52ch; color:var(--fg); font-weight:400 }
+.answer strong { font-weight:650 }
+.answer .quiet { color:var(--dim) }
+.dateline { color:var(--dim); font-size:.78rem; margin:.15rem 0 1.6rem;
+  font-family:ui-monospace,monospace; letter-spacing:.01em }
+
 /* A settled section. Not an absence — a sentence. */
-.settled { color:var(--dim); padding:.45rem 0 .2rem; font-size:13.5px }
+.settled { color:var(--dim); font-size:.85rem; max-width:56ch;
+  margin:.2rem 0 0 }
 .settled strong { color:var(--fg); font-weight:600 }
 
-.band { background:var(--hi); border:1px solid var(--line); border-radius:7px;
-  padding:.55rem .85rem; margin:.3rem 0 .5rem }
-.band.clear { background:transparent }
+/* ---- the overnight chain --------------------------------------------
+   Four cells, one per unit, in the order they fire. A cell is always
+   present: a stage that could not be read renders as a stage that could not
+   be read, never as an absent one. */
+.chain { display:grid; gap:.5rem; margin:.2rem 0 1.4rem;
+  grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr)) }
+.stage { border:1px solid var(--line); border-radius:7px; padding:.5rem .6rem;
+  background:var(--panel); display:flex; flex-direction:column; gap:.15rem;
+  min-width:0 }
+.stage .head { display:flex; align-items:baseline; gap:.35rem;
+  justify-content:space-between }
+.stage .nm { font-weight:600; font-size:.8rem }
+.stage .at { font-family:ui-monospace,monospace; font-size:.68rem;
+  color:var(--dim); white-space:nowrap }
+.stage .said { font-size:.76rem; color:var(--dim); line-height:1.35 }
+.stage .mode { align-self:flex-start; font-size:.62rem; letter-spacing:.08em;
+  text-transform:uppercase; border:1px solid var(--warn); color:var(--warn);
+  border-radius:3px; padding:0 .25rem; margin-top:.1rem }
+.stage.off { border-color:var(--bad) }
+.stage.off .nm { color:var(--bad) }
+.stage.unread { border-style:dashed; border-color:var(--warn) }
+.stage.unread .nm { color:var(--warn) }
 
-/* One bullet. <details> so detail is one keypress away and nothing is behind
-   a click you must make to learn there was nothing there. */
-details.ask { border-bottom:1px solid var(--line); padding:.42rem 0 }
-details.ask:last-child { border-bottom:0 }
-details.ask > summary { cursor:pointer; list-style:none; display:flex;
-  gap:.55rem; align-items:baseline; flex-wrap:wrap }
+/* ---- one bullet ------------------------------------------------------
+   <details> so detail is one keypress away and nothing is behind a click
+   you must make to learn there was nothing there.
+
+   GRID, NOT FLEX. `margin-left:auto` put every aside at a different x and
+   the section read as ragged prose; three columns put the marker, the
+   sentence and the numbers each on their own rail. */
+details.ask { padding:.34rem 0 }
+details.ask > summary { cursor:pointer; list-style:none; display:grid;
+  grid-template-columns:.9rem minmax(0,1fr) auto; gap:.1rem .55rem;
+  align-items:baseline }
 details.ask > summary::-webkit-details-marker { display:none }
-details.ask > summary::before { content:"▸"; color:var(--dim); font-size:11px;
-  flex:0 0 auto }
-details.ask[open] > summary::before { content:"▾" }
-details.ask > summary:hover { color:var(--accent) }
-.ask .what { font-weight:600 }
-.ask .aside { color:var(--dim); font-size:12.5px; margin-left:auto;
-  font-family:ui-monospace,monospace; white-space:nowrap }
-.ask .body { padding:.5rem 0 .35rem 1.15rem; color:var(--dim);
-  font-size:13px; max-width:62ch }
-.ask .body p { margin:.35rem 0 }
+details.ask > summary::before { content:"\25B8"; color:var(--dim);
+  font-size:.6rem; line-height:1.6 }
+details.ask[open] > summary::before { content:"\25BE" }
+details.ask > summary:hover .what { color:var(--accent) }
+.ask .what { font-weight:600; font-size:.9rem; min-width:0;
+  overflow-wrap:anywhere }
+.ask .aside { color:var(--dim); font-size:.76rem;
+  font-family:ui-monospace,monospace; white-space:nowrap; text-align:right }
+/* Values in an aside are divided by a rule rather than by a middot, because
+   a middot is what a MISSING value renders as and the two must not be the
+   same mark. See the note in morning.html. */
+.ask .aside .mv + .mv::before { content:"|"; color:var(--line);
+  margin:0 .45rem; font-weight:400 }
+/* A SIBLING OF <summary>, never a child: anything inside a summary renders
+   whether the details is open or shut, so a body nested there is not detail
+   one click away, it is the page. The indent matches the summary grid's
+   second column (.9rem marker + .55rem gap) so the text lines up under the
+   sentence rather than under the marker. */
+.ask .body { padding:.45rem 0 .5rem; color:var(--dim);
+  font-size:.82rem; max-width:58ch; margin-left:1.45rem }
+.ask .body p { margin:.4rem 0 }
+.ask .body p:first-child { margin-top:.15rem }
 
-/* The thread rail. A vertical line with the steps hung off it, so a thread
-   reads as one movement rather than as a table of rows. */
-.rail { list-style:none; margin:.55rem 0 .2rem; padding:0 0 0 1.15rem;
+/* ---- the thread rail -------------------------------------------------
+   A vertical line with the steps hung off it, so a thread reads as one
+   movement rather than as a table of rows.
+
+   THE MARKS ARE THE POINT AND THEY WERE INVISIBLE. Every dot was
+   `var(--line)` — the page's hairline colour, #e0e0dc on #fbfbfa — so half
+   the rail could not be seen in either mode and a thread read as text with
+   occasional blue dots. Four marks now, each meaning one thing:
+
+     fleet   filled, dim        the runner did the work
+     you     filled, accent     a person, at a keyboard
+     auto    ringed, accent     a timer, unattended — a decision nobody made
+     gap     hollow, dashed     known to have happened, or known NOT to have,
+                                with no record of it here */
+.rail { list-style:none; margin:.5rem 0 .2rem; padding:0 0 0 1.1rem;
   border-left:2px solid var(--line) }
-.rail li { position:relative; padding:.25rem 0 .3rem .9rem }
-.rail li::before { content:""; position:absolute; left:-1.32rem; top:.62rem;
-  width:8px; height:8px; border-radius:50%; background:var(--line) }
+.rail li { position:relative; padding:.22rem 0 .3rem .85rem;
+  font-size:.82rem; line-height:1.5 }
+.rail li::before { content:""; position:absolute; left:-1.4rem; top:.58rem;
+  width:9px; height:9px; border-radius:50%; background:var(--dim);
+  box-shadow:0 0 0 3px var(--bg) }
 .rail li.human::before { background:var(--accent) }
+.rail li.auto::before { background:var(--bg);
+  border:2.5px solid var(--accent); width:10px; height:10px; left:-1.45rem }
 .rail li.gap::before { background:var(--bg); border:2px dashed var(--warn);
-  width:10px; height:10px; left:-1.42rem }
-.rail .who { font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
-  color:var(--dim); margin-right:.45rem }
-.rail li.human .who { color:var(--accent) }
-.rail .said { color:var(--dim); font-size:12.5px; display:block;
-  margin-top:.1rem; max-width:60ch }
-.rail .cost { font-family:ui-monospace,monospace; font-size:12px;
-  color:var(--dim); margin-left:.5rem }
+  width:11px; height:11px; left:-1.48rem }
+.rail .who { font-size:.6rem; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--dim); margin-right:.4rem; font-weight:600 }
+.rail li.human .who, .rail li.auto .who { color:var(--accent) }
+.rail li.gap .who { color:var(--warn) }
+.rail .said { color:var(--dim); font-size:.78rem; display:block;
+  margin-top:.15rem; max-width:58ch; white-space:pre-line }
+.rail .cost { font-family:ui-monospace,monospace; font-size:.74rem;
+  color:var(--dim); margin-left:.45rem }
+
+/* The queue, inside a bullet rather than under a heading of its own. */
+.ask .body ol { margin:.4rem 0; padding-left:1.3rem }
+.ask .body ol li { padding:.12rem 0 }
+
+/* ---- the requirements of a merge nobody read -------------------------
+   A list that checks nothing. See console/morning.unread_specs. */
+.reqs { list-style:none; margin:.4rem 0 .2rem; padding:0;
+  border-left:2px solid var(--warn) }
+.reqs li { padding:.14rem 0 .14rem .7rem; font-size:.8rem;
+  line-height:1.45 }
+.reqs li.d1 { padding-left:1.9rem }
+.reqs .rid { font-family:ui-monospace,monospace; color:var(--dim);
+  margin-right:.45rem }
 
 /* A missing value. Never a zero — see morning.human_elapsed. */
-.nil { color:var(--dim) }
+.nil { color:var(--nil); font-weight:600 }
 
 .reach { border-left:3px solid var(--accent); background:var(--panel);
-  padding:.6rem .9rem; margin:.7rem 0; border-radius:0 5px 5px 0 }
-.reach .cost-of { color:var(--fg); font-weight:600 }
+  padding:.55rem .85rem; margin:.6rem 0; border-radius:0 5px 5px 0;
+  max-width:58ch }
+.reach .cost-of { color:var(--fg); font-weight:600; margin:.1rem 0 .3rem;
+  font-size:.88rem }
+.reach p { font-size:.8rem; margin:.25rem 0 }
+
+/* The blockers band. */
+.band { background:var(--hi); border:1px solid var(--line); border-radius:7px;
+  padding:.5rem .8rem; margin:.2rem 0 .4rem }
+.band details.ask + details.ask { border-top:1px solid var(--line) }
+
+/* Scoped, so the generic .note above keeps its own size everywhere else. */
+.stand .note { margin:.5rem 0 .9rem; font-size:.82rem }
+.stand .note strong { font-size:.88rem }
+.stand .note p { margin:.3rem 0 }
+
+@media (max-width: 34rem) {
+  /* The numbers move under the sentence rather than squeezing it. */
+  details.ask > summary { grid-template-columns:.9rem minmax(0,1fr) }
+  .ask .aside { grid-column:2; text-align:left; margin-top:.1rem }
+  .ask .body { margin-left:0 }
+}
 {{ diff_css|safe }}
 </style>
 </head>

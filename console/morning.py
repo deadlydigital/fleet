@@ -2,19 +2,42 @@
 
 WHAT THIS MODULE IS FOR
 -----------------------
-`queries.py` reads rows. This turns them into the four things a standup says:
-what is blocking me, what I did, what I am doing next, and what I could not
-see. Everything here is shaping -- no module in this file decides anything, and
+`queries.py` reads rows. This turns them into the three things the page says:
+what shipped overnight, what needs the reader, and what it could not see.
+Everything here is shaping -- no function in this file decides anything, and
 nothing it produces is written back.
+
+It was four until 10 Sep 2026, and the one that went was "what I'm doing
+next". That was a section while a queue only filled if the reader filled it;
+console/autoapprove.py fills it on a timer now, so the queue is a line in the
+overnight chain and a bullet under it, not a heading.
 
 THE EMPTY ANSWER IS THE DESIGNED ANSWER
 ---------------------------------------
 Most mornings nothing has happened. Every function here returns a structure
 that renders as a sentence when it is empty, and the template never has to test
-for `None`. "Nothing, because you haven't approved anything" is a fact about the
-system and is built here rather than left to a `{% else %}` in a template,
-because a fact assembled from real counts can be checked and an `{% else %}`
-cannot.
+for `None`. An empty answer is assembled here from real counts rather than left
+to a `{% else %}` in a template, because a fact can be checked and an
+`{% else %}` cannot.
+
+This page said "Nothing, because you haven't approved anything -- the queue is
+empty and only an approval fills it" until 10 Sep 2026, and it was assembled
+exactly that way. It was still wrong, because the sentence outlived the loop it
+described: `fleet_task_runner` still holds no INSERT on `tasks`, but
+`fleet_console` fills the queue on a timer now, and the clause that was true
+was carrying a conclusion that was not. A fact built from counts is checkable;
+the ENGLISH AROUND IT IS NOT, and that is the failure this module is most prone
+to. Prose here should state what a source says and stop.
+
+AN EMPTY ANSWER IS NOT AN UNASKED QUESTION
+-------------------------------------------
+Three of the things this page reports -- whether the night approved anything,
+whether the merge sweep ran, whether production is where main is -- can each
+come back as "no", as "nothing", or as "I could not find out". The third is not
+the second. `overnight_chain()` and `units()` below keep them apart by pairing
+every database answer with the unit's own record of whether it ran, and both
+of them return None rather than a reassuring default when the question cannot
+be put at all.
 
 WHAT IS DELIBERATELY NOT HERE
 -----------------------------
@@ -29,6 +52,23 @@ It is the choice 012_daily_brief.sql already argues for, in the words it used
 about hand-maintained tallies being "wrong three times in one day on 7 Sep
 2026". If this section is too short, the fix is instrumenting the missing
 thing, not typing it in here where nothing can check it.
+
+WHAT THE PAGE IS FOR, SINCE THE SECTIONS FOLLOW FROM IT
+--------------------------------------------------------
+It is the one thing opened in the morning. It says what shipped overnight, what
+needs the reader, and what it could not see, in that order, and it is meant to
+be finished in ten seconds with the detail one click away. The order is not the
+order the data arrives in and is not the order a standup is spoken in; it is
+the order the questions are actually asked in.
+
+The four rules it holds, unchanged and worth restating because every function
+below is constrained by one of them:
+
+  * a missing value renders as a dot and NEVER as zero -- human_elapsed() and
+    money() own this, and since 10 Sep 2026 every caller uses them;
+  * the uncomputed count carries the same weight as the computed count;
+  * a claim carries its source and its recency;
+  * the page never says "nothing is wrong" when it means "I could not look".
 """
 from __future__ import annotations
 
@@ -41,7 +81,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from console import config, deploys
+from console import config, deploys, requirements
 
 # ---------------------------------------------------------------------------
 # Small shared shapes
@@ -65,7 +105,22 @@ class Ask:
 
 @dataclass
 class Step:
-    """One step in a thread. `actor` is HUMAN or FLEET, and it is the point."""
+    """One step in a thread. `actor` is who did it, and it is the point.
+
+    FOUR ACTORS, AND THE THIRD IS NEW
+    ----------------------------------
+    HUMAN   a person, at a keyboard, at a known moment
+    AUTO    a timer, unattended -- an approval at 01:30, a merge at 03:30
+    FLEET   the runner doing the work it was given
+    GAP     something that is known to have happened, or known NOT to have,
+            with no record of it here
+
+    AUTO exists because until 10 Sep 2026 there was no such thing, and the
+    page said "you approved it" over a row `console/autoapprove.py` had
+    written. Decisions 26 and 27 were already machine approvals rendered as
+    the reader's own act. The actor is now taken from `decided_via` on the
+    row rather than assumed from which column it arrived in.
+    """
     actor: str
     label: str
     detail: str = ""
@@ -74,9 +129,19 @@ class Step:
     elapsed_seconds: Optional[float] = None
     status: str = ""
     href: Optional[str] = None
-    #: True when this step is known to have happened but has no record here.
-    #: Rendered as a gap rather than skipped -- see promote_gap() below.
-    unrecorded: bool = False
+
+
+def actor_of(decided_via: Optional[str]) -> str:
+    """HUMAN or AUTO, from the column that records which.
+
+    None is HUMAN, and that is a considered default rather than a convenience:
+    every decision written before 026 added the column was a person clicking
+    Accept, so NULL means "before there was any other kind". A new row always
+    carries a value -- `approve.DECIDED_VIA` constrains it and 026 constrains
+    it again at the database -- so this default cannot silently absorb a
+    machine decision written today.
+    """
+    return "AUTO" if decided_via == "unattended" else "HUMAN"
 
 
 @dataclass
@@ -97,6 +162,31 @@ class Thread:
         stamps = [s.when for s in self.steps if s.when]
         return max(stamps) if stamps else None
 
+    @property
+    def outcome(self) -> str:
+        """Where this thread got to. The word the answer line counts.
+
+        SHIPPED > MERGED > FAILED > MOVED, and the order is deliberate: a
+        thread whose code task failed and was then merged by hand has both
+        statuses on it, and the furthest one it reached is what happened. A
+        counter that took the LAST step instead would report a thread as
+        failed because its deploy check could not answer.
+
+        NOT_QUEUED sits above FAILED because a draft that merged and queued
+        nothing is a stall, not a failure -- nothing went wrong, which is
+        exactly what makes it easy to miss.
+        """
+        seen = {s.status for s in self.steps}
+        if "SHIPPED" in seen:
+            return "SHIPPED"
+        if "MERGED" in seen:
+            return "MERGED"
+        if "NOT_QUEUED" in seen:
+            return "NOT_QUEUED"
+        if "FAILED" in seen:
+            return "FAILED"
+        return "MOVED"
+
     def progressed_since(self, since: Optional[datetime]) -> bool:
         """Did FLEET actually finish something here, in the window?
 
@@ -107,7 +197,9 @@ class Thread:
         it under what got DONE claims work that has not happened.
 
         Terminal statuses only. QUEUED and RUNNING are the future; APPROVED is
-        the reader's own act and its consequence is the queue.
+        a decision and its consequence is the queue -- which since 10 Sep 2026
+        is more often the ranker's decision than the reader's, and is no more
+        progress for being made by a timer.
         """
         for s in self.steps:
             if s.status not in ("FAILED", "READY_FOR_REVIEW", "MERGED"):
@@ -124,37 +216,197 @@ class Thread:
 # ---------------------------------------------------------------------------
 
 
-def _timer_enabled(unit: str = "fleet-runner.timer") -> Optional[bool]:
-    """Whether a systemd timer is enabled. None when the question cannot be put.
+#: The four units the loop is made of, in the order they fire. Named here
+#: rather than discovered, because a unit that has been REMOVED must still
+#: appear -- `systemctl show` on a unit that does not exist answers happily
+#: with empty values, and a chain that lists only what it can find would drop
+#: a stage the night depends on and look complete doing it.
+CHAIN = (
+    ("approve", "Ranked the pool and ticked", "fleet-autoapprove"),
+    ("run", "Ran the work", "fleet-runner"),
+    ("merge", "Merged what was eligible", "fleet-automerge"),
+    ("deploy", "Deployed what merged", "fleet-autodeploy"),
+)
 
-    `systemctl is-enabled` rather than looking for the symlink in
-    timers.target.wants: the symlink is what enablement currently IS, not what
-    it is defined as, and a unit can be enabled through other mechanisms. The
-    authority answers in one word; reimplementing its rules here would be a
-    second definition of "enabled" that could disagree with the first.
+#: Properties read off each unit. `ExecStart` is here for one reason: a unit
+#: running with `--dry-run` decides everything and does nothing, and for two
+#: months this page would have reported its decisions as events. The flag is a
+#: fact about the unit, so it is read from the unit.
+_SERVICE_PROPS = ("Result", "ExecMainExitTimestamp", "ExecMainStatus",
+                  "ExecStart", "LoadState")
+_TIMER_PROPS = ("UnitFileState", "LastTriggerUSec", "NextElapseUSecRealtime",
+                "TimersCalendar", "LoadState")
+
+
+def _show(unit: str, props: tuple) -> Optional[Dict[str, str]]:
+    """`systemctl show`, parsed. None when the question could not be put.
 
     Shells out for the same reason gitdiff.py does, on the same terms: argv,
-    never a shell, and a fixed unit name that never comes from a request.
-    None on any failure, and the caller treats None as "cannot say" rather than
-    as "enabled" -- an unknown that resolves to the reassuring answer is how a
-    monitor becomes decoration.
+    never a shell, and unit names that come from CHAIN above and never from a
+    request.
+
+    None on any failure, and every caller treats None as "cannot say" rather
+    than as a value -- an unknown that resolves to the reassuring answer is
+    how a monitor becomes decoration. That sentence was written here for
+    `is-enabled` and it is the whole reason this function does not return {}.
     """
     try:
-        p = subprocess.run(["systemctl", "is-enabled", unit],
-                           capture_output=True, text=True, timeout=5)
+        args = ["systemctl", "show", unit]
+        for k in props:
+            args += ["-p", k]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None
-    out = p.stdout.strip()
-    if out in ("enabled", "enabled-runtime", "static", "alias", "indirect"):
-        return True
-    if out in ("disabled", "masked", "masked-runtime"):
-        return False
+    if r.returncode != 0:
+        return None
+    out: Dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        k, _, v = line.partition("=")
+        if k:
+            out[k] = v.strip()
+    return out or None
+
+
+def _stamp(value: Optional[str]) -> Optional[datetime]:
+    """A systemd timestamp, or None. `n/a` and the empty string are both None.
+
+    systemd prints `ExecMainExitTimestamp=` with nothing after it for a unit
+    that has never run, and `n/a` in some other places. Both mean the same
+    thing and neither is a time.
+    """
+    if not value or value in ("n/a", "0"):
+        return None
+    for fmt in ("%a %Y-%m-%d %H:%M:%S %Z", "%a %Y-%m-%d %H:%M:%S"):
+        try:
+            t = datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t
     return None
 
 
+@dataclass
+class Stage:
+    """One unit of the overnight chain, as read from systemd and the database.
+
+    THE TWO SOURCES ARE KEPT APART ON PURPOSE. `ran` comes from the unit and
+    answers "did this fire"; `said` comes from the database and answers "what
+    did it decide". A stage that ran and decided nothing and a stage that
+    never fired are the same silence in the database and different facts, and
+    telling them apart is this dataclass's entire reason to exist.
+    """
+    key: str
+    name: str
+    unit: str
+    schedule: str = ""
+    enabled: Optional[bool] = None
+    last_at: Optional[datetime] = None
+    ok: Optional[bool] = None
+    dry_run: bool = False
+    installed: bool = True
+    said: str = ""
+    #: Set when the unit could not be read at all. The template renders this
+    #: as a gap and NOT as a stage that did nothing.
+    unreadable: bool = False
+
+    @property
+    def schedule_short(self) -> str:
+        """The OnCalendar line, with the seconds off a plain daily time.
+
+        ONLY a plain `HH:MM:00`. The runner's is `02..04:00/20:00`, where the
+        trailing `:00` is part of a repeat expression and cutting it would
+        turn "every twenty minutes between two and four" into something that
+        is not a schedule at all. A shortener that cannot tell those apart
+        should shorten neither.
+        """
+        m = re.fullmatch(r"(\d{2}:\d{2}):00", self.schedule or "")
+        return m.group(1) if m else (self.schedule or "")
+
+
+def units() -> Dict[str, Stage]:
+    """Every stage of the chain, read from systemd. Never partial silently.
+
+    A unit that cannot be read comes back with `unreadable=True` rather than
+    absent, so the page renders four stages whatever happens and a missing
+    answer is visible as a missing answer.
+    """
+    out: Dict[str, Stage] = {}
+    for key, name, unit in CHAIN:
+        st = Stage(key=key, name=name, unit=unit)
+        svc = _show(f"{unit}.service", _SERVICE_PROPS)
+        tmr = _show(f"{unit}.timer", _TIMER_PROPS)
+        if svc is None and tmr is None:
+            st.unreadable = True
+            out[key] = st
+            continue
+        if svc is not None:
+            st.installed = svc.get("LoadState") != "not-found"
+            st.last_at = _stamp(svc.get("ExecMainExitTimestamp"))
+            result = svc.get("Result")
+            st.ok = None if not result else (result == "success")
+            # `--dry-run` as its own word, not a substring: a path containing
+            # the text would otherwise mark a live unit as a dry run, which
+            # errs towards telling the reader less happened than did.
+            st.dry_run = "--dry-run" in (svc.get("ExecStart") or "").split()
+        if tmr is not None:
+            state = tmr.get("UnitFileState", "")
+            if state in ("enabled", "enabled-runtime", "static"):
+                st.enabled = True
+            elif state in ("disabled", "masked", "masked-runtime"):
+                st.enabled = False
+            cal = tmr.get("TimersCalendar") or ""
+            m = re.search(r"OnCalendar=([^;}]+)", cal)
+            if m:
+                # `*-*-* ` is "every day" and every unit here carries it, so
+                # it is noise in four cells out of four. The rest is kept
+                # verbatim -- see Stage.schedule_short for why it is not
+                # tidied any further than this.
+                st.schedule = re.sub(r"^\*-\*-\*\s+", "", m.group(1).strip())
+        out[key] = st
+    return out
+
+
+def describe_night(stages: Dict[str, Stage],
+                   decisions: List[Dict[str, Any]]) -> None:
+    """Fill in each stage's `said` from the database. Mutates `stages`.
+
+    ONLY THE APPROVE STAGE HAS A DATABASE ANSWER OF ITS OWN, and pretending
+    otherwise is how a page grows a number nobody can trace. What the runner,
+    the merge sweep and the deploy did is already on the threads below and in
+    `deployments`; repeating a count here would be a second tally of the same
+    rows, which is the thing 012 argues against in the words it used about
+    hand-maintained numbers being wrong three times in one day.
+
+    A refusal is as much of an answer as an approval. `approve
+    .record_unattended_refusal` exists so that a night the ranker declined
+    leaves a row -- without it, declining and not running are the same
+    silence.
+    """
+    approve = stages.get("approve")
+    if approve is None:
+        return
+    if not decisions:
+        # NOT "approved nothing". The unit may have run and refused, or not
+        # run at all, and only the first of those is a decision. Which one it
+        # is comes from `approve.ok` and `approve.last_at`, which the template
+        # renders beside this.
+        approve.said = ""
+        return
+    took = [d for d in decisions if d["decision"] == "APPROVED"]
+    passed = [d for d in decisions if d["decision"] != "APPROVED"]
+    parts = []
+    if took:
+        parts.append(f"{len(took)} approval{'' if len(took) == 1 else 's'}")
+    if passed:
+        parts.append(f"{len(passed)} night{'' if len(passed) == 1 else 's'} "
+                     f"it declined to choose")
+    approve.said = ", ".join(parts)
+
+
 def fleet_blocked(credit: Optional[Dict[str, Any]],
-                  deployments: Dict[str, deploys.Deployment]) -> List[Ask]:
-    """What Fleet cannot do itself, derived from three things that know.
+                  deployments: Dict[str, deploys.Deployment],
+                  stages: Optional[Dict[str, Stage]] = None) -> List[Ask]:
+    """What Fleet cannot do itself, derived from things that know.
 
     Not a list anybody maintains. If one of these clears, it disappears from
     the page because the thing that knows it started saying something else.
@@ -172,8 +424,7 @@ def fleet_blocked(credit: Optional[Dict[str, Any]],
             + " Until it is recorded nothing can be queued at all: the "
               "ceiling refuses rather than assuming a number nobody read.",
             needs="NEEDS_YOU",
-            meta=[("committed so far",
-                   f"£{float(credit.get('committed_gbp') or 0):.2f}")]))
+            meta=[("committed so far", money(credit.get("committed_gbp")))]))
 
     # 2. The frontend deploy stamp. drift-frontend.state answers UNKNOWN
     #    because the image carries no GIT_SHA, so no merged frontend branch can
@@ -189,28 +440,56 @@ def fleet_blocked(credit: Optional[Dict[str, Any]],
             meta=[("check last ran", deploys.ago(front.age) + " ago"),
                   ("state", front.status)]))
 
-    # 3. The runner timer. Installed and disabled is a real state and a
-    #    deliberate one; the page states it so it is a decision that stays
-    #    made rather than one that quietly lapses.
-    enabled = _timer_enabled()
-    if enabled is False:
-        asks.append(Ask(
-            kind="RUNNER_TIMER",
-            headline="The runner timer is installed and disabled",
-            detail="Nothing runs unless you start it by hand. "
-                   "specs/approval-surface.md §6.1 made the three ceilings a "
-                   "precondition for enabling it; enable with "
-                   "`systemctl enable --now fleet-runner.timer` once you are "
-                   "satisfied they hold.",
-            needs="NEEDS_YOU"))
-    elif enabled is None:
-        asks.append(Ask(
-            kind="RUNNER_TIMER",
-            headline="Fleet cannot tell whether the runner timer is enabled",
-            detail="`systemctl is-enabled fleet-runner.timer` did not answer. "
-                   "Reported rather than assumed: an unknown that resolves to "
-                   "'enabled' is how a monitor becomes decoration.",
-            needs="NEEDS_A_MACHINE"))
+    # 3. EVERY STAGE OF THE CHAIN, not just the runner.
+    #
+    #    This watched `fleet-runner.timer` alone until 10 Sep 2026, which was
+    #    right while the runner was the only thing that ran unattended. Three
+    #    more units now decide things with nobody watching, and a page that
+    #    checked one of four would have reported a silent night as a quiet
+    #    one -- which is the failure this page's fourth rule exists to stop.
+    #
+    #    Three distinct answers, and they must not collapse into two:
+    #      disabled     a decision, possibly a deliberate one, that stays made
+    #      failed       it ran and did not finish
+    #      unreadable   the question could not be put, which is not "fine"
+    for st in (stages or {}).values():
+        if st.unreadable or not st.installed:
+            asks.append(Ask(
+                kind="UNIT_UNREADABLE",
+                headline=f"Fleet cannot tell whether {st.unit} is running",
+                detail=f"`systemctl show {st.unit}` did not answer, or the "
+                       f"unit is not installed. Reported rather than assumed: "
+                       f"an unknown that resolves to 'enabled' is how a "
+                       f"monitor becomes decoration.",
+                needs="NEEDS_A_MACHINE"))
+            continue
+        if st.enabled is False:
+            asks.append(Ask(
+                kind="UNIT_DISABLED",
+                headline=f"{st.unit}.timer is installed and disabled",
+                detail=f"{st.name.lower()} does not happen unless you start "
+                       f"it by hand. Enable with `systemctl enable --now "
+                       f"{st.unit}.timer` once you are satisfied it should "
+                       f"run.",
+                needs="NEEDS_YOU",
+                meta=[("scheduled", st.schedule or "\u00b7")]))
+        elif st.enabled is None:
+            asks.append(Ask(
+                kind="UNIT_UNREADABLE",
+                headline=f"Fleet cannot tell whether {st.unit}.timer is "
+                         f"enabled",
+                detail="systemd did not give a state this page recognises.",
+                needs="NEEDS_A_MACHINE"))
+        if st.ok is False:
+            asks.append(Ask(
+                kind="UNIT_FAILED",
+                headline=f"{st.unit} failed the last time it ran",
+                detail=f"`systemctl status {st.unit}` and `journalctl -u "
+                       f"{st.unit}` say why. The stage did not do its work, "
+                       f"so whatever depended on it did not happen either.",
+                needs="NEEDS_YOU",
+                meta=[("last ran", st.last_at.strftime("%d %b %H:%M")
+                       if st.last_at else "\u00b7")]))
 
     return asks
 
@@ -226,7 +505,11 @@ def awaiting_you(rows: List[Dict[str, Any]]) -> Dict[str, List[Ask]]:
     specs: List[Ask] = []
     branches: List[Ask] = []
     for r in rows:
-        meta = [("cost", f"£{float(r['spent_all_runs'] or 0):.2f}"),
+        # money(), not a format string. This line read
+        # `£{float(r['spent_all_runs'] or 0):.2f}` until 10 Sep 2026 and put
+        # £0.00 beside a task with no run -- in the same meta list where
+        # human_elapsed was correctly rendering a dot for the same absence.
+        meta = [("cost", money(r["spent_all_runs"])),
                 ("elapsed", human_elapsed(r["elapsed_seconds"]))]
         if (r["runs_total"] or 1) > 1:
             meta.append(("attempts", f"{r['runs_total']}"))
@@ -239,6 +522,74 @@ def awaiting_you(rows: List[Dict[str, Any]]) -> Dict[str, List[Ask]]:
             meta=meta)
         (specs if r["is_spec"] else branches).append(ask)
     return {"specs": specs, "branches": branches}
+
+
+@dataclass
+class UnreadSpec:
+    """A feature that shipped with nobody reading its spec against its diff."""
+    task_id: int
+    title: str
+    repo: str
+    merged_at: Optional[datetime]
+    merge_commit: str
+    reqs: List[Any] = field(default_factory=list)
+
+
+def unread_specs(rows: List[Dict[str, Any]]) -> List[UnreadSpec]:
+    """The numbered requirements of everything that merged unattended.
+
+    WHAT THIS IS, STATED SO IT IS NOT OVERSOLD
+    -------------------------------------------
+    It is a list. It checks nothing, ticks nothing, and matches nothing to the
+    diff. specs/auto-approval.md §9.12 measured the cheap matcher that would:
+    grepping task 53's real diff for the requirement number scored 1 for §2.1
+    and §2.5 (both stray digits) and 0 for §2.2 and §2.3, which were
+    implemented -- so it would have refused working changes and passed the one
+    that was missing, and been believed. A list that makes no claim is worth
+    more than a matcher that makes a wrong one.
+
+    WHY IT IS AN ASK AND NOT A NOTE
+    --------------------------------
+    §9.9: four green checks establish that the tree typechecks, that the suite
+    passes, that one new test bites, and that no pair landed in half. They
+    establish nothing about whether the spec was followed. `auto_merge: false`
+    was the only reader in the path and it is gone; `draft_spec` came off
+    NEVER_UNATTENDED on 10 Sep 2026 and the last reading with it. So this is
+    the only place a person is put in front of what a feature promised, and it
+    happens AFTER the feature shipped, which is the whole of what is on offer
+    once the merge is automatic.
+
+    The brief carries the same list (`brief/pass_.py`). It is here as well
+    because the brief is read once and this page is read every morning, and a
+    thing that must be caught within a day should not depend on which of the
+    two the reader opened.
+
+    WHAT WOULD MAKE THIS SHORTER, WHICH IS THE REAL FIX
+    ----------------------------------------------------
+    §9.12's marker convention: `draft_spec_shape.py` requires each numbered
+    requirement to carry an id, the runner passes `spec_md` to checks as a
+    fact, and a checker requires each id to appear in an added line as an
+    unambiguous token. Roughly eighty lines. It would have failed task 53. It
+    proves a claim was made rather than met -- which converts a silent
+    omission into a written, attributable one -- and it would cut this list
+    from every requirement of every merge down to the ones nothing claimed.
+    Until it exists, this is three features a night at eight requirements
+    each, and that is a reading job rather than a glance.
+    """
+    out: List[UnreadSpec] = []
+    for r in rows:
+        reqs = requirements.parse(r.get("spec_md"))
+        if not reqs:
+            # A spec with no numbered requirements is not a spec this can say
+            # anything about, and an empty checklist beside a merge reads as
+            # "nothing to check" -- which is a claim, and the wrong one.
+            continue
+        out.append(UnreadSpec(
+            task_id=r["task_id"], title=r["title"], repo=r["repo"],
+            merged_at=r.get("merged_at"),
+            merge_commit=(r.get("merge_commit") or "")[:12],
+            reqs=reqs))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -286,29 +637,29 @@ def excerpt(text: Optional[str], limit: int = 155) -> str:
     return cut.rsplit(" ", 1)[0] + " …"
 
 
-def promote_gap() -> Step:
-    """The step between a drafted spec and the code task it produced.
-
-    Promoting a draft from drafts/ to specs/ is a human act with no database
-    row, and that is by design: contracts/draft-spec.yaml keeps specs/**
-    protected so a task cannot write the instructions it is judged against, and
-    the promotion is therefore a person and a git commit.
-
-    Rendered as a visible gap rather than omitted. A thread that jumped from a
-    FAILED spec task straight to a queued code task would read as though Fleet
-    did that itself, which is the one claim on this page it must not make.
-    """
-    return Step(actor="HUMAN", label="Promoted the draft to specs/",
-                detail="a human act with no database row — drafts/ to specs/ "
-                       "is a git commit, because specs/** is protected from "
-                       "the task that would otherwise write its own brief",
-                unrecorded=True)
-
-
 def build_threads(rows: List[Dict[str, Any]],
                   failures_by_task: Dict[int, List[Dict[str, Any]]],
                   deployments: Dict[str, deploys.Deployment]) -> List[Thread]:
-    """candidate → spec task → your approval → code task → branch → shipped."""
+    """candidate -> spec -> the draft merges -> code task -> merge -> shipped.
+
+    THE PROMOTION STEP IS GONE, AND ITS ABSENCE IS THE CHANGE
+    ----------------------------------------------------------
+    Every thread used to carry `promote_gap()`: "Promoted the draft to specs/
+    -- a human act with no database row". That was true of the loop as it was
+    designed on 7 Sep and false by 10 Sep. `console/autoqueue.py` queues the
+    code task off the accepted draft; the draft stays in `drafts/`; nothing is
+    copied into `specs/`; and the act it described leaves two rows, a merge
+    verdict and a task.
+
+    It was also drawn wrong for its whole life. It set `actor="HUMAN"`, and
+    the template tests the actor before it tests `unrecorded`, so the one step
+    on the page that existed to be a HOLE IN THE RECORD rendered as a solid
+    "you did this" dot and `.rail li.gap::before` never fired for it.
+
+    What replaces it is not a step. It is the pair of merge steps below, each
+    taking its actor from `decided_via`, and a real gap when the draft merged
+    and no code task followed.
+    """
     threads: List[Thread] = []
     for r in rows:
         t = Thread(key=f"c{r['candidate_id']}", title=r["title"],
@@ -326,8 +677,11 @@ def build_threads(rows: List[Dict[str, Any]],
             # thread in the batch and printing it five times buries the threads
             # in a paragraph the reader already read. The link goes to the
             # decision, where it belongs entire.
+            auto = actor_of(r["decided_via"])
             t.steps.append(Step(
-                actor="HUMAN", label="You approved it",
+                actor=auto,
+                label=("The ranker ticked it" if auto == "AUTO"
+                       else "You approved it"),
                 detail=excerpt(r["decision_reason"]), when=r["decision_at"],
                 href="/decisions", status=r["disposition"]))
 
@@ -336,17 +690,36 @@ def build_threads(rows: List[Dict[str, Any]],
                 "Wrote a draft spec", r["spec_task_id"], r["spec_status"],
                 r["spec_completed_at"], r["spec_cost"], r["spec_elapsed"],
                 failures_by_task))
+            t.steps.extend(_merge_step(
+                r["spec_status"], r["spec_merged_via"], r["spec_branch"],
+                r["spec_completed_at"], what="the draft"))
 
         if r["work_task_id"]:
-            # The promotion only happened if a code task exists at all.
-            t.steps.append(promote_gap())
             t.steps.append(_task_step(
                 "Built the change", r["work_task_id"], r["work_status"],
                 r["work_completed_at"], r["work_cost"], r["work_elapsed"],
                 failures_by_task))
+            t.steps.extend(_merge_step(
+                r["work_status"], r["work_merged_via"], r["work_branch"],
+                r["work_completed_at"], what="it"))
             t.steps.extend(_ship_steps(
-                r["work_status"], r["work_work_type"], r["work_branch"],
+                r["work_status"], r["work_work_type"],
                 r["work_completed_at"], deployments))
+        elif r["spec_status"] == "MERGED":
+            # THE ONE STATE IN THIS LOOP WHERE NOTHING IS WRONG AND NOTHING
+            # HAPPENS EITHER. console/automerge.py names it: a refusal from
+            # autoqueue is logged and does not fail the sweep, because the
+            # draft is merged and pushed either way. That leaves a merged
+            # spec with no work queued, and it is invisible everywhere else --
+            # no task failed, no check went red, no revert triggered.
+            t.steps.append(Step(
+                actor="GAP", label="No code task was queued from this draft",
+                detail="the draft merged and `autoqueue.from_accepted_draft` "
+                       "did not produce a task. Nothing failed; the chain "
+                       "simply stopped. `journalctl -u fleet-automerge` "
+                       "carries the refusal, and `./fleet task add` queues "
+                       "the work by hand.",
+                status="NOT_QUEUED"))
 
         threads.append(t)
     return threads
@@ -366,39 +739,66 @@ def _task_step(label: str, task_id: int, status: str,
                 href=f"/tasks/{task_id}")
 
 
-def _ship_steps(status: str, work_type: Optional[str], branch: Optional[str],
-                completed_at: Optional[datetime],
-                deployments: Dict[str, deploys.Deployment]) -> List[Step]:
-    """MERGED and DEPLOYED, kept apart.
+def _merge_step(status: str, decided_via: Optional[str],
+                branch: Optional[str], when: Optional[datetime],
+                what: str) -> List[Step]:
+    """Who merged it, from the row rather than from the assumption.
 
-    Built, merged and deployed are three states. `tasks.status = 'MERGED'`
-    means a person merged a branch; whether it is running is a different
-    question with a different source, and on this host the frontend cannot
-    answer it at all.
+    "You merged it" was hardcoded here, and it was correct only for as long as
+    a person was the only thing that could merge. `console/automerge.py` came
+    off `--dry-run` on 10 Sep 2026 and `draft_spec` came off its
+    NEVER_UNATTENDED tuple the same day, so both of these merges can now be a
+    timer at 03:30. A page that says "you" about a merge nobody made is wrong
+    about the only thing it is for.
     """
     if status != "MERGED":
         return []
-    steps = [Step(actor="HUMAN", label="You merged it",
-                  detail=branch or "", when=completed_at, status="MERGED")]
+    auto = actor_of(decided_via)
+    return [Step(
+        actor=auto,
+        label=(f"Merged {what} unattended" if auto == "AUTO"
+               else f"You merged {what}"),
+        detail=branch or "", when=when, status="MERGED")]
+
+
+def _ship_steps(status: str, work_type: Optional[str],
+                completed_at: Optional[datetime],
+                deployments: Dict[str, deploys.Deployment]) -> List[Step]:
+    """Whether it is RUNNING, which is a different question from merged.
+
+    Built, merged and deployed are three states. `tasks.status = 'MERGED'`
+    means a branch went into the base; whether it is running is a different
+    question with a different source, and on this host the frontend cannot
+    always answer it at all.
+    """
+    if status != "MERGED":
+        return []
     verdict, why = deploys.shipped(work_type, completed_at, deployments)
-    steps.append(Step(
+    return [Step(
         actor="FLEET" if verdict == "SHIPPED" else "GAP",
         label={"SHIPPED": "Running in production",
                "NOT_SHIPPED": "Merged, NOT deployed",
                "NOTHING_TO_SHIP": "Nothing to deploy",
                "CANNOT_SAY": "Cannot tell whether it shipped"}[verdict],
-        detail=why, status=verdict))
-    return steps
+        detail=why, status=verdict)]
 
 
 def loose_threads(rows: List[Dict[str, Any]],
                   failures_by_task: Dict[int, List[Dict[str, Any]]],
                   deployments: Dict[str, deploys.Deployment]) -> List[Thread]:
-    """Tasks belonging to no candidate, as one-step threads.
+    """Tasks belonging to no candidate, as short threads.
 
     Task 26 is why this exists: it was inserted directly, because approve.py
     only makes draft-spec tasks. A threads-only page would have shown its
     candidate's thread and silently dropped any task that had no candidate.
+
+    IT NO LONGER MEANS "a person typed this". `console/autoqueue.py` writes
+    `candidates.work_task_id`, so a code task that came from a draft is on its
+    candidate's thread and not here. What lands here now is what genuinely has
+    no candidate: a candidate-producer run, a piece of infrastructure, a task
+    somebody queued by hand. The step says that rather than the older sentence
+    about the approval surface, which described a route that has one more exit
+    than it did.
     """
     out: List[Thread] = []
     for r in rows:
@@ -406,15 +806,16 @@ def loose_threads(rows: List[Dict[str, Any]],
                    objective_ref=r["objective_ref"])
         t.steps.append(Step(
             actor="HUMAN", label="Queued directly",
-            detail="not from a candidate — the approval surface only makes "
-                   "draft-spec tasks",
+            detail="not from a candidate - no ticked candidate produced it",
             when=r["created_at"]))
         t.steps.append(_task_step(
             "Built the change", r["id"], r["status"], r["completed_at"],
             r["committed_gbp"], r["elapsed_seconds"], failures_by_task))
-        t.steps.extend(_ship_steps(r["status"], r["work_type"],
+        t.steps.extend(_merge_step(r["status"], r["merged_via"],
                                    r["branch_name"], r["completed_at"],
-                                   deployments))
+                                   what="it"))
+        t.steps.extend(_ship_steps(r["status"], r["work_type"],
+                                   r["completed_at"], deployments))
         out.append(t)
     return out
 

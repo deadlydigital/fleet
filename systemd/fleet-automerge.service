@@ -20,14 +20,21 @@ Type=oneshot
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/fleet
-# --dry-run FOR THE FIRST FEW NIGHTS. It considers every waiting task, applies
-# every rule, and merges nothing -- so the mechanism runs on schedule and the
-# brief reports what it WOULD have done, before it is allowed to do it.
-#
+# LIVE SINCE 10 SEP 2026. It ran --dry-run until then, on
 # specs/unattended-operation.md §9: nothing after step 2 runs unattended until
-# the steps before it have run attended for a few nights. Take the flag out
-# when the dry runs have been read and are boring.
-ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_automerge.py --dry-run
+# the steps before it have run attended for a few nights.
+#
+# The flag came out in the same change that took `draft_spec` off
+# console/automerge.py's NEVER_UNATTENDED, because the two together are what
+# closes the loop -- a live sweep that still refuses every draft would merge
+# code tasks whose specs no timer can reach, and the chain would stall in the
+# same place with the risk already taken.
+#
+# `run_automerge.py --dry-run` is still the honest way to watch a rule change:
+# it considers every waiting task, applies every rule, and merges nothing. Run
+# it by hand after editing console/automerge.py; do not put the flag back here
+# without saying why in this comment.
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_automerge.py
 
 # It merges and pushes, so it needs what the console needs and nothing more:
 # a trial clone in its own PrivateTmp, and no write to any checkout.

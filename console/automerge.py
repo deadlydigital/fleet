@@ -26,11 +26,47 @@ cheaper than a review.
 
 WHAT IS NEVER ELIGIBLE, WHATEVER A CONTRACT SAYS
 -------------------------------------------------
-`draft_spec` and `research` produce artefacts that exist to be READ. Merging
-one without a person defeats the only step where intent, rather than the diff,
-is judged -- and under this posture that step is the single remaining human
-gate. It is a hard rule keyed on work_type, not a default a contract can turn
-off.
+`research`, `candidate_producer` and `dd_infra` produce artefacts that exist to
+be READ, or that swap production containers. It is a hard rule keyed on
+work_type, not a default a contract can turn off.
+
+`draft_spec` WAS ON THIS TUPLE AND CAME OFF IT ON 10 SEP 2026
+--------------------------------------------------------------
+It was the single remaining human gate, and removing it was asked for three
+times and granted deliberately. What it cost is recorded here rather than only
+in the spec, because the cost is inherited by whoever reads this code next.
+
+**Nothing reads a spec at any point now.** specs/auto-approval.md §9.9 is the
+measured account: task 53 shipped §2.5 of its own spec unbuilt with `tsc`,
+`vitest`, `new_test_bites.sh` and `paired_paths.py` all green, because none of
+them can read a spec. That was caught by `auto_merge: false` on the frontend
+contract, which became `true` earlier the same day -- so the spec-against-diff
+comparison was already gone. This removes the other reading: the person who
+read the DRAFT, before the work existed, and judged whether it was the right
+work at all.
+
+**The failure it admits has no revert trigger.** A partially-built feature is
+not a bad merge. Nothing fails, nothing reverts, nothing pages. §9.9.1 records
+the mirror case on task 55, which built MORE than its spec on a premise about
+the tree that was false. Two of the last three tasks did one or the other.
+
+**What still catches part of it.** Gate 6 (030_candidate_premise.sql) re-runs
+what a candidate rests on at approval time, which is the task-55 class. Nothing
+catches the task-53 class -- a true premise, a right spec, a requirement
+quietly dropped -- because at approval time there is nothing wrong yet.
+specs/auto-approval.md §9.12 costs the cheapest thing that would notice, at
+about eighty lines, and its one stated objection ("on the frontend contract,
+where a person already reads the spec, it adds annotation cost for a check
+weaker than the reader it sits beside") expired with this change. There is no
+reader on any path to be weaker than.
+
+**What carries it after the fact.** `brief/pass_.py` lists the numbered
+requirements of anything merged unattended, and the morning page's "Needs you"
+now carries the same list as an ask against the merge. Neither notices
+anything; both put the comparison in front of the one person who will make it,
+after the feature has shipped. That is the trade this change makes explicit:
+a shipped feature you can see was partially built, instead of a gate you sit
+at.
 """
 from __future__ import annotations
 
@@ -39,7 +75,7 @@ from typing import Any, Optional
 
 #: Work types whose whole purpose is to be read by a person. No contract flag
 #: makes these eligible.
-NEVER_UNATTENDED = ("draft_spec", "research", "candidate_producer",
+NEVER_UNATTENDED = ("research", "candidate_producer",
                     # A script that swaps production containers is read
                     # by a person before it lands, whatever its checks
                     # said. The shape check proves it is shaped like a
@@ -49,6 +85,37 @@ NEVER_UNATTENDED = ("draft_spec", "research", "candidate_producer",
 #: The check whose passing is the only evidence that the NEW behaviour works
 #: rather than that nothing broke. See contracts/checks/new_test_bites.sh.
 BITE_CHECK = "new_test_bites.sh"
+
+#: Work types that produce a DOCUMENT, for which the added-test gate below is
+#: not a weaker check -- it is not a check at all.
+#:
+#: TAKING `draft_spec` OFF NEVER_UNATTENDED DID NOT MAKE IT MERGE, and finding
+#: that out is why this exists. It fell through to gate 3 and was refused for
+#: "the contract permits no new test file", which is true of
+#: contracts/draft-spec.yaml and always will be: a draft spec writes one
+#: markdown file under `drafts/**`, the contract refuses a diff containing
+#: anything else, and there is no behaviour for a test to bite on. The bite
+#: check is not in its verification list either, so the next clause would have
+#: refused it too.
+#:
+#: A rule that cannot be satisfied is not a strict rule, it is a disabled
+#: feature with a misleading message -- and the first version of this change
+#: shipped a test that passed while the real contract could never have got
+#: past this point, because the fixture contract carried `creatable_paths`
+#: that the real one does not.
+#:
+#: WHAT A DOCUMENT MUST STILL SATISFY, which is everything above gate 3:
+#: re-verification ran, was not skipped, did not fail to run, and passed. For
+#: a draft spec that means `draft_spec_shape.py` passed against the merged
+#: tree -- the declared block parses, its work_type names a contract that
+#: exists, every declared path resolves, none is on the floor, and the paths
+#: cited in prose resolve. That is the evidence a document can offer.
+#:
+#: WHAT IT DOES NOT ESTABLISH, and this is the cost the whole change accepts:
+#: whether the spec describes work worth doing, whether its approach is right,
+#: or whether the paths it names are the RELEVANT ones. draft_spec_shape.py's
+#: own docstring says so. Nothing reads a spec now. See the module docstring.
+DOCUMENT_WORK_TYPES = ("draft_spec",)
 
 
 @dataclass
@@ -107,6 +174,26 @@ def eligible(task: dict, reverification: Any) -> Eligibility:
         return Eligibility(False, (
             f"re-verification did not pass, so this is not merging: "
             f"{getattr(reverification, 'reason', '') or 'no reason recorded'}"))
+
+    # 4. Evidence that the NEW behaviour works. Skipped for a document,
+    #    which has no behaviour -- see DOCUMENT_WORK_TYPES above for what it
+    #    is held to instead and what that leaves uncovered.
+    if work_type in DOCUMENT_WORK_TYPES:
+        return Eligibility(True, "", gates={
+            "work_type": work_type,
+            "auto_merge": contract.get("auto_merge", "default (absent)"),
+            "reverified": True,
+            # NOT True, and not omitted. False here is a fact about this
+            # merge that a later reader needs: no test bit, because there was
+            # nothing for one to bite on.
+            "test_bit": False,
+            "document": True,
+            "merged_sha": getattr(reverification, "merged_sha", None),
+            "base_sha": getattr(reverification, "base_sha", None),
+            "checks": [{"command": c.get("command"),
+                        "exit_code": c.get("exit_code"),
+                        "duration_ms": c.get("duration_ms")}
+                       for c in (reverification.checks or [])]})
 
     if not contract.get("creatable_paths"):
         return Eligibility(False, (
@@ -266,21 +353,18 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
                        "remote_sha": result.remote_sha})
             log(f"task {tid}: MERGED unattended as {result.base_sha_after[:12]}")
 
-            # THE CHAIN CONTINUES ITSELF, AND THIS IS UNREACHABLE TODAY.
+            # THE CHAIN CONTINUES ITSELF, AND SINCE 10 SEP 2026 IT RUNS.
             #
-            # console/app.py does the same call on the accept route, which is
-            # the only path a draft spec can currently take: `draft_spec` is on
-            # NEVER_UNATTENDED above, so this sweep never sees one and this
-            # branch never runs.
+            # This branch was written while `draft_spec` was still on
+            # NEVER_UNATTENDED, against the day it came off. That day is now:
+            # the sweep merges a draft at 03:30 and queues the code task it
+            # describes in the same pass, so the night does not end with a
+            # spec merged and nothing built.
             #
-            # It is here because the branch is the half of "remove the last
-            # human step" that is NOT a judgement call. If draft_spec ever
-            # comes off that tuple, the loop must not stop at a merged draft
-            # that nobody built -- and discovering that afterwards, at 03:30,
-            # is how a night ends with a spec merged and no work queued.
-            # Taking draft_spec off the tuple is the decision; this is the
-            # plumbing, and it is cheaper to have it ready than to have the
-            # decision blocked on writing it.
+            # console/app.py makes the same call on the accept route, which is
+            # still a real path -- a person may accept a draft before 03:30.
+            # Both callers are `autoqueue.from_accepted_draft`, so there is one
+            # implementation and the two paths cannot drift.
             #
             # A refusal is logged and does NOT fail the sweep: the draft is
             # merged and pushed either way, and the other tasks in this sweep

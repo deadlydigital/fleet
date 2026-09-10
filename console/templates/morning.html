@@ -3,122 +3,93 @@
 {% block nav_morning %}on{% endblock %}
 {% block body %}
 {#
-  The morning page. A standup, stacked, read once.
+  The morning page. Three questions, in the order they are asked.
 
-  DESIGNED FOR THE EMPTY MORNING FIRST. Most days nothing has happened, and
-  every section below renders a SENTENCE when it has nothing rather than a
-  blank panel or a zero. A page that only works with six completed tasks on it
-  is one nobody opens by Thursday.
+    WHAT SHIPPED OVERNIGHT   because the reader arrives knowing nothing
+    WHAT NEEDS ME            because it is the only part that asks anything
+    WHAT IT COULD NOT SEE    because a gap is not an absence
 
-  Two rules carried from /briefs and applied here without restating the
-  argument: a missing value renders as `·` and never as 0 (morning.human_elapsed
-  and morning.money own that), and what could NOT be seen is given the same
-  weight as what could.
+  That is not the order a standup is spoken in. A standup puts blockers last
+  because the rest has already been said out loud; nobody has said anything
+  here. It is also one section shorter than this page was: "what I'm doing
+  next" was a heading while a queue only filled if the reader filled it, and
+  since console/autoapprove.py it is the same chain that just ran.
+
+  DESIGNED FOR THE EMPTY MORNING FIRST. Most days little has happened, and
+  every section renders a SENTENCE when it has nothing rather than a blank
+  panel or a zero. A page that only works with six completed tasks on it is
+  one nobody opens by Thursday.
+
+  THE FOUR RULES THIS PAGE HOLDS, unchanged, and each is load-bearing
+  somewhere below:
+
+    a missing value renders as `·` and NEVER as 0 -- morning.human_elapsed()
+    and morning.money() own it, and every caller goes through them;
+
+    the uncomputed count carries the same weight as the computed count --
+    "what it could not see" is a section, not a footnote;
+
+    a claim carries its source and its recency -- every stage prints when it
+    last ran, every deploy reading prints when it was taken;
+
+    the page never says "nothing is wrong" when it means "I could not look" --
+    a stage that could not be read renders as a stage that could not be read.
 #}
 {% set n_specs = awaiting.specs | length %}
 {% set n_branches = awaiting.branches | length %}
-{% set n_cands = depth.candidates_open if depth else 0 %}
 {% set n_blocked = fleet_blocked | length %}
-{% set blocking = n_specs + n_branches + (1 if n_cands else 0) + n_blocked %}
+{% set n_unread = unread | length %}
+{% set needs = n_specs + n_branches + n_blocked + n_unread %}
+{% set shipped = done | selectattr('steps') | list %}
 
 <div class="stand">
 
 <h1>Morning</h1>
-<p class="since">
+<p class="dateline">
   {% if window %}
     brief #{{ window.run_id }} · {{ window.generated_at.strftime('%a %d %b %H:%M') }}
-    {% if since %}· covering everything since {{ since.strftime('%d %b %H:%M') }}
+    {% if since %}· everything since {{ since.strftime('%a %d %b %H:%M') }}
     {% else %}· first brief, so this covers everything{% endif %}
   {% else %}
     no brief has ever run, so there is no window to report against
   {% endif %}
 </p>
 
-{# ================================================================ BLOCKERS
-   FIRST, and this is the one departure from how a standup is spoken. In a
-   standup blockers come last because you have already said the rest. Here the
-   only section that asks anything of the reader is the reason the page was
-   opened, so it leads. #}
-<h2>Blocking you</h2>
+{# ==================================================== 1. WHAT SHIPPED #}
+<section>
+<h2>What shipped overnight</h2>
 
-{% if blocking == 0 %}
-<div class="settled"><strong>Nothing is waiting on you.</strong>
-  No branch to review, no spec to approve, no candidate to tick, and nothing
-  Fleet is stuck on.</div>
-{% else %}
-<div class="band">
-
-  {% for a in awaiting.specs %}
-  <details class="ask">
-    <summary>
-      <span class="what">A drafted spec needs your approval</span>
-      <span>{{ a.headline }}</span>
-      <span class="aside">{% for k, v in a.meta %}{{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
-    </summary>
-    <div class="body">
-      <p>A spec asks whether this is the right <em>work</em>. Approving it means
-      promoting the draft from <code>drafts/</code> into <code>specs/</code> by
-      hand — a git commit, because <code>specs/**</code> is protected from the
-      task that would otherwise write its own instructions.</p>
-      {% if a.detail %}<p>branch <code>{{ a.detail }}</code></p>{% endif %}
-      <p><a class="t" href="{{ a.href }}">{{ a.href_label }} →</a></p>
+{# THE CHAIN, FIRST, AND BEFORE THE THREADS.
+   Four units decide things with nobody watching. Whether each RAN comes from
+   systemd; what each DECIDED comes from the database; and the two are printed
+   side by side because a stage that ran and decided nothing and a stage that
+   never fired leave the same silence in the database. #}
+<div class="chain">
+  {% for st in stages.values() %}
+  <div class="stage{% if st.unreadable or not st.installed %} unread{% elif st.enabled == false or st.ok == false %} off{% endif %}">
+    <div class="head">
+      <span class="nm">{{ st.name }}</span>
+      <span class="at">{% if st.schedule %}{{ st.schedule_short }}{% else %}<span class="nil">·</span>{% endif %}</span>
     </div>
-  </details>
+    {% if st.unreadable or not st.installed %}
+      <span class="said">could not read <code>{{ st.unit }}</code>, so this
+      says nothing about whether it ran</span>
+    {% else %}
+      <span class="said">
+        {%- if st.enabled == false %}the timer is disabled
+        {%- elif st.enabled is none %}cannot tell if the timer is enabled
+        {%- elif st.ok == false %}failed when it last ran
+        {%- elif st.last_at %}ran {{ st.last_at.strftime('%d %b %H:%M') }}
+        {%- else %}has never run{% endif -%}
+        {% if st.said %} — {{ st.said }}{% endif %}
+      </span>
+      {% if st.dry_run %}<span class="mode">dry run</span>
+      <span class="said">it applies every rule and changes nothing, so
+      what it decided above did not happen</span>{% endif %}
+    {% endif %}
+  </div>
   {% endfor %}
-
-  {% for a in awaiting.branches %}
-  <details class="ask">
-    <summary>
-      <span class="what">A branch is ready for review</span>
-      <span>{{ a.headline }}</span>
-      <span class="aside">{% for k, v in a.meta %}{{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
-    </summary>
-    <div class="body">
-      <p>A branch asks whether this is the right <em>change</em>. The diff, the
-      contract it was judged against and the verification output are on the
-      task page; merging happens there, not here.</p>
-      {% if a.detail %}<p>branch <code>{{ a.detail }}</code></p>{% endif %}
-      <p><a class="t" href="{{ a.href }}">{{ a.href_label }} →</a></p>
-    </div>
-  </details>
-  {% endfor %}
-
-  {% if n_cands %}
-  <details class="ask">
-    <summary>
-      <span class="what">{{ n_cands }} candidate{{ '' if n_cands == 1 else 's' }} waiting on a tick</span>
-      <span class="aside">queue {{ depth.queued_now }}/{{ depth.max_queued }}</span>
-    </summary>
-    <div class="body">
-      <p>Ticking one queues a draft-spec task, not a build. Reviewing them is
-      the work; generating them is cheap.</p>
-      {% if depth.queued_now >= depth.max_queued %}
-      <p><strong>The queue is full</strong>, so nothing can be ticked until
-      something drains.</p>
-      {% endif %}
-      <p><a class="t" href="/candidates">/candidates →</a></p>
-    </div>
-  </details>
-  {% endif %}
-
-  {% for a in fleet_blocked %}
-  <details class="ask">
-    <summary>
-      <span class="what">{{ a.headline }}</span>
-      <span class="aside">{{ 'needs you' if a.needs == 'NEEDS_YOU' else 'needs a machine' }}</span>
-    </summary>
-    <div class="body">
-      <p>{{ a.detail }}</p>
-      {% for k, v in a.meta %}<p class="mono">{{ k }}: {{ v }}</p>{% endfor %}
-    </div>
-  </details>
-  {% endfor %}
-
 </div>
-{% endif %}
-
-{# ============================================================= WHAT I DID #}
-<h2>What I did</h2>
 
 {% if patterns %}
 {# A pattern before the threads. Two specs failing the same check for the same
@@ -136,11 +107,64 @@
 {% endif %}
 
 {% if not done %}
-<div class="settled"><strong>Nothing completed since the last brief.</strong>
-  {% if since %}Nothing has moved since {{ since.strftime('%d %b %H:%M') }}.{% endif %}
-  That is the ordinary answer, not a gap in the record — a brief run with
-  nothing under it is a pass that happened and had nothing to say.</div>
+<p class="answer"><strong>Nothing completed.</strong>
+  <span class="quiet">{% if since %}Nothing has moved since
+  {{ since.strftime('%d %b %H:%M') }}.{% endif %}
+  That is the ordinary answer and not a gap in the record — a brief run with
+  nothing under it is a pass that happened and had nothing to say.</span></p>
 {% else %}
+{# THE ANSWER LINE. Counted from where each thread actually GOT TO rather
+   than from how many rows moved: "6 threads moved" is true of a night that
+   shipped nothing and of a night that shipped everything. `Thread.outcome`
+   takes the furthest step a thread reached, so a failure that was later
+   merged by hand does not read as a failure. #}
+{% set n_shipped = done | selectattr('outcome', 'eq', 'SHIPPED') | list | length %}
+{% set n_merged = done | selectattr('outcome', 'eq', 'MERGED') | list | length %}
+{% set n_stalled = done | selectattr('outcome', 'eq', 'NOT_QUEUED') | list | length %}
+{% set n_failed = done | selectattr('outcome', 'eq', 'FAILED') | list | length %}
+<p class="answer">
+  {%- if n_shipped %}<strong>{{ n_shipped }} shipped</strong>{% else %}<strong>Nothing shipped</strong>{% endif -%}
+  {%- if n_merged %}, {{ n_merged }} merged and not yet deployed{% endif -%}
+  {%- if n_stalled %}, {{ n_stalled }} merged and queued nothing{% endif -%}
+  {%- if n_failed %}, {{ n_failed }} failed{% endif -%}.
+  <span class="quiet">
+  {%- if queue %} {{ queue | length }} task{{ '' if queue|length == 1 else 's' }}
+  queued behind {{ 'it' if queue|length == 1 else 'them' }}.{% endif %}
+  {% if depth %}Queue {{ depth.queued_now }}/{{ depth.max_queued }};
+  {{ depth.candidates_open }} candidate{{ '' if depth.candidates_open == 1 else 's' }}
+  open in the pool the ranker draws from.{% endif %}</span></p>
+
+{# THE QUEUE, ONE CLICK AWAY RATHER THAN ONE HEADING AWAY.
+   It had a section of its own while a queue only filled if the reader filled
+   it. It does not need one now -- the night fills it, and "what happens next"
+   is the same three stages that just ran. But the ORDER is a real fact with a
+   real source and it would be a quiet loss to drop it, so it is here. #}
+{% if queue %}
+<details class="ask">
+  <summary>
+    <span class="what">{{ queue | length }} task{{ '' if queue|length == 1 else 's' }} queued, in the order the runner will claim {{ 'it' if queue|length == 1 else 'them' }}</span>
+    <span class="aside"><span class="mv">{{ money(queue | sum(attribute='max_cost_gbp')) }} committed</span></span>
+  </summary>
+  <div class="body">
+    <p>This is <code>claim_task()</code>'s own <code>(priority, id)</code>, so
+    the top row is literally what happens next.</p>
+    {% if credit and credit.status == 'COMPUTED' %}
+    <p>Committing up to {{ money(queue | sum(attribute='max_cost_gbp')) }} of
+    the {{ money(credit.remaining_gbp) }} left in this month's pool. Every
+    queued task is already counted against that ceiling — it is reserved at
+    what it <em>may</em> spend, not at an estimate.</p>
+    {% endif %}
+    <ol>
+      {% for q in queue %}
+      <li><a class="t" href="/tasks/{{ q.id }}">{{ q.title }}</a>
+        — {{ money(q.max_cost_gbp) }} cap, {{ q.work_type }}{% if q.candidate_id %},
+        from candidate {{ q.candidate_id }}{% else %}, queued directly{% endif %}</li>
+      {% endfor %}
+    </ol>
+  </div>
+</details>
+{% endif %}
+
 {% for t in done %}
 <details class="ask">
   <summary>
@@ -149,68 +173,178 @@
        has only been approved has no cost, which is not the same as a thread
        that cost nothing to run. #}
     <span class="aside">{% if t.total_cost %}{{ money(t.total_cost) }}{% else %}<span class="nil">·</span>{% endif %}{% if t.objective_ref %} {{ t.objective_ref }}{% endif %}</span>
-  </summary>
-  <div class="body">
-    <ul class="rail">
-      {% for s in t.steps %}
-      <li class="{{ 'human' if s.actor == 'HUMAN' else ('gap' if s.actor == 'GAP' or s.unrecorded else '') }}">
-        <span class="who">{{ 'you' if s.actor == 'HUMAN' else ('gap' if s.actor == 'GAP' else 'fleet') }}</span>
-        {% if s.href %}<a class="t" href="{{ s.href }}">{{ s.label }}</a>
-        {% else %}{{ s.label }}{% endif %}
-        {% if s.status %}<span class="pill {{ 'ok' if s.status in ('MERGED','SHIPPED','APPROVED','READY_FOR_REVIEW') else ('bad' if s.status in ('FAILED','NOT_SHIPPED') else 'dim') }}">{{ s.status }}</span>{% endif %}
-        {% if s.cost_gbp is not none or s.elapsed_seconds is not none %}
-        <span class="cost">{{ money(s.cost_gbp) }} · {{ elapsed(s.elapsed_seconds) }}</span>
-        {% endif %}
-        {% if s.when %}<span class="cost">{{ s.when.strftime('%d %b %H:%M') }}</span>{% endif %}
-        {% if s.detail %}<span class="said">{{ s.detail }}</span>{% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
+    </summary>
+    <div class="body">
+      <ul class="rail">
+        {% for s in t.steps %}
+        <li class="{{ {'HUMAN': 'human', 'AUTO': 'auto', 'GAP': 'gap'}.get(s.actor, '') }}">
+          <span class="who">{{ {'HUMAN': 'you', 'AUTO': 'auto', 'GAP': 'gap'}.get(s.actor, 'fleet') }}</span>
+          {% if s.href %}<a class="t" href="{{ s.href }}">{{ s.label }}</a>
+          {% else %}{{ s.label }}{% endif %}
+          {% if s.status %}<span class="pill {{ 'ok' if s.status in ('MERGED','SHIPPED','APPROVED') else ('bad' if s.status in ('FAILED','NOT_SHIPPED','NOT_QUEUED') else 'dim') }}">{{ s.status }}</span>{% endif %}
+          {% if s.cost_gbp is not none or s.elapsed_seconds is not none %}
+          <span class="cost">{{ money(s.cost_gbp) }} · {{ elapsed(s.elapsed_seconds) }}</span>
+          {% endif %}
+          {% if s.when %}<span class="cost">{{ s.when.strftime('%d %b %H:%M') }}</span>{% endif %}
+          {% if s.detail %}<span class="said">{{ s.detail }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
 </details>
 {% endfor %}
 {% endif %}
 
-{# ================================================== WHAT I'M DOING NEXT #}
-<h2>What I'm doing next</h2>
-
-{% if not queue %}
-<div class="settled"><strong>Nothing, because you haven't approved anything.</strong>
-  The queue is empty and only an approval fills it — the runner cannot queue
-  its own work, which is a grant rather than a convention.
-  {% if depth %}Depth {{ depth.queued_now }}/{{ depth.max_queued }}.{% endif %}</div>
-{% else %}
-{% if credit and credit.status == 'COMPUTED' %}
-{% set committing = queue | sum(attribute='max_cost_gbp') %}
-<p class="dim">{{ queue | length }} queued, committing up to
-{{ money(committing) }} of the {{ money(credit.remaining_gbp) }} left in this
-month's pool. Every queued task is already counted against that ceiling — it is
-reserved at what it <em>may</em> spend, not at an estimate.</p>
-{% endif %}
-<p class="dim">In the order the runner will claim them — this is
-<code>claim_task()</code>'s own <code>(priority, id)</code>, so the top row is
-literally what happens next.</p>
-{% for q in queue %}
+{# Deploy state closes this section rather than opening one of its own: what
+   shipped and what is running are the same question asked twice. Freshness is
+   printed beside every reading -- a state file is only as true as the moment
+   it was written. #}
+{% for name, d in deployments.items() %}
 <details class="ask">
   <summary>
-    <span class="what">{{ loop.index }}. {{ q.title }}</span>
-    <span class="aside">{{ money(q.max_cost_gbp) }} cap · {{ q.work_type }}</span>
-  </summary>
-  <div class="body">
-    <p>{{ q.repo }}{% if q.objective_ref %} · objective <code>{{ q.objective_ref }}</code>{% endif %}</p>
-    {% if q.candidate_id %}
-    <p>From candidate {{ q.candidate_id }} — {{ q.candidate_title }}</p>
-    {% else %}
-    <p>Queued directly, not from a candidate.</p>
-    {% endif %}
-    <p><a class="t" href="/tasks/{{ q.id }}">task {{ q.id }} →</a></p>
-  </div>
+    <span class="what">{{ name }} in production
+      <span class="pill {{ 'ok' if d.status == 'OK' else ('warn' if d.status in ('UNKNOWN','STALE','ABSENT') else 'bad') }}">{{ d.status }}</span></span>
+    <span class="aside">{% if d.checked_at %}checked {{ d.age | age }} ago{% else %}<span class="nil">·</span>{% endif %}</span>
+    </summary>
+    <div class="body">
+      {% if d.sha %}<p><code>{{ d.short_sha }}</code></p>{% endif %}
+      <p>{{ d.detail }}</p>
+    </div>
 </details>
 {% endfor %}
-{% endif %}
+</section>
 
-{# ================================================ WHAT I COULDN'T SEE #}
-<h2>What I couldn't see</h2>
+{# ====================================================== 2. WHAT NEEDS ME #}
+<section>
+<h2>What needs you</h2>
+
+{% if needs == 0 %}
+<p class="answer"><strong>Nothing is waiting on you.</strong>
+  <span class="quiet">No spec to accept, no branch to review, nothing Fleet is
+  stuck on, and no feature shipped last night whose spec nobody read.</span></p>
+{% else %}
+<p class="answer"><strong>{{ needs }} thing{{ '' if needs == 1 else 's' }}</strong>
+  need{{ 's' if needs == 1 else '' }} you.</p>
+<div class="band">
+
+  {% for a in awaiting.specs %}
+  <details class="ask">
+    <summary>
+      <span class="what">A drafted spec is waiting for you</span>
+      {# A RULE BETWEEN THE VALUES, NOT A MIDDOT. The middot is what a missing
+         value renders as, so joining "·" and "6m13s" with " · " produced
+         "· · 6m13s" -- the separator and the absence drawn with the same
+         glyph, which is the one confusion this page's first rule exists to
+         prevent. #}
+      <span class="aside">{% for k, v in a.meta %}<span class="mv{{ ' nil' if v == '·' }}">{{ v }}</span>{% endfor %}</span>
+    </summary>
+      <div class="body">
+        <p>{{ a.headline }}</p>
+        <p>A spec asks whether this is the right <em>work</em>, and it is the
+        last point at which that question is put to anybody. Accepting it
+        merges the draft and queues the code task it describes in the same
+        request — <code>console/autoqueue.py</code>, not a git commit, and
+        nothing is copied into <code>specs/</code>.</p>
+        <p>Leaving it alone is also an answer: <code>fleet-automerge</code>
+        will merge it unattended at 03:30 and the chain will continue without
+        you.</p>
+        {% if a.detail %}<p>branch <code>{{ a.detail }}</code></p>{% endif %}
+        <p><a class="t" href="{{ a.href }}">{{ a.href_label }} →</a></p>
+      </div>
+  </details>
+  {% endfor %}
+
+  {% for a in awaiting.branches %}
+  <details class="ask">
+    <summary>
+      <span class="what">A branch is ready for review</span>
+      {# A RULE BETWEEN THE VALUES, NOT A MIDDOT. The middot is what a missing
+         value renders as, so joining "·" and "6m13s" with " · " produced
+         "· · 6m13s" -- the separator and the absence drawn with the same
+         glyph, which is the one confusion this page's first rule exists to
+         prevent. #}
+      <span class="aside">{% for k, v in a.meta %}<span class="mv{{ ' nil' if v == '·' }}">{{ v }}</span>{% endfor %}</span>
+    </summary>
+      <div class="body">
+        <p>{{ a.headline }}</p>
+        <p>A branch asks whether this is the right <em>change</em>. The diff,
+        the contract it was judged against, the requirements its spec numbered
+        and the verification output are on the task page; merging happens
+        there.</p>
+        <p>This one is here rather than merged, which means
+        <code>fleet-automerge</code> refused it or has not reached it yet. The
+        task page carries the reason.</p>
+        {% if a.detail %}<p>branch <code>{{ a.detail }}</code></p>{% endif %}
+        <p><a class="t" href="{{ a.href }}">{{ a.href_label }} →</a></p>
+      </div>
+  </details>
+  {% endfor %}
+
+  {# THE ASK THIS PAGE DID NOT USED TO HAVE, and the reason it exists is the
+     reason the accept step was removed. Four green checks establish that the
+     tree typechecks, the suite passes, one new test bites and no pair landed
+     in half. They establish nothing about whether the spec was followed, and
+     since draft_spec came off NEVER_UNATTENDED nothing reads a spec at any
+     point. This is the only surface that puts a person in front of what a
+     feature promised, and it does it after the feature shipped. #}
+  {% for u in unread %}
+  <details class="ask">
+    <summary>
+      <span class="what">A feature shipped and nobody read its spec</span>
+      <span class="aside">task {{ u.task_id }} · {{ u.reqs | length }} req{{ '' if u.reqs|length == 1 else 's' }}</span>
+    </summary>
+      <div class="body">
+        <p>{{ u.title }}</p>
+        <p>Merged unattended{% if u.merged_at %} at {{ u.merged_at.strftime('%d %b %H:%M') }}{% endif %}{% if u.merge_commit %} as <code>{{ u.merge_commit }}</code>{% endif %}.
+        These are the requirements its spec numbered. <strong>Nothing checked
+        them</strong> — not this list, and not the contract, which cannot read
+        a spec.</p>
+        <ul class="reqs">
+          {% for q in u.reqs %}
+          <li class="{{ 'd1' if q.depth else 'd0' }}"><span class="rid">{{ q.id }}</span>{{ q.title }}</li>
+          {% endfor %}
+        </ul>
+        <p><a class="t" href="/tasks/{{ u.task_id }}">the diff, beside this list →</a></p>
+      </div>
+  </details>
+  {% endfor %}
+
+  {% for a in fleet_blocked %}
+  <details class="ask">
+    <summary>
+      <span class="what">{{ a.headline }}</span>
+      <span class="aside">{{ 'needs you' if a.needs == 'NEEDS_YOU' else 'needs a machine' }}</span>
+    </summary>
+      <div class="body">
+        <p>{{ a.detail }}</p>
+        {% for k, v in a.meta %}<p class="mono">{{ k }}: {{ v }}</p>{% endfor %}
+      </div>
+  </details>
+  {% endfor %}
+
+</div>
+{% endif %}
+</section>
+
+{# ================================================ 3. WHAT IT COULD NOT SEE #}
+<section>
+<h2>What it couldn't see</h2>
+
+{% set n_gaps = (uninstrumented | length) + (unseen | length) %}
+{% if n_gaps == 0 %}
+<p class="answer"><strong>Every claim in the last brief computed, and every
+  objective has a source.</strong>
+  <span class="quiet">On the current grants that has never happened, so check
+  the brief before believing it.</span></p>
+{% else %}
+{# Kept on one line. It was wrapped after "could", and while a browser
+   collapses that whitespace the sentence stopped existing as a string --
+   which is how a test asserting the section says anything at all failed
+   against a page that renders correctly. #}
+<p class="answer">{{ n_gaps }} thing{{ '' if n_gaps == 1 else 's' }} it could not see.
+  <span class="quiet">Each says what it would tell you if it could reach the
+  source — the ask is the claim, not the permission.</span></p>
+{% endif %}
 
 {# An objective with NO source comes FIRST and separately. A claim that failed
    to compute has a source that broke; an objective nothing has ever probed was
@@ -228,46 +362,19 @@ literally what happens next.</p>
 </div>
 {% endfor %}
 
-{% if not unseen %}
-<div class="settled">Every claim in the last brief computed.
-  <span class="dim">On the current grants that has never happened, so check the
-  brief before believing it.</span></div>
-{% else %}
-<p class="dim">{{ unseen | length }} claim{{ '' if unseen|length == 1 else 's' }}
-in brief #{{ window.run_id }} could not be computed. Each says what it would
-tell you if it could see the source — the ask is the claim, not the
-permission.</p>
 {% for u in unseen %}
 <details class="ask">
   <summary>
     <span class="what">{{ u.statement }}</span>
     <span class="aside">{{ u.briefs_running }} brief{{ '' if u.briefs_running == 1 else 's' }} running</span>
-  </summary>
-  <div class="body">
-    <p><code>{{ u.metric_key }}</code></p>
-    <p>{{ u.uncomputed_reason }}</p>
-  </div>
+    </summary>
+    <div class="body">
+      <p><code>{{ u.metric_key }}</code></p>
+      <p>{{ u.uncomputed_reason }}</p>
+    </div>
 </details>
 {% endfor %}
-{% endif %}
-
-{# Deploy state last, because it is context for the threads above rather than
-   an ask of its own. Freshness is printed beside every reading: a state file
-   is only as true as the moment it was written. #}
-<h2>What production is running</h2>
-{% for name, d in deployments.items() %}
-<details class="ask">
-  <summary>
-    <span class="what">{{ name }}</span>
-    <span class="pill {{ 'ok' if d.status == 'OK' else ('warn' if d.status in ('UNKNOWN','STALE','ABSENT') else 'bad') }}">{{ d.status }}</span>
-    <span class="aside">{% if d.checked_at %}checked {{ d.age | age }} ago{% else %}<span class="nil">·</span>{% endif %}</span>
-  </summary>
-  <div class="body">
-    {% if d.sha %}<p><code>{{ d.short_sha }}</code></p>{% endif %}
-    <p>{{ d.detail }}</p>
-  </div>
-</details>
-{% endfor %}
+</section>
 
 </div>
 {% endblock %}

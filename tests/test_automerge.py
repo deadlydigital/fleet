@@ -53,21 +53,97 @@ def test_an_ordinary_dd_api_task_is_eligible_by_default():
 
 # ---- the hard rule --------------------------------------------------------
 
-def test_a_draft_spec_never_merges_unattended():
-    """It exists to be read. This is the one remaining human gate."""
+#: The REAL draft-spec contract shape, not `_contract(work_type="draft_spec")`.
+#:
+#: The first version of this test used the fixture default and passed while
+#: the real path could not have got past gate 3: `_contract()` carries
+#: `creatable_paths` and `_rv()` carries a passing bite check, and
+#: contracts/draft-spec.yaml has neither and never will. A test whose fixture
+#: is more permissive than production is a test that cannot fail for the
+#: reason it exists.
+def _draft_contract(**over) -> dict:
+    c = {"work_type": "draft_spec", "repo": "fleet",
+         "writable_paths": ["drafts/**"],
+         "protected_paths": ["specs/**", "console/**"],
+         "verification": ["/home/ubuntu/fleet/contracts/checks/"
+                          "draft_spec_shape.py"],
+         "max_diff_lines": 400}
+    c.update(over)
+    return c
+
+
+#: What re-verification looks like for a document: one check, its own shape
+#: check, and no bite check anywhere.
+def _draft_rv(**over):
+    d = {"ok": True, "could_not_run": False, "skipped_reason": "",
+         "checks": [{"command": "/home/ubuntu/fleet/contracts/checks/"
+                                "draft_spec_shape.py",
+                     "exit_code": 0, "duration_ms": 900}],
+         "merged_sha": "a" * 40, "base_sha": "b" * 40}
+    d.update(over)
+    return SimpleNamespace(**d)
+
+
+def test_a_real_draft_spec_merges_unattended_since_the_gate_was_removed():
+    """The gate is gone, deliberately, and nothing replaces it.
+
+    This asserted the opposite until 10 Sep 2026, when `draft_spec` came off
+    NEVER_UNATTENDED. Inverted rather than deleted so the removal is a thing
+    the suite states, not a rule that quietly stopped being tested. What it
+    costs is in console/automerge.py's docstring and in
+    specs/auto-approval.md §9.9: nothing reads a spec at any point now.
+    """
+    v = automerge.eligible(_task(acceptance_contract=_draft_contract()),
+                           _draft_rv())
+    assert v.ok, v.reason
+
+
+def test_a_merged_document_does_not_claim_a_test_bit():
+    """False, not absent and not True. A later reader needs to know that no
+    test bit here because there was nothing for one to bite on."""
+    v = automerge.eligible(_task(acceptance_contract=_draft_contract()),
+                           _draft_rv())
+    assert v.gates["test_bit"] is False
+    assert v.gates["document"] is True
+
+
+def test_a_document_still_has_to_pass_its_own_check():
+    """Skipping the added-test gate must not skip re-verification. If
+    draft_spec_shape.py fails, the draft does not merge."""
+    for rv in (_draft_rv(ok=False, reason="shape check failed"),
+               _draft_rv(could_not_run=True),
+               _draft_rv(skipped_reason="no trial clone"),
+               None):
+        v = automerge.eligible(_task(acceptance_contract=_draft_contract()),
+                               rv)
+        assert not v.ok
+
+def test_a_code_task_does_not_get_the_document_exemption():
+    """The exemption is keyed on work_type and must not leak. A dd_api task
+    with no creatable_paths is still refused."""
     v = automerge.eligible(
-        _task(acceptance_contract=_contract(work_type="draft_spec")), _rv())
+        _task(acceptance_contract=_contract(creatable_paths=[])), _rv())
     assert not v.ok
-    assert "exists to be read" in v.reason
+    assert "no new test file" in v.reason
 
 
-def test_a_draft_spec_is_refused_even_with_auto_merge_true():
-    """A contract flag must not reach it. If this ever passes, the human gate
-    is gone and nothing else replaces it."""
+def test_a_draft_spec_still_honours_auto_merge_false():
+    """The hard rule went; the opt-out did not. A contract can still hold one
+    back, which is the only remaining way to put a person in front of a spec."""
     v = automerge.eligible(
         _task(acceptance_contract=_contract(work_type="draft_spec",
-                                            auto_merge=True)), _rv())
+                                            auto_merge=False)), _rv())
     assert not v.ok
+
+
+def test_research_is_still_never_eligible():
+    """Only draft_spec came off the tuple. The narrowness is the point."""
+    for wt in ("research", "candidate_producer", "dd_infra"):
+        v = automerge.eligible(
+            _task(acceptance_contract=_contract(work_type=wt,
+                                                auto_merge=True)), _rv())
+        assert not v.ok, wt
+        assert "exists to be read" in v.reason or "never merges" in v.reason
 
 
 def test_research_never_merges_unattended():
@@ -143,7 +219,7 @@ def test_a_test_that_did_not_bite_is_refused():
 def test_every_refusal_says_why_in_a_sentence():
     """These reach the brief and the console. A code is not a reason."""
     cases = [
-        (_task(acceptance_contract=_contract(work_type="draft_spec")), _rv()),
+        (_task(acceptance_contract=_contract(work_type="research")), _rv()),
         (_task(acceptance_contract=_contract(auto_merge=False)), _rv()),
         (_task(), None),
         (_task(), _rv(ok=False)),

@@ -121,10 +121,22 @@ def index(request: Request):
     telling someone what happened. They all still exist, unchanged, and this
     page links into them wherever a bullet needs more than a bullet.
 
-    A standup, stacked: what is blocking you, what got done, what is next,
-    what could not be seen. All four at once rather than behind a Next button
-    — "nothing is blocking me" is an answer you should get by reading, not by
-    clicking twice to find out there was nothing there.
+    THREE QUESTIONS, IN THE ORDER THEY ARE ASKED
+    ---------------------------------------------
+    What shipped overnight, what needs me, and what it could not see. That is
+    the order since 10 Sep 2026 and it is not the order a standup is spoken
+    in: a standup puts blockers last because the rest has already been said.
+    Here the reader arrives knowing nothing, and the first question is always
+    what happened while they were asleep.
+
+    It replaces four sections with three. "What I'm doing next" was a section
+    when a queue only filled if the reader filled it; now the night fills it,
+    the queue is a line in the overnight chain rather than a heading of its
+    own, and "next" is the same three stages that just ran.
+
+    All of it at once rather than behind a Next button — "nothing is blocking
+    me" is an answer you should get by reading, not by clicking twice to find
+    out there was nothing there.
     """
     window = queries.morning_window()
     since = window["compares_since"] if window else None
@@ -152,16 +164,27 @@ def index(request: Request):
     # the claim is worth making.
     attempted = queries.morning_runs_in_window(since)
 
+    # THE CHAIN, FROM THE UNITS THEMSELVES. Read before the decisions so that
+    # `describe_night` can pair what the database says the night decided with
+    # whether the unit that would have decided it actually ran. A row with no
+    # run is impossible; a run with no row means the sweep died before it
+    # decided; and neither of those is "nothing happened".
+    stages = morning.units()
+    night = queries.morning_unattended_night(since)
+    morning.describe_night(stages, night)
+
     return render(
         request, "morning.html",
         window=window, since=since,
         awaiting=morning.awaiting_you(queries.morning_awaiting_you()),
         depth=queries.morning_queue_depth(),
-        fleet_blocked=morning.fleet_blocked(credit, deployments),
+        fleet_blocked=morning.fleet_blocked(credit, deployments, stages),
         credit=credit,
         done=done,
         patterns=morning.failure_patterns(failures, since, attempted),
         queue=queries.morning_queue(),
+        stages=stages, night=night,
+        unread=morning.unread_specs(queries.morning_unread_specs(since)),
         unseen=queries.morning_unseen(),
         uninstrumented=morning.uninstrumented_objectives(
             claim_keys=queries.morning_claim_keys()),
