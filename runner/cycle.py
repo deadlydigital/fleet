@@ -113,7 +113,7 @@ def tick(*, queue: str | None = None, only_task: int | None = None,
             result.reason = f"{type(exc).__name__}: {exc}"
             log(f"  ! {result.reason}")
 
-        _settle_task(runner, task, result, log)
+        _settle_task(runner, task, settings, result, log)
         return result
     finally:
         result.duration_s = time.monotonic() - started
@@ -671,30 +671,84 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
             (run_id, "fleet-runner/verifier", Jsonb(payload)))
 
 
-def _settle_task(runner, task, result, log) -> None:
-    """Move the task and close the run. Never to a deploying state."""
+def _branch_exists(repo: Path, branch: str | None) -> bool:
+    """Does git hold this ref? Asked of the tree, never inferred.
+
+    `result.branch` is assigned before `worktree.create` runs, so it is a
+    NAME and not evidence. A run that died before the worktree was made holds
+    a branch name for a branch that was never cut, and recording that on the
+    failed path would be a new false statement of exactly the kind
+    specs/auto-approval.md §9.6 exists to end.
+
+    §9.6's own rule, in its words: ask the tree, not the row. Same discipline
+    as paired_paths.py and new_test_bites.sh -- git is the thing neither the
+    agent nor the runner can talk out of.
+    """
+    if not branch:
+        return False
+    try:
+        return worktree.git(
+            repo, "rev-parse", "--verify", "--quiet",
+            f"refs/heads/{branch}", check=False).strip() != ""
+    except Exception:                                         # noqa: BLE001
+        return False
+
+
+def _settle_task(runner, task, settings, result, log) -> None:
+    """Move the task and close the run. Never to a deploying state.
+
+    IT USED TO DISCARD EVERYTHING THE RUN KNEW ON THE WAY OUT.
+    specs/auto-approval.md §9.6, recorded 10 Sep 2026 and fixed here: the
+    failure branch wrote `status` and `completed_at` and nothing else, while
+    the runner was holding `result.reason` and `result.branch`. Five readings
+    were misled by the silence -- tasks 21, 34, 49, 50 and 51 -- including
+    two on the same day: "the platform has no deploy script" (it had been on
+    main since that morning) and "the candidate producer is failing" (both
+    runs produced the documents that became batches 9 and 10).
+
+    Two changes, and both are about what a row SAYS rather than what anything
+    does with it:
+
+      the reason is written on every settle, success included, because a
+      column that is NULL for success is a second encoding of `status`;
+
+      the branch is written on the failed path too, but ONLY when git says
+      the ref exists -- see _branch_exists.
+    """
+    branch = result.branch if _branch_exists(
+        Path(settings["repo_root"]) / task["repo"], result.branch) else None
+    if branch is None and result.branch:
+        result.notes.append(
+            f"branch {result.branch} was never cut, so the row records none")
+
     if result.run_id is not None:
         status = "AWAITING_HUMAN" if result.outcome == "READY_FOR_REVIEW" else "FAILED"
         assert status not in FORBIDDEN_RUN_STATUS
         runner.execute(
-            "UPDATE runs SET status=%s, completed_at=now() WHERE id=%s",
-            (status, result.run_id))
+            "UPDATE runs SET status=%s, reason=%s, completed_at=now()"
+            " WHERE id=%s",
+            (status, result.reason or None, result.run_id))
 
     if result.outcome == "READY_FOR_REVIEW":
         runner.execute(
             "UPDATE tasks SET status='READY_FOR_REVIEW', branch_name=%s,"
-            " completed_at=now() WHERE id=%s", (result.branch, task["id"]))
-        log(f"  -> READY_FOR_REVIEW  {result.branch}")
+            " completed_at=now() WHERE id=%s", (branch, task["id"]))
+        log(f"  -> READY_FOR_REVIEW  {branch}")
         return
 
     if task["attempts"] < task["max_attempts"]:
+        # The branch is recorded here too. A requeued task keeps the ref its
+        # last attempt left behind, and the next attempt cuts a new one --
+        # worktree.branch_name() takes the attempt number -- so the row names
+        # what exists rather than nothing.
         runner.execute(
-            "UPDATE tasks SET status='QUEUED', claimed_at=NULL WHERE id=%s",
-            (task["id"],))
+            "UPDATE tasks SET status='QUEUED', branch_name=%s,"
+            " claimed_at=NULL WHERE id=%s", (branch, task["id"]))
         result.requeued = True
         log(f"  -> QUEUED again ({task['attempts']}/{task['max_attempts']} used)")
     else:
         runner.execute(
-            "UPDATE tasks SET status='FAILED', completed_at=now() WHERE id=%s",
-            (task["id"],))
-        log(f"  -> FAILED  {result.reason}")
+            "UPDATE tasks SET status='FAILED', branch_name=%s,"
+            " completed_at=now() WHERE id=%s", (branch, task["id"]))
+        log(f"  -> FAILED  {result.reason}"
+            + (f"  (branch {branch} is on disk)" if branch else ""))

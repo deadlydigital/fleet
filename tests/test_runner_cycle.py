@@ -623,3 +623,119 @@ def test_model_usage_is_the_token_source_when_usage_is_zeroed():
     assert prompt == 2 + 18774 + 4380 + 537
     assert completion == 964 + 19
     assert cycle._model_usage_totals({}) == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# §9.6: the FAILED path used to discard everything the run knew.
+#
+# specs/auto-approval.md §9.6, named 10 Sep 2026 and unscheduled every time.
+# The failure branch wrote `status` and `completed_at` while the runner held
+# `result.reason` and `result.branch`. Five readings were misled by the
+# silence -- tasks 21, 34, 49, 50 and 51 -- including "the platform has no
+# deploy script" (it had been on main since that morning) and "the candidate
+# producer is failing" (both runs produced the documents that became batches
+# 9 and 10).
+# ---------------------------------------------------------------------------
+
+
+class _FakeRunner:
+    """Captures the SQL a settle would run. Enough to assert on columns."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, tuple]] = []
+
+    def execute(self, sql, params=()):
+        self.calls.append((" ".join(sql.split()), tuple(params)))
+
+    def sql_for(self, table: str) -> tuple[str, tuple] | None:
+        for sql, params in self.calls:
+            if sql.startswith(f"UPDATE {table}"):
+                return sql, params
+        return None
+
+
+def _settle(tmp_path, outcome, reason, branch, *, make_branch, attempts=1,
+            max_attempts=1):
+    """Run _settle_task against a real git repo, so the branch test is real."""
+    import subprocess
+    from runner import cycle
+
+    repo_root = tmp_path / "repos"
+    repo = repo_root / "fleet"
+    repo.mkdir(parents=True)
+    for args in (("init", "-q", "."), ("config", "user.email", "t@t"),
+                 ("config", "user.name", "t")):
+        subprocess.run(("git", "-C", str(repo)) + args, check=True,
+                       capture_output=True)
+    (repo / "a.txt").write_text("x")
+    subprocess.run(("git", "-C", str(repo), "add", "-A"), check=True,
+                   capture_output=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "base"),
+                   check=True, capture_output=True)
+    if make_branch:
+        subprocess.run(("git", "-C", str(repo), "branch", branch), check=True,
+                       capture_output=True)
+
+    result = cycle.TickResult(task_id=1, run_id=7, outcome=outcome,
+                              reason=reason, branch=branch)
+    runner = _FakeRunner()
+    cycle._settle_task(
+        runner, {"id": 1, "repo": "fleet", "attempts": attempts,
+                 "max_attempts": max_attempts},
+        {"repo_root": str(repo_root)}, result, lambda *_a, **_k: None)
+    return runner, result
+
+
+class TestAFailedRunKeepsWhatItKnew:
+    def test_the_reason_is_written_on_failure(self, tmp_path):
+        runner, _ = _settle(tmp_path, "FAILED", "verification failed",
+                            "fleet/task-1", make_branch=True)
+        sql, params = runner.sql_for("runs")
+        assert "reason=%s" in sql
+        assert "verification failed" in params
+
+    def test_the_reason_is_written_on_success_too(self, tmp_path):
+        """A column that is NULL for success is a second encoding of status,
+        and the first reader to treat NULL as "fine" would be right until a
+        failure forgot to write it."""
+        runner, _ = _settle(tmp_path, "READY_FOR_REVIEW", "verified, branch "
+                            "ready", "fleet/task-1", make_branch=True)
+        sql, params = runner.sql_for("runs")
+        assert "reason=%s" in sql
+        assert "verified, branch ready" in params
+
+    def test_the_branch_is_recorded_on_the_failed_path(self, tmp_path):
+        """Task 49 pushed its branch and died at the next step, so origin
+        held verified work that nothing in the system pointed at."""
+        runner, _ = _settle(tmp_path, "FAILED", "boom", "fleet/task-1",
+                            make_branch=True)
+        sql, params = runner.sql_for("tasks")
+        assert "status='FAILED'" in sql and "branch_name=%s" in sql
+        assert "fleet/task-1" in params
+
+    def test_a_branch_that_was_never_cut_is_not_recorded(self, tmp_path):
+        """`result.branch` is assigned BEFORE worktree.create runs, so it is
+        a name and not evidence. Recording it would be a new false statement
+        of exactly the kind §9.6 exists to end."""
+        runner, result = _settle(tmp_path, "FAILED", "died early",
+                                 "fleet/task-1", make_branch=False)
+        sql, params = runner.sql_for("tasks")
+        assert "branch_name=%s" in sql
+        assert params[0] is None
+        assert any("never cut" in n for n in result.notes)
+
+    def test_a_requeued_attempt_records_the_branch_it_left(self, tmp_path):
+        runner, _ = _settle(tmp_path, "FAILED", "retrying", "fleet/task-1",
+                            make_branch=True, attempts=1, max_attempts=3)
+        sql, params = runner.sql_for("tasks")
+        assert "status='QUEUED'" in sql and "branch_name=%s" in sql
+        assert "fleet/task-1" in params
+
+    def test_the_branch_check_asks_git_and_not_the_result(self, tmp_path):
+        """§9.6's own rule: ask the tree, not the row."""
+        from runner import cycle
+        repo = tmp_path / "r"
+        repo.mkdir()
+        assert cycle._branch_exists(repo, "fleet/task-1") is False
+        assert cycle._branch_exists(repo, None) is False
+        assert cycle._branch_exists(repo, "") is False

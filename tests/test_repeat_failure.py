@@ -51,10 +51,38 @@ EXISTS = {"path_exists": "api/analytics/routes/orders.py"}
 
 # ---- arranging history -----------------------------------------------------
 
+def _producer_task(console) -> int:
+    """A candidate_producer task, so a batch can point at one.
+
+    Since 034 `console/rank.py` gate 2 supersedes only against a batch a
+    producer run made, and every batch here stands for one the loader would
+    have created from a produced document. Left NULL, gate 2 would stop
+    firing and rows held by it would report a later rule instead -- which is
+    what happened to this file's repeat counts before the fixture was fixed.
+    See the note at the top of tests/conftest.py.
+    """
+    floor = console.execute(
+        "SELECT jsonb_agg(glob) AS g FROM protected_path_floor"
+        " WHERE repo='fleet'").fetchone()["g"]
+    contract = json.dumps({
+        "work_type": "candidate_producer",
+        "writable_paths": ["research/produced.md"],
+        "protected_paths": floor, "verification": ["true"],
+        "max_diff_lines": 10})
+    row = console.execute(
+        "INSERT INTO tasks (title, spec_md, repo, acceptance_contract,"
+        " max_cost_gbp) VALUES ('produce','x','fleet',%s,1.0) RETURNING id",
+        (contract,)).fetchone()
+    console.commit()
+    return row["id"]
+
+
 def _batch(console, doc=DOC, sha=SHA_BATCH_9) -> int:
     row = console.execute(
-        "INSERT INTO candidate_batches (source_document, source_sha, source_repo)"
-        " VALUES (%s,%s,'fleet') RETURNING id", (doc, sha)).fetchone()
+        "INSERT INTO candidate_batches (source_document, source_sha,"
+        " source_repo, produced_by_task_id)"
+        " VALUES (%s,%s,'fleet',%s) RETURNING id",
+        (doc, sha, _producer_task(console))).fetchone()
     console.commit()
     return row["id"]
 

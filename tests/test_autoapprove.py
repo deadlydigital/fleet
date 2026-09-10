@@ -24,10 +24,37 @@ import pytest
 from console import approve, autoapprove, rank
 
 
-def _batch(console, doc="research/candidates.md", sha="4041d15") -> int:
+def _producer_task(console) -> int:
+    """A candidate_producer task, so a batch can point at one.
+
+    A batch with no producer is not a shape the loader makes for a produced
+    document, and since 034 it is the shape gate 2 declines to supersede
+    against. A fixture that left it NULL would be testing a state production
+    does not reach -- see the note at the top of tests/conftest.py.
+    """
+    floor = console.execute(
+        "SELECT jsonb_agg(glob) AS g FROM protected_path_floor"
+        " WHERE repo='fleet'").fetchone()["g"]
+    contract = json.dumps({
+        "work_type": "candidate_producer",
+        "writable_paths": ["research/candidates.md"],
+        "protected_paths": floor, "verification": ["true"],
+        "max_diff_lines": 10})
     row = console.execute(
-        "INSERT INTO candidate_batches (source_document, source_sha, source_repo)"
-        " VALUES (%s,%s,'fleet') RETURNING id", (doc, sha)).fetchone()
+        "INSERT INTO tasks (title, spec_md, repo, acceptance_contract,"
+        " max_cost_gbp) VALUES ('produce','x','fleet',%s,1.0) RETURNING id",
+        (contract,)).fetchone()
+    console.commit()
+    return row["id"]
+
+
+def _batch(console, doc="research/candidates.md", sha="4041d15",
+           producer: bool = True) -> int:
+    row = console.execute(
+        "INSERT INTO candidate_batches (source_document, source_sha,"
+        " source_repo, produced_by_task_id)"
+        " VALUES (%s,%s,'fleet',%s) RETURNING id",
+        (doc, sha, _producer_task(console) if producer else None)).fetchone()
     console.commit()
     return row["id"]
 
@@ -432,10 +459,15 @@ class TestTheCut:
         assert "autonomous_credit" in p["cut"]["bound_by"]
 
     def test_an_uncomputed_pool_approves_nothing(self, dsns, console, admin):
-        admin.execute("DELETE FROM model_credit_pool")
-        admin.commit()
+        # The batch first. Since 034 `_batch` creates the candidate_producer
+        # task it points at, and enforce_credit_ceiling() refuses a task
+        # insert while the pool is unknown -- which is the behaviour a
+        # different test asserts, and would fail this one in the fixture
+        # rather than in the thing it is about.
         b = _batch(console)
         _cand(console, b)
+        admin.execute("DELETE FROM model_credit_pool")
+        admin.commit()
         p = autoapprove.plan()
         assert p["cut"]["n"] == 0
         assert p["approve_ids"] == []
@@ -946,3 +978,49 @@ class TestTheGateAndAutoqueueAgree:
             for p in probes:
                 assert rank._inside(p, globs) == autoqueue._inside(p, list(globs)), \
                     (p, _name)
+
+
+class TestOnlyAProducerBatchSupersedes:
+    """034. Gate 2's argument is "the newer batch re-verified these claims
+    against a later sha", and only a candidate_producer run does that.
+
+    On 10 Sep 2026 batch 11 -- one candidate, written by hand from a draft,
+    its own note saying "NOT A PRODUCER BATCH" -- was the newest, so gate 2
+    reported all twenty real candidates as superseded and the first live
+    sweep would have approved nothing and looked like an ordinary quiet
+    night.
+    """
+
+    def test_a_hand_made_batch_does_not_supersede_a_produced_one(
+            self, dsns, console, admin):
+        _pool(admin)
+        produced = _batch(console)
+        cid = _cand(console, produced, title="CSV export of the order list")
+        # Newer, higher id, and nothing produced it.
+        _batch(console, doc="drafts/one-row.md", producer=False)
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["rule"] != "older_batch", row["detail"]
+
+    def test_a_newer_produced_batch_still_supersedes(
+            self, dsns, console, admin):
+        """The gate must keep working. This is the property 034 preserves."""
+        _pool(admin)
+        old, new = _batch(console), _batch(console, doc="research/b.md")
+        stale = _cand(console, old, title="CSV export of the order list")
+        _cand(console, new, title="CSV export, honouring the filters")
+        p = autoapprove.plan()
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == stale)["rule"] == "older_batch"
+
+    def test_no_producer_batch_at_all_supersedes_nobody(self, dsns, console,
+                                                        admin):
+        """Supersession is the whole content of the gate. With nothing to
+        have re-verified anything, holding every row would shut the pool on
+        the absence of a thing."""
+        _pool(admin)
+        b = _batch(console, producer=False)
+        cid = _cand(console, b)
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["rule"] != "older_batch", row["detail"]

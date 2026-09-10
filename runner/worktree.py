@@ -272,9 +272,16 @@ def delete_branch(repo: Path, branch: str) -> None:
 def has_remote(repo: Path, remote: str = "origin") -> bool:
     """Whether there is anywhere to push.
 
-    ~/fleet has no remote. A research task produces a document on a local
-    branch and that IS the artifact; treating the absent remote as a failure
-    would report a successful run as a broken one.
+    A research task can produce a document on a local branch and that IS the
+    artifact; treating an absent remote as a failure would report a
+    successful run as a broken one.
+
+    THIS SAID "~/fleet has no remote" UNTIL 10 SEP 2026 AND IT DOES NOW
+    (`git@github-fleet:deadlydigital/fleet.git`), so the branch that reads
+    this takes the push path for fleet-repo tasks where the comment said it
+    would not. Nothing here decides anything on the strength of the comment
+    -- the answer comes from `git remote` -- but the sentence was load-bearing
+    for a reader, and tasks 34 and 50 were both diagnosed against it.
     """
     return bool(git(repo, "remote", check=False).split())
 

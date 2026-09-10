@@ -232,8 +232,23 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
         candidates = _open_candidates(conn)
         tasks = _live_tasks(conn)
         ceilings = _ceilings(conn)
+        # THE NEWEST PRODUCER BATCH, not the newest batch.
+        #
+        # gate 2 holds a candidate that is not in this one, on the argument
+        # that "the newer batch re-verified these claims against a later
+        # sha". Only a producer run does that. Taking max(batch_id) over
+        # every batch made a hand-written one-row batch about §2.5 of a
+        # draft -- batch 11, whose own note says "NOT A PRODUCER BATCH" --
+        # supersede twenty real candidates, and the first live sweep would
+        # have approved nothing and reported it as an ordinary quiet night.
+        #
+        # 034 derives `produced_by_task_id`. NULL means no producer run added
+        # the document, which is true of a gap list read by hand, a batch
+        # written from a draft, and a leaked test fixture.
         newest = conn.execute(
-            "SELECT max(batch_id) AS b FROM candidates").fetchone()["b"]
+            "SELECT max(c.batch_id) AS b FROM candidates c"
+            " JOIN candidate_batches b ON b.id = c.batch_id"
+            " WHERE b.produced_by_task_id IS NOT NULL").fetchone()["b"]
         # THE FLOOR FROM THE TABLE, never a literal here. Same argument as
         # the coverage floor below and as contracts/draft-spec.yaml's
         # generated protected list: a typed copy drifts, and here a drifted

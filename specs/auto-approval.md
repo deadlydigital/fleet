@@ -1107,6 +1107,32 @@ effect. The fix takes effect the day the flag comes off; until then,
 
 Recorded 10 Sep 2026 from task 49. **Not fixed here**, and it will recur.
 
+> **FIXED 10 Sep 2026, after a fifth reading and a sixth.** The account below
+> stands unedited; what follows is what was done and what it cost to leave.
+>
+> The fifth was task 51 — *"the platform has no deploy script"* — recorded at
+> the end of this section. The sixth came the same evening: tasks 34 and 50
+> were read as *"the candidate producer is failing"*, and an instruction was
+> given to fix a producer that works. Both runs had `VERIFICATION_RUN = PASS`,
+> both produced the documents that became batches 9 and 10, and batch 10's
+> nine rows are most of the open pool. The premise came from the row.
+>
+> `033_failed_runs_keep_what_they_knew.sql` adds `runs.reason`, written on
+> **every** settle rather than only on failure — a column that is NULL for
+> success is a second encoding of `status`. `runner/cycle.py` writes
+> `branch_name` on the failed and requeued paths as well, and **only when git
+> says the ref exists**: `result.branch` is assigned before `worktree.create`
+> runs, so a run that died early holds a name for a branch that was never cut,
+> and recording that would be a new false statement of exactly this kind. The
+> check is `_branch_exists`, and it asks the tree — this section's own rule.
+>
+> What it does not do: there is still no `FAILED → MERGED` edge, so tasks 51
+> and 55 keep reading FAILED for work that shipped. That is a state-machine
+> decision and it was declined on 10 Sep — see the paragraph on 031, refused
+> because a rule saying "a failure may become a merge" is inherited by every
+> unattended sweep. The rows are wrong and the reason column now says why they
+> stopped, which is the smaller half of the fix and the one that was in scope.
+
 `runner/cycle.py`'s terminal writer has two branches. The success branch records
 what the run produced:
 

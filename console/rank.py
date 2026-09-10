@@ -556,11 +556,24 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
     #    newer sha, so an older row is superseded by construction -- and rows
     #    left behind from an older batch are exactly the repetition
     #    specs/approval-surface.md §5 wants a person to look at.
-    if candidate.get("batch_id") != newest_batch:
+    # None means NO PRODUCER BATCH EXISTS, and then nothing is superseded.
+    #
+    # Supersession is the whole content of this gate -- "the newer batch
+    # re-verified these claims against a later sha" -- so with no producer
+    # run to have done any re-verifying there is no newer claim to prefer.
+    # Holding every row instead would shut the pool on the absence of a
+    # thing, which is what happened on 10 Sep by a different route: a
+    # hand-written batch counted as the newest and held twenty real rows.
+    #
+    # It fails OPEN and only here. Every other gate still applies, and this
+    # one is about staleness rather than safety.
+    if newest_batch is not None and candidate.get("batch_id") != newest_batch:
         return {"eligible": False, "rule": "older_batch",
                 "detail": f"batch {candidate.get('batch_id')}, and the newest "
                           f"is {newest_batch}; the newer batch re-verified "
-                          f"these claims against a later sha",
+                          f"these claims against a later sha. Only a batch a "
+                          f"candidate_producer run made counts here -- see "
+                          f"034",
                 "prior_failures": prior_failures}
 
     # 3. No overlap with a task that is not terminal.

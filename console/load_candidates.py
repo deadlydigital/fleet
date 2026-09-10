@@ -458,10 +458,30 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
                     f"{', '.join(str(i) for i in r['prior_ids'])})"
                     for r in relabelled)]))
 
+        # WHICH RUN PRODUCED THIS DOCUMENT, derived rather than asked for.
+        #
+        # 034: console/rank.py gate 2 supersedes a candidate only against a
+        # batch that has one, because "a newer batch re-verified these claims
+        # against a later sha" is true of a producer run and of nothing else.
+        # A hand-read gap list and a batch written from a draft both get NULL,
+        # which is the true answer -- on 10 Sep a hand-written one-row batch
+        # was the newest and held all twenty real candidates.
+        #
+        # A --produced-by flag would jam the pool the first time somebody
+        # forgot it, with no error, so it is looked up here. `work_type` is
+        # part of the lookup and not decoration: without it the draft-spec run
+        # that wrote drafts/order-filters-frontend.md is returned as batch
+        # 11's producer, and the batch this exists to discount counts again.
         conn.execute(
             "INSERT INTO candidate_batches (source_document, source_sha,"
-            " source_repo, note) VALUES (%s,%s,'fleet',%s)",
-            (rel, source_sha, note))
+            " source_repo, note, produced_by_task_id)"
+            " VALUES (%s,%s,'fleet',%s,"
+            "   (SELECT r.task_id FROM run_steps s JOIN runs r ON r.id = s.run_id"
+            "     WHERE s.step_type = 'PATCH_PROPOSED'"
+            "       AND r.work_type = 'candidate_producer'"
+            "       AND s.payload->'files_changed' ? %s"
+            "     ORDER BY r.id DESC LIMIT 1))",
+            (rel, source_sha, note, rel))
         batch_id = conn.execute(
             "SELECT currval('candidate_batches_id_seq') AS id").fetchone()["id"]
         ids = []
