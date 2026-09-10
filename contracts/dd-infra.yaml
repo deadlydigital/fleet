@@ -113,6 +113,11 @@ verification:
   # works -- passes all six, which is what calibrates them.
   - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/deploy_script_shape.py
 
-max_diff_lines: 300
+# 500, and the first value here was 300 — which refused task 51 at 314 lines
+# for a script modelled, on this contract's own instruction, on a 365-line
+# api/deploy.sh. A ceiling set below the length of the file the spec points at
+# is a ceiling that refuses the work it asked for, and it cost GBP 1.88 to find
+# out. Sized against the model plus room for the platform's own argument.
+max_diff_lines: 500
 max_cost_gbp: 3.00
 timeout_seconds: 1800

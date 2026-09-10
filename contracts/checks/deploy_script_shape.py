@@ -107,6 +107,27 @@ def main(argv=None) -> int:
 
     problems: list[str] = []
 
+    # COMMENTS ARE STRIPPED BEFORE ANY RULE IS APPLIED, and task 51 is why.
+    #
+    # Its script tags the rollback correctly -- `docker tag "$running_id"`, off
+    # the RUNNING container, at line 219 -- and this check called it a
+    # violation, because the FIRST text matching a build was the usage example
+    # in the header comment on line 14:
+    #
+    #     #     GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build
+    #
+    # so the ordering rule compared a comment against code. That is a check
+    # failing a correct script for its documentation, which is worse than not
+    # checking: it teaches the next author to write fewer comments.
+    #
+    # And it cuts the other way, which is the stronger reason. Every rule below
+    # asks whether the script DOES something. A script that merely mentions
+    # GIT_SHA in a comment satisfies none of them in fact, and this stops it
+    # satisfying them in text. `api/deploy.sh` passes on its code alone.
+    code = "\n".join(
+        re.sub(r"(^|\s)#.*$", r"\1", line) if not line.lstrip().startswith("#")
+        else "" for line in text.splitlines())
+
     # It must at least parse. `bash -n` costs nothing and catches the class of
     # error that would otherwise be found halfway through a production deploy.
     r = subprocess.run(["bash", "-n", rel], capture_output=True, text=True)
@@ -118,14 +139,14 @@ def main(argv=None) -> int:
                         f"file somebody has to remember to invoke with `sh`")
 
     for name, pattern, why in RULES:
-        if not re.search(pattern, text, re.I):
+        if not re.search(pattern, code, re.I):
             problems.append(f"{rel} is missing {name} -- {why}")
 
     # ORDERING, not just presence. A rollback tag taken AFTER the build is a
     # tag on the new image, which is not a rollback at all.
     build_at = re.search(r"docker\s+(compose\s+)?build|compose\s+up\b.*--build",
-                         text, re.I)
-    tag_at = re.search(r"docker\s+(image\s+)?tag", text, re.I)
+                         code, re.I)
+    tag_at = re.search(r"docker\s+(image\s+)?tag", code, re.I)
     if build_at and tag_at and tag_at.start() > build_at.start():
         problems.append(
             f"{rel} tags its rollback AFTER building. The tag then names the "
