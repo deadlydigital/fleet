@@ -2381,3 +2381,150 @@ or activity table anywhere. principles.md says to rank against HIB as *"a real
 merchant whose behaviour can be observed"*. It is not observed.
 
 That is a question for a person and no ranking key substitutes for it.
+
+---
+
+## 12. Dependency chaining — proposed, not built
+
+### 12.1 What is actually blocked, measured
+
+Dry run, 11 Sep 2026, platform at `2ce6f50`: **19 open candidates, 0 eligible.**
+
+    12  older_batch      batches 8 and 9, superseded by 10
+     1  protected_path   c35, a migration on the floor
+     6  spans_contracts  the whole of the newest batch that is not c35
+
+So the pool is not slow, it is **stopped**, and gate 6 is what stops it. Every
+one of the six is the same shape: work that needs an API change and the page
+that reads it.
+
+The minimum contract cover per candidate, computed rather than assumed:
+
+    c30  2 tasks      c32  2 tasks      c33  2 tasks
+    c34  3 tasks      c36  2 tasks      c37  2 tasks
+    c35  —            on the floor; gate 5 holds it first and chaining is irrelevant
+
+**Five of six are pairs; one is a triple.** So the unit is an ordered *chain*,
+not a pair, and a design that hard-codes two would leave c34 where it is.
+
+### 12.2 Where the shape as stated half-ships
+
+The shape asked for is *one candidate produces two tasks with an ordering, the
+second queued only when the first merges.* Taken literally, **nothing stops a
+half-shipped feature**, and the mechanism is worth walking because it is not
+subtle:
+
+1. A merges to main. That is what queues B.
+2. `fleet-autodeploy` runs at 04:15 and ships **main's tip** — it does not
+   choose commits, it moves production from the running sha to HEAD. A is now
+   in production.
+3. B is built the following night. If it fails at `max_attempts = 1`, it is
+   terminal.
+4. Main and production keep half a feature, indefinitely, and nothing notices.
+
+**That is task 28 exactly.** The comparison-window backend merged on 9 Sep; the
+half that would have made it reachable was queued by hand six hours later and
+failed; candidates 22 and 30 are still PENDING. Gate 6 exists because nothing
+in the loop noticed, and a chain built this way would reproduce the failure
+with a scheduler instead of a person.
+
+Two mitigations are available and both are worse than they look:
+
+* **Gate the deploy.** Refuse to deploy while a chain is incomplete. But
+  autodeploy ships the tip, so this blocks *every* unrelated merge behind the
+  stuck chain — days of no deploys because one frontend half failed.
+* **Order so the merged half is inert.** True of an additive API endpoint
+  nobody calls; not mechanically checkable in general, and it makes safety a
+  property of the split rather than of the machine.
+
+### 12.3 The variant: nothing merges until everything verifies
+
+**Do not merge the first half when it is ready. Hold it.**
+
+    A   queued, built, verified against main          -> READY_FOR_REVIEW, held
+    B   queued with base_branch = A's branch,
+        built, verified against main + A              -> READY_FOR_REVIEW, held
+    both accepted together: A merged, then B, one push
+
+Each half is still judged under its own contract against its own base, so no
+boundary check is widened and `boundary.derive` is untouched — the part of the
+system least safe to change.
+
+**What stops a half-shipped feature if the second fails: the first half never
+merged.** Not mitigated, not detected afterwards — unrepresentable, which is
+the same move as §9.17's composite key. If B fails terminally, A is a branch
+nobody merged, the candidate is raised for a person, and production never saw
+either half.
+
+The costs, stated:
+
+* A sits unmerged for a night or more and main can move under it. That is what
+  re-verification is for, and it fails the chain as a unit rather than landing
+  half of it — `reverify` already reports "the base moved under it".
+* A chain of N takes N+1 nights and consumes N of the nightly pace and queue
+  room. At `per_night = 4` a triple is most of a night.
+* `automerge.eligible` gains one refusal: *a link may not merge while any
+  other link is not ready.* A refusal, in the place refusals already live, and
+  it fails closed.
+
+### 12.4 Who decides the split — and it must not be a minimiser
+
+**The draft spec declares the chain.** One `fleet-spec` block per link, in
+order; `autoqueue.from_accepted_draft` reads a list instead of one; and
+`draft_spec_shape.py` refuses a draft whose blocks do not cover every path the
+candidate suggested. The choice stays with the thing that understands the work,
+and it fails at draft-verification time — before money is spent on a build.
+
+**It must not be chosen by minimum set cover, and here is the evidence.** The
+minimiser answers c30 with `dd-analytics-frontend + dd-docstring-proving`.
+That is a legal cover. `dd-docstring-proving` can write **twelve** route files:
+
+    api/analytics/routes/{churn,customers,dashboard,geography,manifest,orders,
+                          products,revenue,segments,setup,sources,sync}.py
+
+and its entire verification is:
+
+    compileall api/analytics/routes/revenue.py
+    ruff check --select E9 api/analytics/routes/revenue.py
+    revenue_granularity_doc.py
+
+So a change to `dashboard.py` under that contract compiles nothing that was
+touched, lints nothing that was touched, and passes. A minimiser prefers it
+*because* its writable set is wide, and a wide writable set with a narrow
+verification is exactly the contract you least want chosen automatically.
+
+That hole exists today, independent of chaining, and is worth its own look:
+**a contract whose writable set is wider than what its verification reads.**
+
+### 12.5 The schema, and what is not proposed
+
+    CREATE TABLE task_chain (
+        candidate_id   integer NOT NULL REFERENCES candidates (id),
+        position       integer NOT NULL,
+        contract_file  text    NOT NULL,
+        declared_paths text[]  NOT NULL,
+        task_id        integer REFERENCES tasks (id),
+        PRIMARY KEY (candidate_id, position)
+    );
+
+`candidates.work_task_id` is singular and stays as the first link, so every
+existing reader keeps working. The chain is recorded whole at accept time so it
+is visible and countable before any of it runs; each link's task row is created
+when its predecessor reaches READY_FOR_REVIEW, so the queue is not filled with
+rows that cannot be claimed.
+
+Gate 6 changes from *refuse when more than one contract is needed* to *refuse
+when the paths cannot be covered by contracts at all* — which is
+`unwritable_path`, the gate beside it, unchanged.
+
+**Not proposed:** a dependency column on `tasks` (a task does not depend on a
+task, a chain link depends on its predecessor, and the difference is what keeps
+`claim_task` unchanged); merging a chain partially under any circumstance; any
+automatic splitter; and any change to `boundary.derive`.
+
+**Open, and the reason this is a proposal and not a branch:** a chain that
+half-fails needs a person, and there is no route today from "B failed" back to
+"the candidate is PENDING again with A's branch kept". §9.3 refused a
+`FAILED -> MERGED` edge; this needs no edge, but it does need somebody to
+decide what happens to A's branch, and that decision has not been made.
+
