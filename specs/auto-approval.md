@@ -1948,7 +1948,7 @@ about what a research contract is for, which is the user's call. What must not
 happen is a third research contract: that makes the ambiguity worse in exactly
 the way §9.13 measured.
 
-### 9.17 A task that shipped reads NOT_DELIVERED — proposed, not built
+### 9.17 A task that shipped reads NOT_DELIVERED — **BUILT 11 Sep 2026** (`036`, `tasks.shipped_by_decision_id`)
 
 Four instances, and the fourth is code that will be in production tomorrow:
 
@@ -2080,6 +2080,35 @@ The pointer would be correctly NULL. That is a second gap — a delivery with no
 decision — and it wants its own answer, not a nullable column pressed into
 service as one.
 
+#### What was built, and the two things the build changed
+
+**Decision 25 could not be repaired, and must not have been.** `decision_log`
+carries `guard_decision_log_immutability`, a BEFORE UPDATE trigger that raises
+on every UPDATE with the hint *"record a new decision rather than revising an
+old one"*. The plan above said "repair decision 25's `task_id`"; the database
+refuses that, correctly, and it is the same argument as §0's — a log that can
+be tidied afterwards is not a record. **Decision 32** is the new row: the same
+merge, the same facts, carrying `task_id = 49` so the pointer has something
+legal to name. 25 remains the contemporaneous record of the judgement; 32 is
+the linkable one.
+
+**Task 51 got its decision rather than a pointer without one.** Written from
+the git history on 11 Sep, not from anyone's memory: `platform/deploy.sh`, 314
+lines, agent commit `8b22cd1` at 11:00:13 on 10 Sep, merged by hand as
+`aaa65bd` at **11:03:21** — three minutes after the run settled — then
+corrected by `c5512a3`, `f3284c8` and `a5cf98e` within the hour. **Decision
+33.**
+
+Backfilled: 58→31, 55→28 (the merge, not 29 the deploy record), 49→32, 51→33.
+All four now read `DELIVERED_BY_HAND` with `task_status` still `FAILED`.
+
+`proposer/precedent.py` follows the pointer via `decision_reach.v2.sql`, which
+carries `shipped_by_decision_id`; v1 is kept unchanged because readings taken
+under it are attributed to it. `_delivered` is a deliberate copy of the view's
+rule on `console/rank._inside`'s terms, and
+`tests/test_shipped_pointer.TestTheTwoReadersAgree` asserts the two agree on
+every case — which is the only thing that makes a copy acceptable.
+
 #### Cost, and what is not proposed
 
 One migration, one view replacement, one grant, one CLI flag, one template
@@ -2091,6 +2120,46 @@ a task with a pointer may be treated as merged by anything. Also not proposed:
 making `tasks.status` say something truer. It already says the true thing about
 the *run* — the run did fail — and §9.6's argument is that the row should hold
 more of what was known, not that it should hold something else.
+
+### 9.18 Work can reach main with nobody recording why
+
+Found 11 Sep 2026 while backfilling §9.17, and it is the gap §9.17 does not
+close.
+
+Task 51's work is on main. `platform/deploy.sh` was written by the agent at
+11:00:13 on 10 Sep, the run FAILED — boundary unclean, verification FAIL — and
+**a person merged it by hand three minutes later**, as `aaa65bd` at 11:03:21.
+No `decision_log` row cited task 51 until decision 33 was written a day later,
+from the git history, by someone looking for something else.
+
+**The pointer does not detect this and was not widened to.** A delivery with no
+decision is a different gap from a delivery whose decision cannot be linked,
+and a nullable column pressed into service as a detector would report the two
+as the same silence — which is the defect §9.5 fixed for refused nights and the
+one §9.6 fixed for failed runs, arriving a third time.
+
+What is missing is not a column. It is that **nothing anywhere notices a commit
+reaching a base branch without a record**, and every mechanism that could is
+pointed the other way:
+
+* `console/automerge.py` records what IT merges. A hand `git merge` is invisible
+  to it by construction.
+* `console/autodeploy.py` reads `deployments`, which is downstream of the merge
+  and says nothing about why it happened.
+* §9.9's `spec_requirements_cited` reads the diff of a task that ran; it has no
+  opinion on a commit that arrived without one.
+* The morning page reads `decision_log` and the threads, so a merge with no
+  decision is a merge it cannot mention.
+
+The shape of an answer, not costed here: something that walks the base branch
+for merge commits whose message names a fleet task, and asks whether a decision
+cites that task. It has a false-positive class worth thinking about first — a
+commit may legitimately arrive from outside the loop entirely — so it is a
+reading to be reported, not a gate. **A gate here would stop a person fixing
+production at 3am, which is the one thing this system must never do.**
+
+Worth its own look. Four tasks were found by reading rows; this one was found
+by reading git, and there is no reason to think the git had only one.
 
 ---
 

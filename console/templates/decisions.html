@@ -67,11 +67,19 @@
   <td>
     {% if d.task_outcome is none %}<span class="dim">—</span>
     {% else %}
-      <span class="pill {{ 'ok' if d.task_outcome == 'DELIVERED' else 'bad' if d.task_outcome == 'NOT_DELIVERED' else 'warn' }}">{{ d.task_outcome }}</span>
+      {#- DELIVERED_BY_HAND reads 'ok' on the pill and says so in words. The
+          work shipped, which is the question this column answers, and it
+          shipped because a person carried it past a machine that had stopped —
+          which is why it is not the same pill text as DELIVERED. §9.17. -#}
+      <span class="pill {{ 'ok' if d.task_outcome in ('DELIVERED', 'DELIVERED_BY_HAND') else 'bad' if d.task_outcome == 'NOT_DELIVERED' else 'warn' }}">{{ d.task_outcome }}</span>
+      {% if d.task_outcome == 'DELIVERED_BY_HAND' %}
+      <div class="dim">the row still reads {{ d.task_status }}, which is true of the run</div>
+      {% endif %}
       <div class="dim mono">£{{ '%.2f'|format(d.total_cost_gbp|float) }}
         over {{ d.runs_total }} run{{ '' if d.runs_total == 1 else 's' }}</div>
       <div class="dim mono">
         {% if d.attempts_to_green %}{{ d.attempts_to_green }} attempt{{ '' if d.attempts_to_green == 1 else 's' }} to green
+        {% elif d.task_outcome == 'DELIVERED_BY_HAND' %}no green — it shipped without one
         {% else %}no green, so no count{% endif %}</div>
     {% endif %}
   </td>

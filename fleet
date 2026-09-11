@@ -326,6 +326,24 @@ def cmd_decision_record(args: argparse.Namespace) -> int:
             {"product": product, "subject": args.subject,
              "proposal": args.proposal, "issue": args.issue, "task": args.task,
              "decision": args.decision, "reason": args.reason}).fetchone()
+        # SET IN THE SAME TRANSACTION AS THE DECISION, so a pointer without a
+        # decision cannot exist even briefly. specs/auto-approval.md §9.17.
+        #
+        # The composite key refuses a decision that does not cite this task, so
+        # the check below is for the MESSAGE: a foreign-key violation names a
+        # constraint, and the person typing this needs to be told which of the
+        # two arguments they got wrong.
+        if args.shipped_task is not None:
+            if args.task != args.shipped_task:
+                print(f"--shipped-task {args.shipped_task} needs --task "
+                      f"{args.shipped_task}: a task may only point at a "
+                      f"decision that cites it, and this decision cites "
+                      f"{args.task}", file=sys.stderr)
+                conn.rollback()
+                return 2
+            conn.execute(
+                "UPDATE tasks SET shipped_by_decision_id = %s WHERE id = %s",
+                (row["id"], args.shipped_task))
         conn.commit()
         detail = conn.execute(
             "SELECT * FROM decision_outcomes WHERE id = %s", (row["id"],)
@@ -559,6 +577,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--task", type=int, help="tasks.id this authorised")
     r.add_argument("--subject", help="one line on what was proposed. Taken "
                                      "from the cited row when there is one")
+    r.add_argument("--shipped-task", type=int, metavar="N",
+                   help="record that THIS decision is what put task N's work "
+                        "on its base branch, and point the task at it. Requires "
+                        "--task N: the pointer may only name a decision that "
+                        "cites the task, and the database enforces that")
     r.set_defaults(fn=cmd_decision_record)
 
     dl = dec.add_parser("list", help="decisions with their derived outcomes")

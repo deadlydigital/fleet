@@ -60,6 +60,33 @@ _DELIVERED = ("MERGED",)
 _NOT_DELIVERED = ("ABANDONED", "REJECTED", "FAILED")
 
 
+def _delivered(task: dict) -> bool:
+    """Did this task's work reach its base branch?
+
+    A DELIBERATE COPY OF `decision_outcomes.task_outcome`, on the same terms as
+    console/rank._inside: the rule lives in SQL, this is Python, and the only
+    thing that makes a second implementation acceptable is a test asserting the
+    two agree. See tests/test_shipped_pointer.py.
+
+    IT IS NOT `task_status == 'MERGED'`, AND THAT WAS THE DEFECT. Until 11 Sep
+    2026 this module read the status alone, so tasks 49, 51, 55 and 58 -- all
+    merged by hand, all still reading FAILED -- were counted as failures by the
+    precedent block while the console counted them as delivered. Two answers to
+    one question, on exactly the rows a person would be asking about.
+
+    specs/auto-approval.md §9.17. The pointer is nullable and NULL is the
+    ordinary state; a MERGED task needs nobody to vouch for it.
+    """
+    return (task.get("task_status") in _DELIVERED
+            or task.get("shipped_by_decision_id") is not None)
+
+
+def _not_delivered(task: dict) -> bool:
+    """Over, and it did not ship. The pointer wins over the status."""
+    return (not _delivered(task)
+            and task.get("task_status") in _NOT_DELIVERED)
+
+
 @dataclass(frozen=True)
 class Basis:
     """What a block was computed over. Printed with it, never separately."""
@@ -181,7 +208,9 @@ def read(dsn: str, *, cycle_config: dict[str, Any],
         read_at = conn.execute("SELECT now() AS t").fetchone()["t"]
         who = conn.execute("SELECT current_user AS u").fetchone()["u"]
         summary = conn.execute(load_query(PRECEDENT).sql).fetchone()
-        reach = conn.execute(load_query(REACH).sql).fetchall()
+        # v2 carries tasks.shipped_by_decision_id; v1 could only see the
+        # status, and so disagreed with decision_outcomes about four tasks.
+        reach = conn.execute(load_query(REACH, 2).sql).fetchall()
         surface = conn.execute(load_query(SURFACE).sql).fetchall()
 
     return _compute(read_at, who, summary, reach, surface,
@@ -248,8 +277,14 @@ def _tasks(rows: Sequence[dict]) -> dict[int, dict]:
 
 
 def _split(tasks: Sequence[dict]) -> tuple[int, int, int]:
-    merged = sum(1 for t in tasks if t["task_status"] in _DELIVERED)
-    failed = sum(1 for t in tasks if t["task_status"] in _NOT_DELIVERED)
+    """Delivered, not delivered, still in flight.
+
+    `_delivered` rather than a status test: a task shipped by hand reads FAILED
+    and delivered the work, and counting it as a failure here while the console
+    calls it DELIVERED_BY_HAND is the disagreement §9.17 exists to end.
+    """
+    merged = sum(1 for t in tasks if _delivered(t))
+    failed = sum(1 for t in tasks if _not_delivered(t))
     return merged, failed, len(tasks) - merged - failed
 
 
