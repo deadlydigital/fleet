@@ -2706,3 +2706,79 @@ return is a refusal, returning a pass is how you skip the rest of it. It now
 falls through and carries the split onto whatever the later gates decide.
 `tests/test_task_chain.py::test_the_later_gates_still_judge_it` is that bug.
 
+---
+
+## 13. Work that no path in this system can produce — open
+
+Recorded 11 Sep 2026 from candidate 36, and written as a gap rather than
+worked around because every available workaround is one of the things this
+spec spends its length refusing.
+
+### 13.1 The case
+
+Candidate 36 — LTV as a distribution and a retention curve — asks for four
+paths across two contracts. What happened to it:
+
+    task 61   draft spec        declared THREE of the four, dropping
+                                platform/app/(dashboard)/analytics/customers/page.tsx
+    task 62   run 31   £3.00    reached the spend cap, no branch, nothing derived
+    task 62   run 32   £5.02    agent exit 0; boundary refused 494 lines against 400
+
+£8.02 for a branch that cannot merge. The work itself is sound and sits on
+`fleet/task-62.2`, unmerged and staying that way: merging 494 lines around a
+gate that refused them is the thing the gate exists to stop.
+
+### 13.2 Why no existing path can produce the pieces
+
+**Not one task.** The spec numbers 25 requirements against a contract whose
+largest merged spec numbers 5, and it is now refused at queue time
+(`max_requirements`) before any money. That refusal is correct and it produces
+nothing.
+
+**Not a chain.** §12.6b, measured on the branch: the seam is real — a shared
+helper plus three consumers — but the links all land in `analytics_engine.py`
+so they are not disjoint; they are build-coupled Python-to-Python, which §12.3
+assumed away; and `spec_requirements_cited.py` would fail every link, because
+`from_accepted_draft` gives each the whole draft as its `spec_md` and the check
+demands a citation for every leaf. The three links would leave 8, 20 and 22
+requirements uncited.
+
+**Not a narrower draft.** That is what task 61 did, and it dropped the frontend
+half silently. `autoqueue` checks coverage only when a draft SPLITS, so a
+single-block draft narrowing the work is permitted — right for an editorial
+narrowing, wrong here.
+
+### 13.3 What the gap actually is
+
+**Nothing in this loop can turn one candidate into several specs.** A candidate
+produces one draft; a draft produces one task, or a chain of tasks that must be
+disjoint and independently verifiable. There is no route from "this is three
+pieces of work" to three specs, each with its own requirements, each queueable
+on its own merits.
+
+The three obvious repairs are each a decision nobody has taken:
+
+1. **Partition requirements per link**, so a chain's links are each held to
+   their own subset. `requirements.parse` has no notion of ownership and
+   §9.9's argument is that one parser serves all readers — so this is a change
+   to what a requirement *is*, not a flag.
+2. **Let links share a file**, dropping §12's disjointness. That is what makes
+   independent verification sound; removing it means verifying links together,
+   which is most of a different design.
+3. **Split at the candidate**, before any draft — one candidate becoming three,
+   each drafted and queued separately. This needs no new verification story and
+   is the only one that reuses every existing gate unchanged. It also has no
+   mechanism at all today: nothing writes candidates except the producer.
+
+### 13.4 What is NOT proposed
+
+Raising `max_diff_lines`, raising `max_requirements` for this contract, merging
+`fleet/task-62.2` by hand, or turning off `spec_requirements_cited` for chain
+links. Each of those makes this one candidate ship and makes the next one worse,
+and the branch on disk is the evidence of what the work is when somebody comes
+to cut it properly.
+
+Candidate 36 is `NOT_NOW` — a person's judgement about one candidate, which is
+what this is — rather than `PENDING`, which would invite the ranker to buy the
+same draft again.
+
