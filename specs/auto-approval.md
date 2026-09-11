@@ -2121,7 +2121,7 @@ making `tasks.status` say something truer. It already says the true thing about
 the *run* — the run did fail — and §9.6's argument is that the row should hold
 more of what was known, not that it should hold something else.
 
-### 9.18 Work can reach main with nobody recording why
+### 9.18 Work can reach main with nobody recording why — **READING BUILT 11 Sep 2026** (`morning.unrecorded_merges`)
 
 Found 11 Sep 2026 while backfilling §9.17, and it is the gap §9.17 does not
 close.
@@ -2160,6 +2160,38 @@ production at 3am, which is the one thing this system must never do.**
 
 Worth its own look. Four tasks were found by reading rows; this one was found
 by reading git, and there is no reason to think the git had only one.
+
+#### It had two more, and that settled whether to build anything
+
+Swept both repositories on 11 Sep: **17 merge commits name a fleet task.**
+Eleven are recorded by the machine — `tasks.status = 'MERGED'`, written by
+whatever merged them. Four had decisions. **Three had nothing**, and only one
+of those was known:
+
+    fleet  4041d15   9 Sep 15:28  task 34  research/candidates-...-09-09.md  479 lines
+    fleet  6503b6f  10 Sep 09:42  task 50  research/candidates-...-09-10.md  569 lines
+    platform aaa65bd 10 Sep 11:03  task 51  platform/deploy.sh                314 lines
+
+34 and 50 are the documents that became candidate batches 9 and 10. **Most of
+the open candidate pool, and every unattended approval made since, descends
+from two merges nothing recorded.** Written up as decisions 34 and 35; 51 as
+decision 33.
+
+Three of seventeen is a habit, not an accident, so the reading was built.
+
+**The shape is what makes it cheap.** Every unrecorded merge so far is a
+hand-merge of a task whose row reads FAILED — a MERGED row is written by the
+machine that merged it, so the gap is exactly the population §9.17's pointer
+was built for. The predicate is one question per merge and the whole sweep is
+one git walk per base branch plus one query.
+
+`console/morning.unrecorded_merges` runs it on every load of the morning page
+and reports into *What needs you*, because the remedy is a sentence somebody
+writes. **Still a reading and still never a gate.**
+
+A caveat on the denominator, so nobody treats 3/17 as the rate: the sweep
+matches merge subjects containing `task <n>` or `task-<n>`. A hand-merge whose
+subject names neither is invisible to it. Seventeen is a floor.
 
 ---
 

@@ -469,6 +469,116 @@ def describe_night(stages: Dict[str, Stage],
     approve.said = ", ".join(parts)
 
 
+#: A merge subject that names a fleet task. Both spellings are in the history
+#: -- "Merge fleet task 58: ..." and "Merge task 34: ..." -- and a pattern that
+#: knew only the first missed two of the three instances this was built for.
+_MERGE_NAMES_TASK = re.compile(r"\btask[ -](\d+)\b", re.I)
+
+
+def unrecorded_merges(repo_root: Path, pairs: Sequence[tuple],
+                      recorded: Dict[int, tuple]) -> List[Ask]:
+    """Merges naming a task that nothing in the database accounts for.
+
+    THE ONLY THING THAT WOULD HAVE CAUGHT §9.18, AND IT TAKES ABOUT A SECOND.
+
+    For every merge commit on a base branch whose subject names a fleet task,
+    ask one question: is that task MERGED -- in which case the machine did it
+    and recorded it by construction -- or does a decision cite it? If neither,
+    work reached a base branch and nothing anywhere says why.
+
+    THREE INSTANCES, AND TWO WERE FOUND BY RUNNING THIS RATHER THAN BY LUCK.
+    Task 51 was noticed by accident on 11 Sep while backfilling something else.
+    The same sweep then found tasks 34 and 50 -- the two documents that became
+    candidate batches 9 and 10, which is to say most of the open pool and every
+    unattended approval made since descends from two merges nothing recorded.
+
+    THE SHAPE IS NARROW AND WORTH STATING, because it is what makes this cheap:
+    every unrecorded merge so far is a HAND-MERGE OF A TASK WHOSE ROW READS
+    FAILED. A MERGED row is written by the machine that merged it; the gap is
+    exactly the population §9.17's pointer was built for.
+
+    A READING AND NEVER A GATE. specs/auto-approval.md §9.18: a gate here would
+    stop a person fixing production at 3am, which is the one thing this system
+    must never do. This reports, and the remedy is a sentence somebody writes.
+
+    `recorded` is passed in rather than read here, so the git walk and the
+    database question stay separable and the caller does one query rather than
+    one per merge.
+    """
+    out: List[Ask] = []
+    for repo, base in pairs:
+        path = repo_root / repo
+        # A BASE BRANCH THAT DOES NOT EXIST IS SKIPPED, AND THAT IS NOT A
+        # SILENT CAP. Task 4 names fleet/main, which fleet has never had under
+        # that name; a branch with no commits has no merges to miss, so this
+        # excludes an empty set rather than truncating a real one. A branch
+        # that exists and cannot be walked is a different thing and is
+        # reported below.
+        if (path / ".git").exists() and subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--verify", "--quiet",
+                 f"refs/heads/{base}"],
+                capture_output=True, text=True, timeout=30).returncode != 0:
+            continue
+        if not (path / ".git").exists():
+            out.append(Ask(
+                kind="MERGE_SWEEP_UNREADABLE",
+                headline=f"{repo} could not be read, so merges into {base} "
+                         f"were not checked for a record",
+                detail="Reported rather than skipped: an unchecked repository "
+                       "and a clean one leave the same silence here, which is "
+                       "the defect this reading exists to find.",
+                needs="NEEDS_A_MACHINE"))
+            continue
+        proc = subprocess.run(
+            ["git", "-C", str(path), "log", "--merges",
+             "--format=%h%x00%cI%x00%s", base],
+            capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            out.append(Ask(
+                kind="MERGE_SWEEP_UNREADABLE",
+                headline=f"`git log` failed on {repo}, so merges into {base} "
+                         f"were not checked",
+                detail=(proc.stderr or "").strip()[:300],
+                needs="NEEDS_A_MACHINE"))
+            continue
+        for line in proc.stdout.splitlines():
+            parts = line.split("\x00") if "\x00" in line else line.split("\0")
+            if len(parts) != 3:
+                continue
+            sha, when, subject = parts
+            m = _MERGE_NAMES_TASK.search(subject)
+            if not m:
+                continue
+            tid = int(m.group(1))
+            status, decisions = recorded.get(tid, (None, ()))
+            if status == "MERGED" or decisions:
+                continue
+            out.append(Ask(
+                kind="MERGE_WITH_NO_DECISION",
+                headline=f"{repo} {sha} merged task {tid} into {base} and "
+                         f"nothing records why",
+                detail=(f"The task row reads {status or 'no task row'}, and no "
+                        f"decision cites task {tid}. So the work is on {base} "
+                        f"and the only account of it is this commit. Write the "
+                        f"decision — what shipped, when, and that it was found "
+                        f"afterwards rather than decided at the time — with "
+                        f"`fleet decision record --task {tid} "
+                        f"--shipped-task {tid}`."),
+                href=f"/tasks/{tid}", href_label=f"task {tid}",
+                meta=[("merged", when[:16].replace("T", " ")),
+                      ("subject", subject[:60])],
+                needs="NEEDS_YOU"))
+    return out
+
+
+def merge_record_index(rows: Sequence[Dict[str, Any]]) -> Dict[int, tuple]:
+    """{task_id: (status, (decision ids,))}, for unrecorded_merges."""
+    idx: Dict[int, tuple] = {}
+    for r in rows:
+        idx[r["id"]] = (r["status"], tuple(r["decision_ids"] or ()))
+    return idx
+
+
 def fleet_blocked(credit: Optional[Dict[str, Any]],
                   deployments: Dict[str, deploys.Deployment],
                   stages: Optional[Dict[str, Stage]] = None) -> List[Ask]:

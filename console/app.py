@@ -178,7 +178,15 @@ def index(request: Request):
         window=window, since=since,
         awaiting=morning.awaiting_you(queries.morning_awaiting_you()),
         depth=queries.morning_queue_depth(),
-        fleet_blocked=morning.fleet_blocked(credit, deployments, stages),
+        # THE MERGE SWEEP RIDES WITH THE OTHER BLOCKERS, in "What needs you",
+        # because the remedy is a sentence somebody writes. specs/auto-approval
+        # .md §9.18: a reading and never a gate. One git walk per base branch
+        # and one query, which is about a second.
+        fleet_blocked=(morning.fleet_blocked(credit, deployments, stages)
+                       + morning.unrecorded_merges(
+                           config.repo_root(), queries.morning_repo_branches(),
+                           morning.merge_record_index(
+                               queries.morning_merge_record()))),
         credit=credit,
         done=done,
         patterns=morning.failure_patterns(failures, since, attempted),

@@ -783,6 +783,39 @@ MORNING_QUEUE_DEPTH = """
 """
 
 
+#: Every task a merge could name, with whether anything records its delivery.
+#:
+#: ONE QUERY FOR THE WHOLE SWEEP. console/morning.unrecorded_merges walks git
+#: for merge commits naming a task and asks, per task, "is it MERGED, or does a
+#: decision cite it". Asking the database once per merge would make a reading
+#: that costs a second cost a page load.
+#:
+#: `repo`/`base_branch` come back too, so the caller knows which repositories
+#: and branches to walk without a list typed anywhere.
+MORNING_MERGE_RECORD = """
+    SELECT t.id, t.status, t.repo, t.base_branch,
+           coalesce(array_agg(d.id) FILTER (WHERE d.id IS NOT NULL), '{}') AS decision_ids
+      FROM tasks t
+      LEFT JOIN decision_log d ON d.task_id = t.id
+     GROUP BY t.id, t.status, t.repo, t.base_branch
+"""
+
+
+def morning_merge_record() -> list[dict[str, Any]]:
+    return db.rows(MORNING_MERGE_RECORD)
+
+
+def morning_repo_branches() -> list[tuple]:
+    """The (repo, base_branch) pairs Fleet actually works in, from the tasks.
+
+    Derived rather than typed: a repository nobody has a task in has no merge
+    of Fleet's to miss, and a new one appears here the moment it has one.
+    """
+    seen = {(r["repo"], r["base_branch"]) for r in db.rows(MORNING_MERGE_RECORD)
+            if r["repo"] and r["base_branch"]}
+    return sorted(seen)
+
+
 def morning_window() -> dict[str, Any] | None:
     return db.one(MORNING_WINDOW)
 
