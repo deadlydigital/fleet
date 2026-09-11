@@ -32,10 +32,40 @@ SELFCHECK = FLEET / "contracts" / "checks" / "spec_selfcheck.sh"
 PY = FLEET / ".venv" / "bin" / "python"
 
 
-def spec(writable, prose_paths, work_type="dd_api"):
-    block = yaml.safe_dump({
+#: The widest contract for each work_type these fixtures use. NAMED, since
+#: specs/auto-approval.md §14 made `contract` a required field: the check no
+#: longer derives it, so a fixture without one fails on the missing field and
+#: every test here would assert on that message instead of on path judging.
+#: The wide contract is chosen so the fixtures' paths are covered — these
+#: tests are about how paths are judged, not about which boundary is right.
+CONTRACT_FOR = {"dd_api": "deadly-digital-platform-api.yaml",
+                "dd_frontend": "dd-analytics-frontend.yaml"}
+
+
+def _with_contract(body: str) -> str:
+    """Add `contract:` to a fleet-spec block that has none."""
+    import re as _re
+    m = _re.search(r"```fleet-spec\s*\n(.*?)\n```", body, _re.S)
+    if not m:
+        return body
+    block = yaml.safe_load(m.group(1)) or {}
+    if block.get("contract") or not block.get("work_type"):
+        return body
+    named = CONTRACT_FOR.get(str(block["work_type"]))
+    if not named:
+        return body
+    return (body[:m.start(1)] + yaml.safe_dump({**block, "contract": named}).rstrip()
+            + body[m.end(1):])
+
+
+def spec(writable, prose_paths, work_type="dd_api", contract=None):
+    fields = {
         "work_type": work_type, "repo": "deadly-digital-platform",
-        "title": "A spec", "writable_paths": writable})
+        "title": "A spec", "writable_paths": writable}
+    named = contract if contract is not None else CONTRACT_FOR.get(work_type)
+    if named:
+        fields["contract"] = named
+    block = yaml.safe_dump(fields)
     prose = "\n".join(f"- `{p}` does the thing" for p in prose_paths)
     # NOT textwrap.dedent. The block is interpolated before dedent runs, so
     # only its FIRST line carries the template's indent and the rest sit at
@@ -69,19 +99,30 @@ class TestProseAndDeclaredPathsAreJudgedTheSameWay:
     def test_a_file_the_spec_will_create_passes_in_prose(self, tmp_path):
         """THE BUG THAT KILLED TASK 23.
 
-        It declared `api/analytics/routes/coupons.py` writable, the check
+        It declared a to-be-created path writable, the check
         accepted it there, and then failed the identical string for being in
         the prose. £1.93 for nothing the agent did wrong.
         """
-        new = "api/analytics/routes/coupons.py"
+        # UNDER THE FRONTEND CONTRACT, since §14 made the check verify that
+        # the declared contract covers the declared paths. The api contract's
+        # writable_paths are an explicit list of existing files, so NO new file
+        # is inside it — a created file there is only ever a test, via
+        # creatable_paths, which is not declared writable. The frontend
+        # contract's paths are globs, so a new file under one is covered. What
+        # these tests are about — prose and declared paths judged the same way
+        # — is unchanged.
+        new = "platform/app/(dashboard)/analytics/customers/ltv-panel.tsx"
         assert not (PLATFORM / new).exists()
-        code, out = run_check(tmp_path, spec([new], [new]))
+        code, out = run_check(tmp_path, spec([new], [new],
+                                             work_type="dd_frontend"))
         assert code == 0, out
 
     def test_the_same_string_declared_and_cited_cannot_disagree(self, tmp_path):
-        new = "api/analytics/services/coupon_report.py"
-        declared_only = run_check(tmp_path, spec([new], []))[0]
-        also_cited = run_check(tmp_path, spec([new], [new]))[0]
+        new = "platform/app/(dashboard)/analytics/customers/ltv-panel.tsx"
+        declared_only = run_check(tmp_path, spec([new], [],
+                                                  work_type="dd_frontend"))[0]
+        also_cited = run_check(tmp_path, spec([new], [new],
+                                              work_type="dd_frontend"))[0]
         assert declared_only == also_cited == 0
 
     def test_a_new_file_in_a_directory_that_does_not_exist_still_fails(
@@ -133,19 +174,56 @@ class TestReplayingTheThreeRealFailures:
         body = subprocess.run(("git", "-C", str(FLEET), "show",
                                f"fleet/task-{task}:{rel}"),
                               capture_output=True, text=True).stdout
-        return rel, body
+        # THE HISTORICAL DRAFTS PREDATE `contract`, WHICH §14 MADE REQUIRED.
+        #
+        # These three replay real documents to prove the PATH rules behave as
+        # recorded; they are not about the contract field, and they can never
+        # grow one — the branches are frozen history. So the fixture supplies
+        # it, choosing by work_type exactly as the old derivation would have,
+        # which keeps each test asserting on the thing it was written for.
+        return rel, _with_contract(body)
 
-    def test_task_23_now_passes(self, tmp_path):
+    def test_task_23_is_refused_for_coverage_not_for_its_paths(self, tmp_path):
+        """CHANGED 11 Sep 2026, and the new answer is the truer one.
+
+        This asserted `code == 0` — task 23's draft passing the path rules
+        after they were unified. It still passes those, but §14 added an
+        earlier question: does the declared contract make the declared paths
+        writable? It does not. `api/analytics/routes/coupons.py` and
+        `api/analytics/services/coupon_report.py` are in no contract's writable
+        set, so this draft could never have been queued whatever the path rules
+        said — `autoqueue` would have refused it after the draft was paid for.
+
+        Task 23 FAILED and was abandoned on 11 Sep. This is the check telling
+        it so at draft time instead.
+        """
         rel, body = self.draft(23)
         code, out = run_check(tmp_path, body, name=rel)
-        assert code == 0, out
+        assert code == 1
+        assert "does not make" in out
+        assert "No contract for this work_type and repo covers all of them" in out
 
-    def test_task_24_still_fails_but_on_one_path_not_two(self, tmp_path):
+    def test_task_24_is_refused_for_coverage_before_its_paths_are_judged(
+            self, tmp_path):
+        """CHANGED 11 Sep 2026, same reason as task 23's.
+
+        This asserted the refusal named `routes/categories.py` and NOT
+        `category_report.py`, which was the point of unifying rules 3 and 6: a
+        file the spec intends to create is legitimate. Both remain true of the
+        path rules, and neither is reached, because §14 asks first whether the
+        declared contract covers the declared paths — and
+        `api/analytics/services/category_report.py` is in no contract's
+        writable set.
+
+        That is the earlier and more useful refusal: a legitimate new file is
+        still not one this contract may write, and no amount of correct path
+        spelling changes that. Task 24 FAILED and was abandoned on 11 Sep.
+        """
         rel, body = self.draft(24)
         code, out = run_check(tmp_path, body, name=rel)
         assert code == 1
-        assert "routes/categories.py" in out
-        assert "category_report.py" not in out      # legitimate new file
+        assert "category_report.py" in out
+        assert "does not make" in out
 
     def test_task_25_still_fails_and_names_the_correction(self, tmp_path):
         rel, body = self.draft(25)

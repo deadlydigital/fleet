@@ -39,6 +39,44 @@ established that this document had wrong or unsaid.
 
 ---
 
+## The shortage this document keeps arriving at
+
+Put first because it was found last, on 11 Sep 2026, and because every section
+below reads differently once it is known.
+
+**Three attempts, three correct refusals, three different walls.**
+
+    task 62  run 31   the spend cap        the spec is too big for one task
+    task 62  run 32   the diff limit       the same fact, a different ceiling
+    task 63           contract ambiguity   the rule resolved by an accident of prose
+
+Not one of those refusals is wrong. §9.13's resolution rule is right to refuse
+two surviving contracts; the diff limit is right to refuse 494 lines; the spend
+cap is right to stop at £3. They are three different gates, correctly closed,
+on three attempts at shipping two candidates — and underneath all three sits
+§12's chaining, which can split neither case: build-coupled seams for 62, and
+for 63 nothing to split at all.
+
+**The common factor is that a draft spec is the only unit this system has
+between a candidate and a task.**
+
+* §13 — nothing can turn one candidate into *several specs*. A candidate makes
+  one draft; a draft makes one task, or a chain of links that must be disjoint
+  and independently verifiable.
+* §14 — one spec could not name *its own boundary*. Which contract a task ran
+  under was derived from which paths the draft happened to list.
+
+They are the same shortage seen from two sides, and §14 is the half that has
+been built. §13 is open, and it is open because each of its three repairs is a
+decision about what the loop is for rather than a fix: partition requirements
+per link, let links share a file, or split at the candidate.
+
+The loop can produce work. Twice this week it could not produce work of the
+size and shape the pool actually contains, and every gate that stopped it was
+doing its job.
+
+---
+
 ## 0. The scope sentence, and it is the same one auto-merge carries
 
 Deadly Digital has no customers, HIB is not using it, and every change here is
@@ -2784,7 +2822,7 @@ same draft again.
 
 ---
 
-## 14. A fleet-spec block declares its contract — proposed, not built
+## 14. A fleet-spec block declares its contract — **BUILT 11 Sep 2026**
 
 ### 14.1 The case
 
@@ -2893,7 +2931,9 @@ does nothing for a candidate that needs to be three.
 
 ### 14.6 Three walls in three attempts
 
-Recorded together because the pattern is the finding:
+**Lifted to the top of this document**, because it is the finding of the day
+and every section reads differently once it is known. Kept here in full for
+anyone arriving at §14 on its own:
 
     task 62   run 31   spend cap        the spec is too big for one task
     task 62   run 32   diff limit       the same fact, a different ceiling

@@ -22,6 +22,7 @@ contract reads the yaml off disk.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -256,9 +257,13 @@ class TestTheDraftStageGuaranteesNumbering:
         finally:
             draft.unlink(missing_ok=True)
 
+    #: `contract` is declared because §14 made it required. These tests are
+    #: about NUMBERING, so the block must otherwise be valid or every one of
+    #: them asserts on the contract message instead.
     BLOCK = ("```fleet-spec\n"
              "work_type: dd_frontend\n"
              "repo: deadly-digital-platform\n"
+             "contract: dd-analytics-frontend.yaml\n"
              "title: A probe\n"
              "writable_paths:\n"
              "  - platform/app/(dashboard)/analytics/orders/page.tsx\n"
@@ -276,17 +281,42 @@ class TestTheDraftStageGuaranteesNumbering:
         assert r.returncode == 0, r.stdout
         assert "1 numbered requirement" in r.stdout
 
-    def test_the_real_drafts_on_disk_already_satisfy_it(self):
+    def test_the_real_drafts_on_disk_already_satisfy_it(self, tmp_path):
         """A rule that would refuse the corpus it was written against is a
-        rule about the corpus, not about the specs."""
+        rule about the corpus, not about the specs.
+
+        The drafts on disk PREDATE `contract`, which §14 made required on
+        11 Sep 2026, so they are replayed with it supplied — the same thing
+        tests/test_selfcheck.py does for the task-23/24/25 branches. A new
+        required field refusing documents written before it existed is not the
+        corpus failing the rule; it is the rule being younger than the corpus.
+        What this test is about is NUMBERING, and that is unchanged.
+        """
+        import yaml as _yaml
         for draft in sorted((FLEET / "drafts").glob("*.md")):
+            body = draft.read_text()
+            m = re.search(r"```fleet-spec\s*\n(.*?)\n```", body, re.S)
+            if m:
+                block = _yaml.safe_load(m.group(1)) or {}
+                if not block.get("contract"):
+                    named = {"dd_api": "deadly-digital-platform-api.yaml",
+                             "dd_frontend": "dd-analytics-frontend.yaml",
+                             "research": "research.yaml"}.get(
+                                 str(block.get("work_type")))
+                    if named:
+                        block["contract"] = named
+                        body = (body[:m.start(1)]
+                                + _yaml.safe_dump(block).rstrip()
+                                + body[m.end(1):])
+            (tmp_path / "drafts").mkdir(exist_ok=True)
+            (tmp_path / "drafts" / draft.name).write_text(body)
             r = subprocess.run(
                 [str(PYTHON),
                  str(FLEET / "contracts/checks/draft_spec_shape.py")],
-                cwd=FLEET, capture_output=True, text=True,
+                cwd=tmp_path, capture_output=True, text=True,
                 env={**os.environ,
                      "FLEET_CHANGED_FILES": f"drafts/{draft.name}"})
-            assert r.returncode == 0, f"{draft.name}: {r.stdout}"
+            assert r.returncode == 0, f"{draft.name}: {r.stdout}{r.stderr}"
             assert "numbered requirement" in r.stdout
 
 

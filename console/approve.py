@@ -129,7 +129,7 @@ had been promised and did not have.
 
 ## What your spec must contain
 
-A fenced ```fleet-spec block with `work_type`, `repo`, `title` and
+A fenced ```fleet-spec block with `work_type`, `repo`, `contract`, `title` and
 `writable_paths`, followed by prose describing the change.
 
 **You choose the `work_type`**, and it must name a contract that exists in
@@ -137,12 +137,36 @@ A fenced ```fleet-spec block with `work_type`, `repo`, `title` and
 because a producer reading a findings document cannot know whether an item is a
 code change or an investigation. That determination is your job.
 
+**You also choose the `contract`, by filename**, and it is a real decision
+rather than bookkeeping. More than one contract can match a work_type and a
+repo, and they are different boundaries: `dd-order-filters.yaml` makes two
+files writable, caps the diff at 150 lines, permits NO new test file and runs
+three checks; `deadly-digital-platform-api.yaml` makes twenty-seven writable,
+caps at 400, requires a test that fails without your change, and runs the whole
+suite. Choosing between them is choosing whether the work is tested at all.
+
+Read the contracts and name the one you mean:
+
+    contract: deadly-digital-platform-api.yaml
+
+This used to be derived from your `work_type` and your paths, and the
+derivation worked by accident: it picked the only contract whose writable set
+happened to cover the paths you listed. When two covered them, the draft merged
+and queued nothing. Naming it removes the guess rather than automating it —
+a chooser would prefer the contract with the widest writable set, which is the
+one least likely to verify what you wrote.
+
 ## What the check will refuse
 
 `contracts/checks/draft_spec_shape.py` runs on your diff and fails if:
 
 - there is no `fleet-spec` block, or it lacks a required field
 - `work_type` names no contract, or names one contracted for another repo
+- `contract` is absent — it will name the contracts that DO cover your paths,
+  so read that list and choose
+- `contract` is not a file in `contracts/`, or its work_type or repo disagrees
+  with the ones you declared
+- `contract` does not make every path you declared writable
 - a declared writable path does not resolve in the repo, and neither does its
   parent directory
 - a declared writable path is protected by the contract you named

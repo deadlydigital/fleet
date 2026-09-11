@@ -242,6 +242,44 @@ def draft_path(patch_payload: dict[str, Any]) -> str:
     return files[0]
 
 
+def _named_contract(named: str, work_type: str, repo: str,
+                    declared: list[str]) -> tuple[dict[str, Any], str]:
+    """The contract a block named, or a refusal saying why it cannot be used.
+
+    The same four questions draft_spec_shape.py asks, asked again at queue
+    time against contracts/ as it stands NOW. A contract renamed, retyped or
+    narrowed between the draft merging and the task being created would
+    otherwise be frozen onto the row unnoticed.
+    """
+    if "/" in named or not named.endswith(".yaml"):
+        raise QueueRefused(
+            f"the block names contract {named!r}, which is not a bare "
+            f"filename in contracts/")
+    path = config.PROJECT_ROOT / "contracts" / named
+    if not path.is_file():
+        raise QueueRefused(
+            f"the block names contract {named!r}, which is not in "
+            f"contracts/. It existed when the draft was written or the draft "
+            f"would not have merged, so it has been renamed or removed since.")
+    try:
+        contract = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise QueueRefused(f"contract {named!r} is not valid YAML: {exc}")
+    if contract.get("work_type") != work_type or contract.get("repo") != repo:
+        raise QueueRefused(
+            f"the block says work_type {work_type!r} repo {repo!r} and "
+            f"{named} is work_type {contract.get('work_type')!r} repo "
+            f"{contract.get('repo')!r}")
+    globs = [str(g) for g in (contract.get("writable_paths") or [])]
+    outside = [p for p in declared if not _inside(p, globs)]
+    if outside:
+        raise QueueRefused(
+            f"the block names {named}, which does not make {outside} "
+            f"writable. The draft passed this check when it was written, so "
+            f"that contract has narrowed since.")
+    return contract, named
+
+
 def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
                         merged_sha: str) -> Queued:
     """Queue the code task a just-merged draft spec describes.
@@ -294,7 +332,24 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
         target_repo = str(block["repo"])
         declared = [str(p) for p in block["writable_paths"]]
         try:
-            contract, contract_file = _contract_for(work_type, target_repo, declared)
+            # THE DECLARED CONTRACT WINS, AND IS RE-VALIDATED HERE.
+            #
+            # specs/auto-approval.md §14. draft_spec_shape.py refused a wrong
+            # declaration at draft time; this is the same question asked again
+            # because contracts/ can change between the draft merging and the
+            # task being queued, and the frozen contract on the row is what the
+            # run is judged against.
+            #
+            # The derivation stays for a block that names none: drafts merged
+            # before 11 Sep 2026 carry no `contract` field, and refusing them
+            # here would strand work whose only fault is its age.
+            named = block.get("contract")
+            if named:
+                contract, contract_file = _named_contract(
+                    str(named), work_type, target_repo, declared)
+            else:
+                contract, contract_file = _contract_for(
+                    work_type, target_repo, declared)
         except QueueRefused as exc:
             raise QueueRefused(
                 f"fleet-spec block {n} of {len(blocks)} could not be queued, "

@@ -93,7 +93,20 @@ BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
 #: of ten on the gold-standard document.
 PROSE_PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./-]*/[\w.-]+\.[A-Za-z0-9]{1,5})`")
 
-REQUIRED = ("work_type", "repo", "title", "writable_paths")
+#: `contract` is REQUIRED, since 11 Sep 2026 and specs/auto-approval.md §14.
+#:
+#: The resolution it replaces was not "ambiguous work is refused" -- it was
+#: "work whose declared paths happen to fall inside a narrow contract is
+#: refused". Three contracts have matched (dd_api, deadly-digital-platform)
+#: since 30 Aug and five tasks queued fine, because their paths did not fit the
+#: narrow one. Task 63's did, two survived, and the draft merged having queued
+#: nothing. Whether the queue works was downstream of which paths a draft
+#: happened to name.
+#:
+#: Required rather than optional: "unambiguous" is a property of the paths a
+#: draft chose, not of the work, so a field filled in only when something
+#: already broke is filled in by whoever is debugging rather than whoever knows.
+REQUIRED = ("work_type", "repo", "title", "writable_paths", "contract")
 
 
 def _repo_files_ending(root, suffix: str, limit: int = 4000) -> list[str]:
@@ -124,6 +137,33 @@ def _repo_files_ending(root, suffix: str, limit: int = 4000) -> list[str]:
 def fail(msg: str) -> int:
     print(f"FAIL: {msg}", file=sys.stderr)
     return 1
+
+
+def _inside(path: str, globs) -> bool:
+    """The prefix test console/autoqueue.py and console/rank.py both use.
+
+    Copied rather than imported for the reason those two copy it from each
+    other: this file runs inside the agent's worktree, where `console` is not
+    importable. Eight lines, and the tests assert all three agree on the paths
+    that matter -- which is the only thing that makes a copy acceptable.
+    """
+    for g in globs:
+        pre = str(g).split("*", 1)[0].rstrip("/")
+        if pre and (path == pre or path.startswith(pre + "/")):
+            return True
+    return False
+
+
+def _covers(contract_path, work_type: str, repo: str, declared) -> bool:
+    """Does this contract match the work AND cover every declared path?"""
+    try:
+        d = yaml.safe_load(contract_path.read_text()) or {}
+    except Exception:
+        return False
+    if d.get("work_type") != work_type or d.get("repo") != repo:
+        return False
+    globs = [str(g) for g in (d.get("writable_paths") or [])]
+    return bool(globs) and all(_inside(p, globs) for p in declared)
 
 
 def load_protected(work_type: str, repo: str) -> list[str]:
@@ -197,6 +237,33 @@ def main() -> int:
             if not isinstance(b, dict):
                 return fail(f"{where} must be a mapping")
             missing = [k for k in REQUIRED if not b.get(k)]
+            if missing == ["contract"] and b.get("work_type") and b.get("repo"):
+                # THE USEFUL HALF OF THE REFUSAL. A bare "you are missing
+                # contract" makes the author guess which one; this names every
+                # contract that matches the work AND covers every declared
+                # path, which is exactly the set the old rule refused to choose
+                # between. §14.4: task 63's silent queue-time refusal becomes a
+                # draft-time message asking for a choice.
+                fits = [y.name for y in sorted(CONTRACTS.glob("*.yaml"))
+                        if _covers(y, str(b["work_type"]), str(b["repo"]),
+                                   [str(x) for x in (b.get("writable_paths") or [])])]
+                if len(fits) > 1:
+                    return fail(
+                        f"{where} declares no contract, and {len(fits)} cover "
+                        f"its paths: {fits}. They are different boundaries — "
+                        f"different verification, different diff limits, and "
+                        f"whether a test can be created at all — so this is a "
+                        f"choice and not a tiebreak. Name one as `contract:`.")
+                if len(fits) == 1:
+                    return fail(
+                        f"{where} declares no contract. {fits[0]} covers every "
+                        f"declared path; name it as `contract: {fits[0]}` so "
+                        f"the boundary is stated rather than derived from "
+                        f"which paths this spec happened to list.")
+                return fail(
+                    f"{where} declares no contract, and none in contracts/ "
+                    f"matches work_type '{b['work_type']}' on repo "
+                    f"'{b['repo']}' and covers every declared path.")
             if missing:
                 return fail(f"{where} is missing {missing}. A task cannot be "
                             "created without them.")
@@ -219,6 +286,36 @@ def main() -> int:
         for block in blocks:
             repo = str(block["repo"])
             work_type = str(block["work_type"])
+            named = str(block["contract"])
+
+            # 2a. THE DECLARED CONTRACT, CHECKED HERE AND NOT AT QUEUE TIME.
+            #
+            # §14.4. This check is the draft task's own verification, so a
+            # wrong contract fails the DRAFT -- before it merges and before the
+            # code task is queued or paid for. console/autoqueue.py finds the
+            # same mistake after the draft has merged, which is money spent to
+            # discover that a spec cannot be used.
+            cpath = CONTRACTS / named
+            if "/" in named or not named.endswith(".yaml"):
+                return fail(f"{rel}: contract '{named}' is not a bare filename "
+                            f"in contracts/ -- name it as e.g. "
+                            f"'deadly-digital-platform-api.yaml'")
+            if not cpath.is_file():
+                known = sorted(y.name for y in CONTRACTS.glob("*.yaml"))
+                return fail(f"{rel}: contract '{named}' is not in contracts/. "
+                            f"A typo is refused rather than fallen back from. "
+                            f"Known: {known}")
+            try:
+                chosen = yaml.safe_load(cpath.read_text()) or {}
+            except Exception as exc:
+                return fail(f"{rel}: contract '{named}' is not valid YAML ({exc})")
+
+            if chosen.get("work_type") != work_type or chosen.get("repo") != repo:
+                return fail(
+                    f"{rel}: the block says work_type '{work_type}' repo "
+                    f"'{repo}', and {named} is work_type "
+                    f"'{chosen.get('work_type')}' repo '{chosen.get('repo')}'. "
+                    f"A block that says two things decides nothing.")
 
             # 2. WORK TYPE NAMES A REAL CONTRACT. This check owns it because the
             # candidate row deliberately does not carry a work_type.
@@ -247,7 +344,33 @@ def main() -> int:
                 return fail(f"{rel}: repo '{repo}' is not a checkout under {REPO_ROOT}")
 
             writable = [str(p) for p in (block.get("writable_paths") or [])]
-            floor = load_protected(work_type, repo)
+
+            # 2b. THE DECLARED CONTRACT MUST COVER THE DECLARED PATHS.
+            #
+            # The same predicate console/autoqueue.py applies at queue time --
+            # a prefix test over the contract's writable globs -- so the two
+            # cannot disagree about what "covers" means. Naming a contract that
+            # does not cover the work is the one way the declaration could be
+            # worse than the derivation it replaces, so it is refused here.
+            cglobs = [str(g) for g in (chosen.get("writable_paths") or [])]
+            outside = [w for w in writable if not _inside(w, cglobs)]
+            if outside:
+                also = [y.name for y in sorted(CONTRACTS.glob("*.yaml"))
+                        if _covers(y, work_type, repo, writable)]
+                return fail(
+                    f"{rel}: declares {outside} writable, and {named} does not "
+                    f"make {'them' if len(outside) > 1 else 'it'} writable. A "
+                    f"spec cannot widen the contract its work runs under."
+                    + (f" These do cover every declared path: {also}."
+                       if also else
+                       " No contract for this work_type and repo covers all of"
+                       " them, so the paths are wrong or the work spans two"
+                       " contracts."))
+
+            # The floor is the NAMED contract's, not the work_type's. Stricter
+            # and more honest: it is the contract the task will actually run
+            # under, which is the whole point of naming it.
+            floor = [str(g) for g in (chosen.get("protected_paths") or [])]
 
             for w in writable:
                 # 4. Not on the floor.
