@@ -308,6 +308,20 @@ def push(repo: Path, branch: str, base_branch: str, remote: str = "origin") -> s
     return out.strip()
 
 
+#: Link targets built as a REAL directory of symlinks rather than as one
+#: symlink to the whole tree. Only `node_modules`: it is the only linked tree
+#: that tools write into, and farming a whole repository checkout -- which is
+#: what contracts/draft-spec.yaml links -- would turn its `.git` into a
+#: symlink and change what git does inside it.
+FARMED = ("node_modules",)
+
+#: Names inside a farmed tree that are tool caches rather than dependencies.
+#: Created empty and writable in the worktree instead of linked, so the write
+#: lands in the tree that gets deleted. `.bin` is deliberately NOT here: it
+#: holds the executables the checks invoke and must resolve to the real ones.
+WRITABLE_INSIDE = (".vite", ".cache", ".turbo")
+
+
 def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
     """Symlink installed dependencies into the worktree, for verification only.
 
@@ -326,6 +340,29 @@ def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
 
     Refuses a target outside the worktree, and refuses to replace anything
     that already exists.
+
+    A FARMED LINK IS A REAL DIRECTORY OF SYMLINKS, and `node_modules` is one.
+
+    One symlink for the whole tree makes every path inside it read-only when
+    the source is read-only, and vitest writes inside it:
+
+        EROFS: open '<trial>/platform/node_modules/.vite/vitest/results.json'
+
+    Measured 11 Sep 2026 re-verifying task 53 under the accept path's own
+    confinement, with `ProtectHome=read-only` and the source under /home.
+    tsc passed; vitest died on that write; and because vitest exits 1 rather
+    than on a signal, it was reported as the branch failing to verify.
+
+    Farming the top level -- 529 symlinks for the platform tree, one per
+    entry, made in a few milliseconds against 783 MB nobody copies -- makes
+    the directory itself real and writable. `WRITABLE_INSIDE` names are then
+    created as real empty directories rather than linked, so a tool's cache
+    lands in the trial and is deleted with it.
+
+    IT ALSO CLOSES THE HAZARD THIS DOCSTRING ALREADY NAMED. "A write through
+    this link would land outside the worktree's git index entirely" was true
+    of every farmed path before this: a tool writing into `node_modules` wrote
+    into the real checkout. Now it writes into the throwaway tree.
     """
     created: list[Path] = []
     root = worktree.resolve()
@@ -339,7 +376,19 @@ def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
         if dest.exists() or dest.is_symlink():
             raise GitError(f"worktree link {target!r} already exists")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.symlink_to(src)
+        if dest.name in FARMED and src.is_dir():
+            dest.mkdir()
+            for entry in src.iterdir():
+                if entry.name in WRITABLE_INSIDE:
+                    # Real, empty, and writable. NOT a copy of the source's
+                    # cache: a stale result file carried into the trial is a
+                    # verdict from another tree, and the point of the trial is
+                    # that nothing arrives with one.
+                    (dest / entry.name).mkdir()
+                else:
+                    (dest / entry.name).symlink_to(entry)
+        else:
+            dest.symlink_to(src)
         created.append(dest)
     return created
 
@@ -354,3 +403,17 @@ def unlink_dependencies(created: list[Path]) -> None:
     for path in created:
         if path.is_symlink():
             path.unlink()
+        elif path.is_dir():
+            # A FARMED LINK: a real directory holding symlinks and empty
+            # cache dirs. Unlink the entries and remove the directory, rather
+            # than rmtree -- the entries point INTO the real dependency tree
+            # and following one would delete the repository's own packages,
+            # which is the mistake this function's docstring already refuses.
+            for entry in path.iterdir():
+                if entry.is_symlink():
+                    entry.unlink()
+                elif entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+            path.rmdir()

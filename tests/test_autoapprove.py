@@ -930,6 +930,78 @@ class TestAPathTheFleetMayNeverWrite:
         assert g["rule"] == "protected_path", g["detail"]
 
 
+class TestPlanHandsTheGatesWhatTheyASKEDFor:
+    """THE WIRING, NOT THE RULE, and every test above this line is the rule.
+
+    `_g()` builds `floor` itself, from `protected_path_floor`, and calls
+    rank.gate() with it. That is the right way to test a gate and it cannot
+    test its caller: on 11 Sep 2026 console/autoapprove.plan() was passing the
+    COVERAGE floor -- a float -- for the same argument, and 1158 tests passed
+    over it, because the only code that would have noticed is
+    `[p for p in mine if _inside(p, floor)]`, which evaluates `_inside` zero
+    times when the candidate has no paths.
+
+    THE FIXTURE IS WHY IT GOT THAT FAR. `_cand` defaults to `paths=None` ->
+    `[]` and `repo="fleet"`. Every plan() test above therefore made a row that
+    could not reach gate 5 with anything to check, and the tests that DO give
+    a row real paths give them to trip gate 3, which returns first. A fixture
+    that cannot produce the shape production produces is the fixture the
+    conftest docstring is about.
+
+    So this one goes through plan(), with a path off the real floor, on the
+    real repo. It fails on the code as it stood at 01:30.
+    """
+
+    def _floor_path(self, console):
+        """Derived from the table, never typed. Same rule as _floor()."""
+        glob = console.execute(
+            "SELECT glob FROM protected_path_floor"
+            " WHERE repo = %s AND glob LIKE %s ORDER BY glob LIMIT 1",
+            (REPO, "%migrations/**")).fetchone()["glob"]
+        return glob.replace("**", "versions/v0008_product_categories.py")
+
+    def test_a_protected_path_is_held_when_plan_is_the_caller(
+            self, dsns, console, admin):
+        """c35 in miniature, through the route that actually runs at 01:30."""
+        _pool(admin)
+        b = _batch(console)
+        cid = _cand(console, b, repo=REPO, paths=[self._floor_path(console)])
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["eligible"] is False
+        assert row["rule"] == "protected_path", row["detail"]
+
+    def test_plan_survives_a_candidate_that_has_paths_at_all(
+            self, dsns, console, admin):
+        """The narrower fact, stated on its own because it is the one that
+        broke: a row with paths that reaches gate 5 must not raise.
+
+        An ordinary one-sided backend candidate, nothing protected about it.
+        It is allowed to be held by a later gate -- what it may not do is
+        stop the sweep."""
+        _pool(admin)
+        b = _batch(console)
+        cid = _cand(console, b, repo=REPO,
+                    paths=["api/analytics/routes/orders.py"])
+        p = autoapprove.plan()
+        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
+        assert row["rule"] != "protected_path"
+
+    def test_the_two_floors_are_both_carried_and_are_not_the_same_value(
+            self, dsns, console, admin):
+        """The coverage floor still reaches the ranker after the rename.
+
+        Renaming one of two identically named variables fixes the crash and
+        could silently drop the other; this asserts the number is still on the
+        plan and is a ratio rather than a list of globs."""
+        _pool(admin)
+        b = _batch(console)
+        _cand(console, b, repo=REPO, paths=["api/analytics/routes/orders.py"])
+        p = autoapprove.plan()
+        assert isinstance(p["coverage_floor"], float)
+        assert 0.0 < p["coverage_floor"] <= 1.0
+
+
 class TestTheGateStaysPure:
     def test_omitting_the_inputs_skips_the_gates(self, console):
         """A caller that does not supply them is asking a narrower question.

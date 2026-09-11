@@ -216,6 +216,7 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                    "exit_code": c.exit_code, "duration_ms": c.duration_ms,
                    "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                    "unresolved_reason": c.unresolved_reason,
+                   "killed_reason": c.killed_reason,
                    "output_tail": c.output_tail[-800:]} for c in result.checks]
 
         if not verdict.clean:
@@ -244,6 +245,33 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                         f"is not a failing check and says nothing about "
                         f"{branch} -- the contract names a checker that is not "
                         f"there. Nothing was recorded."),
+                duration_s=time.monotonic() - started)
+
+        # A CHECK THAT WAS KILLED IS IN THE SAME CLASS, and it reached this
+        # function as an ordinary non-zero exit until 11 Sep 2026.
+        #
+        # Measured that day, re-verifying task 53 under fleet-automerge's own
+        # 512M: tsc exited 134 (SIGABRT, V8 out of memory) and the branch was
+        # reported as "verifies on its own and FAILS when merged into main as
+        # it stands now. The base moved under it." Every clause of that
+        # sentence was false, and it was produced by the failure branch below
+        # because a signalled process and a failing one look identical from an
+        # exit code alone.
+        #
+        # BEFORE the failure branch for the same reason the unresolved check
+        # is: the branch below is the one that would otherwise tell the wrong
+        # story, and it would send a reviewer to read a diff that is fine.
+        if result.undecided:
+            return Reverification(
+                ok=False, could_not_run=True, base_sha=base_sha, merged_sha=head,
+                checks=checks,
+                reason=(f"the merge into {base} was NOT re-verified and has "
+                        f"not been made: {result.undecided_summary()}. This is "
+                        f"not a failing check and says nothing about {branch} "
+                        f"-- the check did not finish, so there is no verdict "
+                        f"to read. Look at the unit's limits and the "
+                        f"filesystem it ran on, not at the diff. Nothing was "
+                        f"recorded."),
                 duration_s=time.monotonic() - started)
 
         if not result.passed:

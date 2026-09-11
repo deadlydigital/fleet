@@ -253,7 +253,7 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
         # the coverage floor below and as contracts/draft-spec.yaml's
         # generated protected list: a typed copy drifts, and here a drifted
         # copy means approving work no contract can write.
-        floor = [r["glob"] for r in conn.execute(
+        protected_floor = [r["glob"] for r in conn.execute(
             "SELECT glob FROM protected_path_floor WHERE repo = %s",
             (REPO,)).fetchall()]
 
@@ -266,16 +266,25 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
     # From the database, never a literal here. 028 puts the floor beside the
     # other ceilings on 013's precedent, and a copy in this file is the drift
     # approve.py's stale contract literal already demonstrated once.
-    floor = float(ceilings["caps"]["coverage_floor"])
+    #
+    # NAMED coverage_floor AND NOT floor. Both of this function's floors were
+    # called `floor` until 11 Sep 2026, and this line -- forty lines below the
+    # other one -- rebound the name from a list of protected globs to a
+    # coverage ratio. gate() then got the ratio for its `floor` argument and
+    # `_inside` tried to iterate a float. THE TWO FLOORS ARE NOT THE SAME KIND
+    # OF THING: one is the set of paths no contract may ever write, the other
+    # is a number a coverage ratio is compared against, and nothing but the
+    # shared word "floor" ever connected them.
+    coverage_floor = float(ceilings["caps"]["coverage_floor"])
 
     scored = []
     for c in candidates:
         g = rank.gate(c, newest_batch=newest, live_tasks=tasks,
                       prior_failures=c["prior_failures"],
-                      writables=writables, floor=floor)
+                      writables=writables, floor=protected_floor)
         scored.append({**dict(c), "gate": g,
-                       "keys": rank.key_values(c, coverage_floor=floor),
-                       "sort": rank.rank(c, coverage_floor=floor)})
+                       "keys": rank.key_values(c, coverage_floor=coverage_floor),
+                       "sort": rank.rank(c, coverage_floor=coverage_floor)})
 
     # THE GATES ARE AHEAD OF THE SORT. An ineligible row is not ranked into
     # position and then skipped; it never enters the order. It is still listed,
@@ -293,7 +302,7 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
     credit = ceilings["credit"]
     result: Dict[str, Any] = {
         "rank_version": rank.RANK_VERSION,
-        "coverage_floor": floor,
+        "coverage_floor": coverage_floor,
         "platform_sha": head,
         "considered": len(candidates),
         "newest_batch": newest,
@@ -410,7 +419,7 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
 
     try:
         result["reason"] = _reason(take, below, len(candidates),
-                                   coverage_floor=floor)
+                                   coverage_floor=coverage_floor)
     except NothingToApprove as exc:
         result["approve_ids"] = []
         result["reserved_gbp"] = 0.0
@@ -496,13 +505,22 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
     print(f"rank_v{p['rank_version']} at platform "
           f"{(p['platform_sha'] or 'unknown')[:7]}; "
           f"{p['considered']} open candidate(s), newest batch {p['newest_batch']}")
+    # THE NUMBERS ARE THE ONES IN rank.gate TODAY. They said 4 and 6 until 11
+    # Sep 2026, which was true before 022 and abf72e8 inserted gates ahead of
+    # the probes and nothing renumbered the header. A stale gate number sends
+    # a reader to the wrong rule in a function whose whole shape is an order.
+    #
+    # The DICT KEY stays `reached_gate_4`. It is written into
+    # decision_log.mechanics on every unattended approval, and renaming it
+    # would make the key on rows written tomorrow disagree with the key on
+    # rows written in August for no gain a reader of either can use.
     print(f"probes re-executed: {p['probes']['held']} of {p['probes']['run']} held"
           f"  (across the {p['probes']['reached_gate_4']} of "
-          f"{p['probes']['of_candidates']} candidate(s) that reached gate 4)")
+          f"{p['probes']['of_candidates']} candidate(s) that reached gate 7)")
     pr = p["premise"]
     print(f"premise re-executed: {pr['held']} of {pr['declared']} held"
           f"  (across the {pr['reached']} of {pr['of_candidates']} candidate(s) "
-          f"that reached gate 6)")
+          f"that reached gate 8)")
     if pr["silent"]:
         print(f"  {pr['silent']} of those declared NO premise, so nothing "
               f"about the ground they stand on was checked. That is the state "

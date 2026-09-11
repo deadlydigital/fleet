@@ -44,10 +44,40 @@ class Check:
     # The command names something that is not there. NOT the same as a
     # skip and NOT the same as a failure -- see `passed`.
     unresolved_reason: str | None = None
+    #: The check DIED rather than answered, so its exit code is not a verdict.
+    #:
+    #: A process killed by a signal did not decide anything about the tree it
+    #: was pointed at. Read as a failure it produces the worst sentence this
+    #: system can produce -- a specific, confident claim about a branch,
+    #: derived from an event that had nothing to do with the branch.
+    #:
+    #: THIS IS NOT HYPOTHETICAL AND IT IS NOT RARE. Measured 11 Sep 2026,
+    #: re-verifying task 53 under fleet-automerge.service's own confinement:
+    #:
+    #:     cd platform && ./node_modules/.bin/tsc --noEmit   exit 134
+    #:
+    #: 134 is 128+6, SIGABRT: V8 aborting because the 512M cgroup would not
+    #: give it memory. `could_not_run` was False, `ok` was False, and the
+    #: accept path reported "the branch verifies on its own and FAILS when
+    #: merged into main as it stands now. The base moved under it." The base
+    #: had not moved. Nothing was wrong with the branch.
+    #:
+    #: The two most likely environment failures in this system are exactly
+    #: this and the read-only filesystem, and neither was in the class that
+    #: exists to hold them.
+    killed_reason: str | None = None
 
     @property
     def ran(self) -> bool:
-        return self.skipped_reason is None and self.unresolved_reason is None
+        """Did this check look at the tree AND answer?
+
+        A killed check is not `ran`: it looked and was interrupted, which
+        establishes nothing, and `Verification.passed` requires that at least
+        one check established something.
+        """
+        return (self.skipped_reason is None
+                and self.unresolved_reason is None
+                and self.killed_reason is None)
 
     @property
     def passed(self) -> bool:
@@ -66,9 +96,96 @@ class Check:
         """
         if self.unresolved_reason is not None:
             return False
+        # AHEAD OF THE SKIP BRANCH, for the reason the unresolved branch is:
+        # falling through would turn a check the kernel killed into a PASS.
+        if self.killed_reason is not None:
+            return False
         if not self.ran:
             return True
         return self.exit_code == 0 and not self.timed_out
+
+
+#: Signal numbers whose 128+N exit code is read as "this was killed", never
+#: as a verdict. `sh` reports a child terminated by signal N as 128+N, and
+#: that convention is the only thing a caller of `subprocess.run(shell=True)`
+#: has to go on: the shell has already exited normally by then.
+#:
+#: WHY THE WHOLE RANGE AND NOT A SHORT LIST. The error directions are not
+#: symmetric. A killed check misread as a failure produces a confident false
+#: statement about a branch and refuses it with the wrong reason. A genuine
+#: failure misread as a kill refuses the merge too -- not knowing is not
+#: permission -- and says so in a sentence that sends the reader to the
+#: environment. The second is recoverable by reading; the first is what sent
+#: somebody to read a clean diff on 10 Sep.
+#:
+#: SIGPIPE (13 -> 141) IS THE KNOWN AMBIGUITY and it is in the set anyway. A
+#: shell pipeline whose last stage dies on SIGPIPE is a normal thing to write
+#: and a check that ends that way still did not answer. If that misfires it
+#: misfires loudly, as a refusal naming the signal.
+#:
+#: A program that deliberately `exit(137)` is violating the same convention
+#: the shell is using, and there is no way to tell it apart from here.
+_SIGNAL_NAMES = {
+    1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL", 5: "SIGTRAP",
+    6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 9: "SIGKILL", 11: "SIGSEGV",
+    13: "SIGPIPE", 15: "SIGTERM", 24: "SIGXCPU", 25: "SIGXFSZ",
+}
+
+
+def _cgroup_oom_kills() -> int | None:
+    """How many times this cgroup has had a process OOM-killed, or None.
+
+    AUTHORITATIVE WHERE THE EXIT CODE IS A GUESS. 128+9 says something was
+    killed; this says the kernel killed it for memory, which is the sentence
+    a reader can act on. Best effort and never fatal: a host without cgroup
+    v2, a delegated namespace, or a missing file all mean "cannot say", and
+    the exit-code reading below still applies.
+
+    Not a substitute for it either. V8 aborts ITSELF when the cgroup refuses
+    an allocation -- exit 134, no kernel OOM kill -- so the counter does not
+    move for the case that is most likely here.
+    """
+    try:
+        with open("/proc/self/cgroup") as fh:
+            rel = fh.readline().strip().split(":", 2)[2]
+        with open(f"/sys/fs/cgroup{rel}/memory.events") as fh:
+            for line in fh:
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    return int(value)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def killed_by(exit_code: int, oom_kills_delta: int | None) -> str | None:
+    """Why this exit code is not a verdict, or None if it is one.
+
+    `exit_code` is what `subprocess.run(shell=True)` returned: negative when
+    the shell itself was signalled, 128+N when the shell reports a signalled
+    child.
+    """
+    if oom_kills_delta:
+        return (f"the kernel OOM-killed a process in this check "
+                f"({oom_kills_delta} kill(s) recorded by the cgroup), so its "
+                f"exit code {exit_code} is not a verdict about the tree -- "
+                f"the check ran out of memory, it did not decide anything")
+    signum = None
+    if exit_code < 0:
+        signum = -exit_code
+    elif 128 < exit_code < 128 + 32:
+        signum = exit_code - 128
+    if signum is None:
+        return None
+    name = _SIGNAL_NAMES.get(signum, f"signal {signum}")
+    hint = ""
+    if signum in (6, 9):
+        hint = (" On this host that is usually the unit's MemoryMax: the "
+                "cgroup refuses an allocation and the process aborts or is "
+                "killed.")
+    return (f"the check was terminated by {name} rather than returning, so "
+            f"its exit code {exit_code} is not a verdict about the tree."
+            f"{hint}")
 
 
 def expand_changed_files(command: str, changed: list[str]) -> tuple[str, bool, int]:
@@ -168,6 +285,22 @@ class Verification:
                          if c.unresolved_reason)
 
     @property
+    def undecided(self) -> bool:
+        """Some check was killed, so it answered nothing.
+
+        Kept apart from `unresolved` because they send a reader to different
+        places: unresolved means the contract names a checker that is not on
+        disk, undecided means the checker was there, started, and was killed.
+        Both mean the same thing to the merge -- nothing is known -- and
+        console/reverify.py maps both to `could_not_run`.
+        """
+        return any(c.killed_reason for c in self.checks)
+
+    def undecided_summary(self) -> str:
+        return "; ".join(f"{c.command}: {c.killed_reason}"
+                         for c in self.checks if c.killed_reason)
+
+    @property
     def passed(self) -> bool:
         """Every check passed, and at least one of them actually ran.
 
@@ -252,6 +385,10 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
                                        expanded=expanded))
             break
         started = time.monotonic()
+        # READ BEFORE AND AFTER, so an OOM kill is attributed to THIS check
+        # rather than to whichever check happens to run when the counter is
+        # next looked at. None either side means the host cannot say.
+        oom_before = _cgroup_oom_kills()
         try:
             proc = subprocess.run(
                 expanded, shell=True, cwd=str(worktree), env=env,
@@ -266,9 +403,18 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
                    if isinstance(exc.stdout, bytes) else str(exc.stdout or ""))
             timed_out = True
         duration_ms = int((time.monotonic() - started) * 1000)
+        oom_after = _cgroup_oom_kills()
+        delta = (None if oom_before is None or oom_after is None
+                 else oom_after - oom_before)
+        # A TIMEOUT IS ALREADY ITS OWN THING and keeps its own field. It is
+        # not classified as killed here because `timed_out` already stops
+        # `passed` and already reads as "did not answer" everywhere
+        # downstream -- see the module note on what else belongs in this
+        # class.
+        killed = None if timed_out else killed_by(code, delta)
         result.checks.append(
             Check(command, code, duration_ms, out[-4000:], timed_out,
-                  expanded=expanded))
+                  expanded=expanded, killed_reason=killed))
         if code != 0 or timed_out:
             break
     return result

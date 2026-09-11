@@ -326,7 +326,10 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
             f"probes re-executed at platform {sha or 'unknown'}: "
             f"{(m.get('probes') or {}).get('held', 0)} of "
             f"{(m.get('probes') or {}).get('run', 0)} held"
-            # Across the rows that REACHED gate 4. The gates short-circuit, so
+            # Across the rows that REACHED gate 7 -- the key is still named
+            # `reached_gate_4` because it is on decision_log.mechanics rows
+            # going back to August and renaming it would split the history.
+            # The gates short-circuit, so
             # a row held for overlapping a live task never had its probes rerun
             # -- and "18 of 18" without this reads as the whole pool.
             f" (across {(m.get('probes') or {}).get('reached_gate_4', '?')} of "

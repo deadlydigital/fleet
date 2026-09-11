@@ -277,3 +277,45 @@ def test_a_missing_checker_does_not_merge_by_looking_like_a_skip(repo, wt_root):
         contract(verification=["/nonexistent/shape.py"]),
         "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
     assert not r.ok, "an unresolvable contract must never re-verify as OK"
+
+
+def test_a_killed_check_is_could_not_run_not_a_failing_check(repo, wt_root):
+    """The same argument as the missing checker above, arriving as a signal.
+
+    11 Sep 2026, measured against the real thing: re-verifying task 53 under
+    fleet-automerge.service's own 512M, `tsc --noEmit` exited 134 -- SIGABRT,
+    V8 out of memory -- and the accept path said "the branch verifies on its
+    own and FAILS when merged into main as it stands now. The base moved
+    under it." The base had not moved and nothing was wrong with the branch.
+
+    A signalled process did not return a verdict, so there is no verdict to
+    read, and the refusal must send the reader to the environment.
+    """
+    point, tip = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+
+    r = reverify.run(
+        repo, wt_root, task_for(repo),
+        contract(verification=[
+            'python3 -c "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"']),
+        "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
+
+    assert not r.ok
+    assert r.could_not_run, "a killed check is not a verdict about the branch"
+    assert "SIGKILL" in r.reason
+    assert "FAILS when merged" not in r.reason, (
+        "this is the sentence that sends a reviewer to read a diff that is fine")
+    assert "the diff" in r.reason or "filesystem" in r.reason, (
+        "the refusal must point at the environment, which is where the fault is")
+
+
+def test_an_ordinary_failing_check_still_reads_as_a_failure(repo, wt_root):
+    """The gate this must not widen: exit 1 is a verdict and stays one."""
+    point, tip = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+
+    r = reverify.run(
+        repo, wt_root, task_for(repo), contract(verification=["exit 1"]),
+        "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
+
+    assert not r.ok
+    assert not r.could_not_run
+    assert "FAILS when merged" in r.reason

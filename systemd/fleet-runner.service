@@ -70,6 +70,49 @@ ReadWritePaths=/home/ubuntu/.claude
 ReadWritePaths=/home/ubuntu/.claude.json
 ReadWritePaths=/home/ubuntu/.cache/claude-cli-nodejs
 
+# THE VERIFICATION MEMORY CEILING, AND IT IS THE SAME NUMBER IN THREE UNITS.
+#
+# fleet-runner, fleet-console and fleet-automerge all run THE SAME CONTRACT
+# VERIFICATION COMMANDS against the same branch, and they exist to agree about
+# whether it passes. Until 11 Sep 2026 they carried three different answers to
+# "how much memory may that take" -- runner unset (infinity), console 2G,
+# automerge 512M -- so a branch could pass in the runner and be reported as
+# failing by the accept path for no reason connected to the branch. It did:
+# task 53's tsc exited 134 under automerge's 512M and was rendered as "the
+# branch verifies on its own and FAILS when merged into main as it stands
+# now."
+#
+# WHAT THE NUMBER IS MEASURED AGAINST: the heaviest verification sequence any
+# contract declares, run whole, inside this confinement. Not a guess, not the
+# worst single command, and not the host's size. Measured 11 Sep 2026 by
+# re-verifying one task per contract class under these exact properties and
+# reading the cgroup's own memory.peak:
+#
+#   dd-analytics-frontend   tsc + vitest + bite check     961 MiB   113s
+#   deadly-digital-platform-api   compileall + ruff + 31-file pytest   274 MiB   236s
+#   draft-spec              draft_spec_shape.py            46 MiB     0.4s
+#
+# 2G is 2.1x the heaviest. The host has 7.8G, and the runner window
+# (02:00-04:00) overlaps automerge (03:30), so two of these must fit at once.
+#
+# RE-MEASURE WHEN A CONTRACT GAINS A CHECK, and MemoryAccounting=yes below is
+# what makes that possible from a real run rather than from another probe:
+# `systemctl show <unit> -p MemoryPeak`. A ceiling nobody can re-measure is a
+# number that was right once.
+#
+# tests/test_unit_ceilings.py asserts these three stay equal and stay above
+# the measured peak recorded there. Editing one of them alone fails that test.
+MemoryAccounting=yes
+MemoryMax=2G
+#
+# THE RUNNER ALSO HOSTS THE AGENT, which the other two do not, so this ceiling
+# covers the agent process as well as the verification that follows it. That
+# peak is NOT in the table above -- it has never been measured, because no
+# agent run has ever had MemoryAccounting on. It is measured from now on.
+# Until there is a number, the risk of this change is an agent killed at a
+# ceiling that used to be infinite; the mitigation is that an OOM kill is no
+# longer reported as a branch failing -- see runner/verify.Check.killed_reason.
+
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

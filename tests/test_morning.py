@@ -604,26 +604,109 @@ class TestTheScheduleIsShortenedOnlyWhenItIsSafeTo:
 
 
 class TestWhatTheNightDecided:
-    def test_no_decisions_is_not_reported_as_approving_nothing(self):
+    """WHAT THE RUN DECIDED, not what the window contains.
+
+    `decisions` is every unattended decision since the last brief; the
+    template prints `said` straight after "failed when it last ran", which is
+    one run. Every case here fixes which of the two the sentence is about.
+    """
+
+    #: A run that started an hour ago, exited half an hour ago, and the
+    #: decisions inside and outside that lifetime. The default stage is a
+    #: FINISHED run, because that is what the page describes.
+    RAN = NOW - timedelta(hours=1)
+    EXITED = NOW - timedelta(minutes=30)
+    DURING = NOW - timedelta(minutes=59)
+    YESTERDAY = NOW - timedelta(hours=20)
+
+    def _stage(self, **over):
+        kw = {"key": "approve", "name": "n", "unit": "u",
+              "last_start": self.RAN, "last_at": self.EXITED}
+        kw.update(over)
+        return {"approve": morning.Stage(**kw)}
+
+    def test_a_unit_that_never_ran_says_nothing_here(self):
         """A night the ranker declined and a night the timer never fired are
         the same silence in decision_log. Only the unit can tell them apart,
-        so this must not put words in the database's mouth."""
-        stages = {"approve": morning.Stage(key="approve", name="n", unit="u")}
+        so this must not put words in the database's mouth. With no run there
+        is nothing to attribute a row to, and "approved nothing" would be a
+        claim about a run that did not happen."""
+        stages = self._stage(last_start=None, last_at=None)
         morning.describe_night(stages, [])
         assert stages["approve"].said == ""
 
     def test_a_refusal_is_reported_as_much_as_an_approval(self):
-        stages = {"approve": morning.Stage(key="approve", name="n", unit="u")}
-        morning.describe_night(stages, [{"decision": "DEFERRED"}])
+        stages = self._stage()
+        morning.describe_night(stages, [{"decision": "DEFERRED",
+                                         "decided_at": self.DURING}])
         assert "declined" in stages["approve"].said
 
-    def test_approvals_and_refusals_are_counted_separately(self):
-        stages = {"approve": morning.Stage(key="approve", name="n", unit="u")}
-        morning.describe_night(stages, [{"decision": "APPROVED"},
-                                        {"decision": "APPROVED"},
-                                        {"decision": "DEFERRED"}])
-        assert "2 approvals" in stages["approve"].said
-        assert "1 night" in stages["approve"].said
+    def test_an_approval_and_a_refusal_are_reported_separately(self):
+        stages = self._stage()
+        morning.describe_night(stages, [{"decision": "APPROVED",
+                                         "decided_at": self.DURING},
+                                        {"decision": "DEFERRED",
+                                         "decided_at": self.DURING}])
+        assert "1 approval" in stages["approve"].said
+        assert "declined" in stages["approve"].said
+
+    def test_a_run_that_wrote_no_row_approved_nothing(self):
+        """11 Sep 2026. The sweep died inside plan() and wrote neither an
+        approval nor a refusal, and §9.5 means a run that got as far as
+        deciding cannot be silent -- so no row IS the answer."""
+        stages = self._stage(ok=False)
+        morning.describe_night(stages, [])
+        assert stages["approve"].said == "approved nothing"
+
+    def test_decisions_from_before_the_last_run_are_not_its_own(self):
+        """THE 11 SEP DEFECT, EXACTLY. Two approvals from the previous day's
+        hand runs, a unit that failed at 01:30, and a row that read "failed
+        when it last ran - 2 approvals"."""
+        stages = self._stage(ok=False)
+        morning.describe_night(stages, [
+            {"decision": "APPROVED", "decided_at": self.YESTERDAY},
+            {"decision": "APPROVED", "decided_at": self.YESTERDAY}])
+        assert stages["approve"].said == "approved nothing"
+        assert "2 approvals" not in stages["approve"].said
+
+    def test_the_scope_is_the_start_of_the_run_and_not_its_exit(self):
+        """`last_at` is ExecMainExitTimestamp and a run writes its decision
+        BEFORE it exits. Scoping on the exit stamp would throw away exactly
+        the rows the run made and report a good night as a dead one."""
+        started = NOW - timedelta(minutes=10)
+        stages = self._stage(last_start=started, last_at=NOW, ok=True)
+        morning.describe_night(stages, [
+            {"decision": "APPROVED",
+             "decided_at": started + timedelta(minutes=2)}])
+        assert "1 approval" in stages["approve"].said
+
+    def test_a_decision_written_after_the_run_exited_is_not_its_own(self):
+        """11 Sep 2026, the SECOND time in one day. The 01:30 unit died; the
+        sweep was then re-run by hand at 08:36; and an open-ended upper bound
+        gave the dead run credit for it -- "failed when it last ran -
+        1 approval", the same sentence by the same mistake. A process that has
+        exited cannot write a row."""
+        stages = self._stage(ok=False)
+        morning.describe_night(stages, [{"decision": "APPROVED",
+                                         "decided_at": NOW}])
+        assert stages["approve"].said == "approved nothing"
+
+    def test_a_run_still_in_flight_carries_a_stale_exit_stamp(self):
+        """ExecMainExitTimestamp is the PREVIOUS exit while a unit is running.
+        Taken as the ceiling it would close the window before it opened and
+        report a live run as having approved nothing."""
+        started = NOW - timedelta(minutes=5)
+        stages = self._stage(last_start=started,
+                             last_at=NOW - timedelta(hours=25), ok=None)
+        morning.describe_night(stages, [{"decision": "APPROVED",
+                                         "decided_at": NOW}])
+        assert "1 approval" in stages["approve"].said
+
+    def test_a_row_with_no_timestamp_is_not_attributed_to_the_run(self):
+        stages = self._stage(ok=False)
+        morning.describe_night(stages, [{"decision": "APPROVED",
+                                         "decided_at": None}])
+        assert stages["approve"].said == "approved nothing"
 
 
 class TestTheWholeChainIsWatched:

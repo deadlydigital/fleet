@@ -199,3 +199,154 @@ def test_a_relative_path_is_not_treated_as_a_missing_checker(tmp_path):
 def test_an_unparseable_command_is_not_called_unresolved(tmp_path):
     """A command this cannot split is one it has no opinion about."""
     assert verify.unresolved_paths("echo 'unbalanced") == []
+
+
+# ---- a check that was killed did not answer -------------------------------
+
+class TestAKilledCheckIsNotAVerdict:
+    """`exit_code != 0` is two different facts and was read as one.
+
+    11 Sep 2026: re-verifying task 53 under fleet-automerge's 512M,
+    `tsc --noEmit` exited 134 -- 128+6, SIGABRT, V8 refusing to continue
+    because the cgroup would not give it memory. `Check.passed` was False,
+    `Verification.unresolved` was False, and console/reverify.py's failure
+    branch printed "the branch verifies on its own and FAILS when merged into
+    main as it stands now. The base moved under it." Every clause was false.
+
+    The two most likely environment failures in this system are a memory kill
+    and a read-only filesystem, and the class that exists to hold "the check
+    never ran" held neither.
+    """
+
+    def test_a_signalled_check_is_not_a_failure(self, tmp_path):
+        v = verify.run(tmp_path, [
+            'python3 -c "import os, signal; os.kill(os.getpid(), signal.SIGABRT)"'], 60)
+        check = v.checks[0]
+        assert check.exit_code == 134
+        assert check.killed_reason and "SIGABRT" in check.killed_reason
+        assert check.passed is False
+        assert check.ran is False, "a killed check established nothing"
+        assert v.undecided is True
+        assert v.passed is False
+
+    def test_a_killed_check_is_not_reported_as_unresolved(self):
+        """Different sentences, different repairs. Unresolved sends a reader
+        to the contract; killed sends them to the unit's limits."""
+        killed = verify.Check("c", 137, 1, "", killed_reason="SIGKILL")
+        assert verify.Verification(checks=[killed]).unresolved is False
+        assert verify.Verification(checks=[killed]).undecided is True
+
+    def test_an_ordinary_failure_is_still_a_failure(self, tmp_path):
+        """The gate this change must not widen. exit 1 is a verdict."""
+        v = verify.run(tmp_path, ["exit 1"], 60)
+        assert v.checks[0].killed_reason is None
+        assert v.checks[0].passed is False
+        assert v.undecided is False, (
+            "a check that said no must not be reported as a check that "
+            "never ran -- that would turn every real failure into a refusal "
+            "nobody can act on")
+
+    def test_a_passing_check_is_untouched(self, tmp_path):
+        v = verify.run(tmp_path, ["true"], 60)
+        assert v.passed is True and v.undecided is False
+
+    def test_a_negative_returncode_is_the_shell_itself_being_signalled(self):
+        assert verify.killed_by(-9, None) is not None
+        assert "SIGKILL" in verify.killed_by(-9, None)
+
+    def test_a_cgroup_oom_kill_is_named_as_one(self):
+        """Authoritative where the exit code is a guess: the kernel says it
+        killed something for memory, so the reason says so rather than
+        inferring it from 137."""
+        why = verify.killed_by(1, 1)
+        assert why and "OOM-killed" in why and "not a verdict" in why
+
+    def test_no_oom_and_an_ordinary_code_is_still_a_verdict(self):
+        assert verify.killed_by(1, 0) is None
+        assert verify.killed_by(2, None) is None
+
+    def test_the_whole_signal_range_is_covered(self):
+        """128+N for every N a process can die on. A short list is how 134
+        was missed: nobody predicts which signal the next environment failure
+        arrives as."""
+        for signum in (2, 4, 6, 7, 8, 9, 11, 13, 15, 24, 25):
+            assert verify.killed_by(128 + signum, 0) is not None, signum
+
+    def test_128_itself_is_not_a_signal(self):
+        """128 is 128+0 and no signal 0 kills anything."""
+        assert verify.killed_by(128, 0) is None
+
+
+# ---- node_modules is farmed so a tool can write inside it ------------------
+
+class TestAFarmedLinkIsWritable:
+    """One symlink for the whole tree makes every path inside it read-only
+    when the source is, and vitest writes inside it:
+
+        EROFS: open '<trial>/platform/node_modules/.vite/vitest/results.json'
+
+    Measured 11 Sep 2026 re-verifying task 53 with ProtectHome=read-only.
+    vitest exits 1 on that, not on a signal, so it was reported as the branch
+    failing to verify.
+    """
+
+    def _tree(self, tmp_path):
+        src = tmp_path / "node_modules"
+        (src / "pkg").mkdir(parents=True)
+        (src / ".bin").mkdir()
+        (src / ".bin" / "vitest").write_text("#!/bin/sh\n")
+        (src / ".vite" / "vitest").mkdir(parents=True)
+        (src / ".vite" / "vitest" / "results.json").write_text('{"stale": true}')
+        root = tmp_path / "wt"
+        (root / "platform").mkdir(parents=True)
+        return src, root
+
+    def test_the_farmed_directory_itself_is_real_and_writable(self, tmp_path):
+        src, root = self._tree(tmp_path)
+        worktree.link_dependencies(root, {"platform/node_modules": str(src)})
+        nm = root / "platform/node_modules"
+        assert nm.is_dir() and not nm.is_symlink()
+        (nm / ".vite" / "vitest").mkdir(parents=True, exist_ok=True)
+        (nm / ".vite" / "vitest" / "results.json").write_text("{}")
+        assert (nm / ".vite/vitest/results.json").read_text() == "{}"
+
+    def test_the_write_does_not_reach_the_real_tree(self, tmp_path):
+        """The property the trial rests on: it leaves nothing."""
+        src, root = self._tree(tmp_path)
+        created = worktree.link_dependencies(root, {"platform/node_modules": str(src)})
+        (root / "platform/node_modules/.vite/vitest").mkdir(parents=True, exist_ok=True)
+        (root / "platform/node_modules/.vite/vitest/results.json").write_text("{}")
+        assert (src / ".vite/vitest/results.json").read_text() == '{"stale": true}'
+        worktree.unlink_dependencies(created)
+        assert (src / "pkg").exists() and (src / ".bin" / "vitest").exists()
+        assert (src / ".vite/vitest/results.json").exists()
+        assert not (root / "platform/node_modules").exists()
+
+    def test_packages_and_bin_still_resolve_to_the_real_ones(self, tmp_path):
+        """`.bin` holds the executables the checks invoke. Copying or
+        emptying it would mean the trial runs a different tsc."""
+        src, root = self._tree(tmp_path)
+        worktree.link_dependencies(root, {"platform/node_modules": str(src)})
+        assert (root / "platform/node_modules/pkg").resolve() == (src / "pkg").resolve()
+        assert (root / "platform/node_modules/.bin/vitest").resolve() \
+            == (src / ".bin" / "vitest").resolve()
+
+    def test_a_cache_arrives_empty_rather_than_carrying_another_trees_result(
+            self, tmp_path):
+        """A results.json from the real checkout is a verdict about a tree
+        that is not this one."""
+        src, root = self._tree(tmp_path)
+        worktree.link_dependencies(root, {"platform/node_modules": str(src)})
+        vite = root / "platform/node_modules/.vite"
+        assert vite.is_dir() and not vite.is_symlink()
+        assert list(vite.iterdir()) == []
+
+    def test_a_non_farmed_link_is_still_one_symlink(self, tmp_path):
+        """contracts/draft-spec.yaml links a whole repository checkout as
+        `reference/...`. Farming that would turn its .git into a symlink."""
+        src = tmp_path / "checkout"
+        (src / ".git").mkdir(parents=True)
+        root = tmp_path / "wt"
+        root.mkdir()
+        worktree.link_dependencies(root, {"reference/dd": str(src)})
+        assert (root / "reference/dd").is_symlink()

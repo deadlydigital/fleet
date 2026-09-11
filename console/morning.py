@@ -232,8 +232,8 @@ CHAIN = (
 #: running with `--dry-run` decides everything and does nothing, and for two
 #: months this page would have reported its decisions as events. The flag is a
 #: fact about the unit, so it is read from the unit.
-_SERVICE_PROPS = ("Result", "ExecMainExitTimestamp", "ExecMainStatus",
-                  "ExecStart", "LoadState")
+_SERVICE_PROPS = ("Result", "ExecMainStartTimestamp", "ExecMainExitTimestamp",
+                  "ExecMainStatus", "ExecStart", "LoadState")
 _TIMER_PROPS = ("UnitFileState", "LastTriggerUSec", "NextElapseUSecRealtime",
                 "TimersCalendar", "LoadState")
 
@@ -301,6 +301,11 @@ class Stage:
     schedule: str = ""
     enabled: Optional[bool] = None
     last_at: Optional[datetime] = None
+    #: When the last run STARTED, which is the only thing that can scope a
+    #: database answer to that run. `last_at` is ExecMainExitTimestamp and
+    #: every row a run writes is written BEFORE it, so scoping on `last_at`
+    #: would discard exactly the decisions the run made.
+    last_start: Optional[datetime] = None
     ok: Optional[bool] = None
     dry_run: bool = False
     installed: bool = True
@@ -342,6 +347,7 @@ def units() -> Dict[str, Stage]:
         if svc is not None:
             st.installed = svc.get("LoadState") != "not-found"
             st.last_at = _stamp(svc.get("ExecMainExitTimestamp"))
+            st.last_start = _stamp(svc.get("ExecMainStartTimestamp"))
             result = svc.get("Result")
             st.ok = None if not result else (result == "success")
             # `--dry-run` as its own word, not a substring: a path containing
@@ -381,25 +387,85 @@ def describe_night(stages: Dict[str, Stage],
     .record_unattended_refusal` exists so that a night the ranker declined
     leaves a row -- without it, declining and not running are the same
     silence.
+
+    SCOPED TO THE RUN THE ROW DESCRIBES, SINCE 11 SEP 2026
+    -------------------------------------------------------
+    `decisions` is every `decided_via='unattended'` row since the last brief,
+    which is a WINDOW, and the template prints this immediately after "failed
+    when it last ran", which is ONE RUN. Joining a window to a run with an em
+    dash asserts they are the same event.
+
+    On 11 Sep 2026 that read "failed when it last ran - 2 approvals". Both
+    halves were true and the sentence was not: the sweep died in `plan()` at
+    01:30:02 and wrote no row at all, and the two approvals were decisions 26
+    and 27, made at 11:31 and 14:11 THE PREVIOUS DAY by hand runs of
+    run_autoapprove.py. `journalctl` has the unit activating three times
+    total, none of them then.
+
+    So the count is taken over the rows this run wrote, and nothing else. The
+    window still decides which decisions the page loads; this decides which of
+    them the STAGE may speak for.
+
+    THE SCOPE IS THE RUN'S LIFETIME, `last_start` TO `last_at`, and both ends
+    are load-bearing.
+
+    `last_start` is ExecMainStartTimestamp and `last_at` is
+    ExecMainExitTimestamp. A run writes its decision BEFORE it exits, so a
+    lower bound of `last_at` would discard every row the run actually made and
+    report a good night as a dead one. And a process that has exited cannot
+    write, so a row stamped after `last_at` is somebody else's -- which is not
+    hypothetical: the hand run that re-ran this sweep at 08:36 on 11 Sep,
+    after the 01:30 unit had died, was attributed to the 01:30 unit by an
+    open-ended upper bound and rendered "failed when it last ran - 1
+    approval". The same sentence, the same day, by the same mistake.
+
+    `last_at` is only an upper bound when it is ONE, which means at or after
+    `last_start`. A unit that is running right now carries the PREVIOUS exit
+    stamp, and treating that as the ceiling would close the window before it
+    opened.
+
+    IT DOES NOT FIX THE PROVENANCE, and that is deliberate. A hand run started
+    while the timer's own run is in flight still lands inside the lifetime and
+    is still counted, because `decided_via` records the CODE PATH and no
+    column records the TRIGGER. That is a much smaller hole than the one this
+    closes and it is not closable from the reading side. See
+    specs/auto-approval.md §9.14; it wants a column, not a reinterpretation.
     """
     approve = stages.get("approve")
     if approve is None:
         return
-    if not decisions:
-        # NOT "approved nothing". The unit may have run and refused, or not
-        # run at all, and only the first of those is a decision. Which one it
-        # is comes from `approve.ok` and `approve.last_at`, which the template
-        # renders beside this.
+    if approve.last_start is None:
+        # NEVER RAN, or systemd could not say when. No run means no row can be
+        # attributed to one, and "approved nothing" would be a claim about a
+        # run that did not happen. The template renders "has never run" from
+        # `last_at`, which is the honest answer and is not this function's.
         approve.said = ""
         return
-    took = [d for d in decisions if d["decision"] == "APPROVED"]
-    passed = [d for d in decisions if d["decision"] != "APPROVED"]
+    ends = (approve.last_at
+            if approve.last_at is not None
+            and approve.last_at >= approve.last_start else None)
+    mine = [d for d in decisions
+            if d["decided_at"] is not None
+            and d["decided_at"] >= approve.last_start
+            and (ends is None or d["decided_at"] <= ends)]
+    if not mine:
+        # THE RUN WROTE NOTHING, and by construction that means it did not get
+        # as far as deciding: a sweep that decides writes either an approval
+        # (approve_batch) or a refusal (record_unattended_refusal), and §9.5
+        # exists so that the second of those cannot be silent. Paired with
+        # "failed when it last ran" this is the whole truth about 11 Sep.
+        approve.said = "approved nothing"
+        return
+    took = [d for d in mine if d["decision"] == "APPROVED"]
+    passed = [d for d in mine if d["decision"] != "APPROVED"]
     parts = []
     if took:
         parts.append(f"{len(took)} approval{'' if len(took) == 1 else 's'}")
     if passed:
-        parts.append(f"{len(passed)} night{'' if len(passed) == 1 else 's'} "
-                     f"it declined to choose")
+        # ONE RUN, so this is no longer a count of nights. It used to read
+        # "2 nights it declined to choose" because it was summing a window,
+        # and a single run cannot decline twice.
+        parts.append("declined to choose")
     approve.said = ", ".join(parts)
 
 

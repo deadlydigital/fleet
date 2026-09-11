@@ -859,7 +859,7 @@ sentence is here so that whoever proposes it has to notice that.
 
 ---
 
-## 9. Three findings recorded here and deliberately not fixed
+## 9. Findings recorded here and deliberately not fixed
 
 Found while tracing the chain for §1. None is caused by this document, each
 would be a separate change with its own argument, and each is written down here
@@ -1736,6 +1736,140 @@ four contracts is four decisions about what a boundary was for, and
 to make. Until then the unattended loop refuses any spec whose declared paths
 do not pick out exactly one contract — which is the safe direction, and is a
 refusal that will read as mysterious the first time it fires.
+
+### 9.14 `decided_via` records the code path and is read as the trigger
+
+Found 11 Sep 2026, from the morning page rendering **"failed when it last ran
+— 2 approvals"** against `fleet-autoapprove`.
+
+Both halves were true and the sentence was not. The unit failed at 01:30:02
+and wrote no row at all. The two approvals were decisions **26 and 27**, made
+at **11:31 and 14:11 the previous day** by hand runs of `run_autoapprove.py`
+after `b6fcdf5` took `--dry-run` off the unit at 09:31. `journalctl -u
+fleet-autoapprove` has the unit activating three times in its life — 9 Sep
+22:43, 10 Sep 01:30, 11 Sep 01:30 — and none of them is 11:31 or 14:11.
+
+**The field asserts something it does not hold.** `decided_via='unattended'`
+means *this decision was taken by `autoapprove.sweep`*. It does not mean *a
+timer fired*, and nothing in the schema or in `run_autoapprove.py` can tell
+the two apart: a person typing the command writes the identical value.
+`morning.Step`'s own docstring reads
+
+> AUTO   a timer, unattended -- an approval at 01:30, a merge at 03:30
+
+which is the reading the column cannot support. This is the same defect as
+`runs.branch_name` holding a name for a branch that was never cut (§9.6) and
+`tasks.status` reading FAILED for work that shipped: **a column that records
+one thing and is read as another**, where the reading is the one every
+consumer actually needs.
+
+**Scoped, not fixed, 11 Sep 2026.** `morning.describe_night` now counts only
+the rows written inside the run's own lifetime, `Stage.last_start` to
+`Stage.last_at` — `ExecMainStartTimestamp` to `ExecMainExitTimestamp`. Both
+ends are load-bearing and each was established by the defect it prevents:
+
+* **The lower bound** is the start and not the exit, because a run writes its
+  decision *before* it exits. Scoping on the exit stamp discards exactly the
+  rows the run made and reports a good night as a dead one.
+* **The upper bound** is the exit, because a process that has exited cannot
+  write. Without it the fix reproduced the defect **the same day**: the hand
+  run of `run_autoapprove.py` at 08:36, long after the 01:30 unit had died,
+  was credited to the 01:30 unit and the row read "failed when it last ran —
+  1 approval". The upper bound applies only when it is one — a unit that is
+  running *now* carries the previous exit stamp, and treating that as the
+  ceiling closes the window before it opens.
+
+The row reads "failed when it last ran — approved nothing", which is what a
+sweep that died inside `plan()` did. That closes the *window versus run* half
+and nothing else.
+
+**What is NOT fixed, and what it wants.** A hand run started **while the
+timer's own run is in flight** still lands inside the lifetime and is still
+attributed to the stage, because the scope is a time range and not an
+identity. That is a far smaller hole than the one above and it is not
+closable from the reading side. The fix is a column — the trigger
+on the decision, written by the process that has it, not inferred by a reader
+who does not. systemd hands every unit an `INVOCATION_ID`; a
+`decision_log.triggered_by` carrying it (and NULL for a hand run, which is
+itself the answer) makes the question decidable instead of plausible. Until
+then, `decided_via` may be read as "which code decided", never as "what made
+it run", and §4's morning sentences must not say "a timer" over it.
+
+### 9.15 A killed check is not a verdict — **FIXED 11 Sep 2026** (`runner/verify.Check.killed_reason`)
+
+`could_not_run` exists to keep "the check said no" apart from "the check never
+ran". It held one member — a checker that is not on disk — and missed the two
+environment failures this system is actually most likely to hit.
+
+**Measured 11 Sep 2026**, re-verifying task 53 under each unit's real
+confinement:
+
+| ceiling | result |
+|---|---|
+| `MemoryMax=512M` (automerge's) | `tsc --noEmit` → **exit 134**, SIGABRT, V8 out of memory, 6s |
+| `MemoryMax=2G` (console's) | tsc passes; `vitest` → **`EROFS`** writing `node_modules/.vite/vitest/results.json` through the read-only link |
+
+Both returned `ok=False, could_not_run=False`, so both produced:
+
+> the branch verifies on its own and FAILS when merged into main as it stands
+> now: ... The base moved under it.
+
+Every clause false. A reviewer sent to read a clean diff, for the second time
+in a week — §9.10 is the first.
+
+**The rule.** A process terminated by a signal did not return a verdict. `sh`
+reports a signalled child as 128+N and `subprocess.run` reports a signalled
+shell as −N; both are now `killed_reason`, which `Check.passed` refuses ahead
+of the skip branch and which `reverify` maps to `could_not_run`. The cgroup's
+`memory.events` `oom_kill` counter is read either side of every check, because
+where it moves it *names* the cause instead of inferring it from 137.
+
+The whole 128+1..128+31 range is taken, not a short list of signals. The error
+directions are not symmetric: a killed check read as a failure is a confident
+false statement about a branch, and a genuine failure read as a kill still
+refuses the merge — not knowing is not permission — in a sentence pointing at
+the environment. A program that deliberately `exit(137)` is indistinguishable
+from here and is violating the same convention the shell is using.
+
+**WHAT ELSE BELONGS IN THIS CLASS.** In it now: a checker not on disk
+(`unresolved`), a signalled check, a kernel OOM kill. Not in it, in the order
+they should be taken:
+
+1. **Timeouts, and this one is a real gap today.** A check that hits
+   `DEADLINE_SECONDS` sets `timed_out`, which stops `passed` — and then falls
+   into `reverify`'s failure branch and prints the same false sentence. A hang
+   in the branch is a fact about the branch; a slow or loaded host is not; and
+   nothing distinguishes them. "Did not return a verdict" is true either way,
+   which is the argument for moving it. The cost is that a genuine infinite
+   loop stops reading as a failure, which is why it is named here rather than
+   changed in passing.
+2. **Environment failures that exit normally, which the fix above does NOT
+   catch.** vitest exited 1 on `EROFS`. So did nothing else distinguish it.
+   `ENOSPC`, `EACCES` and `EMFILE` all arrive the same way, and none is
+   visible in an exit code. Pattern-matching the output is not the answer —
+   this codebase already refuses that for git's wording. The answer is a
+   **precondition**: assert before any check runs that the trial tree and
+   every farmed cache directory are writable, and report a failed assertion
+   as `could_not_run` naming the path. That turns a whole class from a lie
+   into a refusal, and it is the single highest-value item left here.
+3. **`exit 127` from a relative command.** `unresolved_paths` only resolves
+   ABSOLUTE paths, deliberately — a relative path belongs to the tree under
+   test. A contract naming a tool that is not on `PATH` therefore reads as a
+   failing check.
+4. **A check that could not reach something it needs** — a network, a
+   database. None is reachable from a check today by design, so this is a
+   class with no members yet rather than one that is missing.
+
+**The ceilings, and why they are one number.** The three units that run these
+commands and exist to agree about them held three answers: runner unset
+(infinity), console 2G, automerge 512M. All three are now 2G, measured against
+the heaviest verification sequence any contract declares, run whole, inside
+the confinement it runs in — `dd-analytics-frontend` at **961 MiB**, against
+274 MiB for the API contract and 46 MiB for a draft spec. `MemoryAccounting`
+is on so the next measurement comes from a real run rather than another probe,
+and `tests/test_unit_ceilings.py` fails if one of the three is edited alone.
+`fleet-autoapprove` is deliberately not held to it: it re-executes candidate
+probes and never runs a contract.
 
 ---
 

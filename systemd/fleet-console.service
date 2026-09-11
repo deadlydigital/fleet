@@ -70,7 +70,22 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # 2G since 10 Sep 2026, MEASURED rather than chosen, and it is not a web
-# app's number because this is not only a web app. The accept route re-runs
+# app's number because this is not only a web app.
+#
+# STILL 2G ON 11 SEP 2026, AND NOW IT IS THE SAME NUMBER AS THE OTHER TWO.
+# fleet-runner and fleet-automerge carried infinity and 512M respectively
+# until then, so the three units that run the same verification and exist to
+# agree about it held three different answers. Re-measured whole-sequence and
+# inside this confinement, by reading the cgroup's memory.peak:
+#
+#   dd-analytics-frontend   tsc + vitest + bite check                961 MiB
+#   deadly-digital-platform-api   compileall + ruff + 31-file pytest 274 MiB
+#   draft-spec              draft_spec_shape.py                       46 MiB
+#
+# The 709 MiB below is tsc alone and remains correct; 961 MiB is the sequence,
+# which is what a ceiling has to hold. 2G is 2.1x it. MemoryAccounting=yes is
+# on all three now so the next measurement comes from a real run.
+# tests/test_unit_ceilings.py keeps the three equal. The accept route re-runs
 # THE CONTRACT'S OWN VERIFICATION in a trial clone -- that is the whole point
 # of it -- and for the frontend contract that is tsc and a 319-test vitest run.
 #
@@ -91,6 +106,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # Bounded rather than infinity: this process also serves HTTP, and an unbounded
 # web service is a worse failure than a capped one. 2G is ~2.9x the measured
 # tsc peak with room for vitest's workers, on a host with 7.8G.
+MemoryAccounting=yes
 MemoryMax=2G
 
 [Install]

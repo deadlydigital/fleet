@@ -541,6 +541,31 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
     narrower question, and silently reading the contracts directory instead
     would make the answer depend on when it was asked.
     """
+    # THE ARGUMENTS ARE CHECKED BEFORE THE GATES, and this is not defensive
+    # programming for its own sake.
+    #
+    # On 11 Sep 2026 console/autoapprove.plan() passed the COVERAGE floor --
+    # a float -- as `floor`, because two unrelated values in that function
+    # were both called `floor`. Nothing noticed until gate 5 reached a
+    # candidate that had paths: `[p for p in mine if _inside(p, floor)]`
+    # evaluates `_inside` ZERO TIMES when `mine` is empty, so every test and
+    # every earlier sweep ran the wrong argument all the way through and said
+    # nothing. The first row with a path crashed the first live sweep.
+    #
+    # A wrong argument that is only wrong for some inputs is a wrong argument
+    # every time it is passed. Checked HERE, once, at the boundary, so it
+    # fails on the call rather than on the candidate.
+    if floor is not None and isinstance(floor, (str, bytes, int, float)):
+        raise TypeError(
+            f"floor must be a sequence of globs from protected_path_floor, "
+            f"not {type(floor).__name__} ({floor!r}). The coverage floor is a "
+            f"different thing with a similar name; see "
+            f"console/autoapprove.plan.")
+    if writables is not None and isinstance(writables, (str, bytes, int, float)):
+        raise TypeError(
+            f"writables must be a sequence of (name, globs) pairs, not "
+            f"{type(writables).__name__}")
+
     # 1. PENDING only, never NOT_NOW. A NOT_NOW is the only record of a human
     #    judgement about one specific candidate, and a machine that can overrule
     #    it leaves no veto short of editing code. It is also the cheapest

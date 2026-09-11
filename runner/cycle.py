@@ -422,10 +422,16 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             worktree.unlink_dependencies(links)
         result.verification = verification
         for check in verification.checks:
+            # KILLED IS ITS OWN MARK, not FAIL. The runner's log is where a
+            # person looks first, and "FAIL tsc" over a check the cgroup
+            # killed is the same false sentence the accept path used to
+            # print -- see runner/verify.Check.killed_reason.
             mark = ("NORUN" if check.unresolved_reason
+                    else "KILLED" if check.killed_reason
                     else "skip" if not check.ran
                     else "ok  " if check.passed else "FAIL")
-            why = check.unresolved_reason or check.skipped_reason
+            why = (check.unresolved_reason or check.killed_reason
+                   or check.skipped_reason)
             log(f"  {mark} {check.command} ({check.duration_ms}ms)"
                 + (f"  -- {why}" if why else ""))
             if not check.passed:
@@ -444,7 +450,12 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             # riding along here -- so the sentence is doing the work.
             result.reason = (
                 f"could not be verified: {verification.unresolved_summary()}"
-                if verification.unresolved else "verification failed")
+                if verification.unresolved else
+                # SAME CLASS, SAME SENTENCE. A run whose check was killed did
+                # not fail verification; it never got a verdict, and 033's
+                # whole argument is that the reason column must say which.
+                f"could not be verified: {verification.undecided_summary()}"
+                if verification.undecided else "verification failed")
             return
 
         # ---- the branch, and nothing beyond it ----
@@ -651,12 +662,14 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
                     "exit_code": c.exit_code, "duration_ms": c.duration_ms,
                     "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                     "unresolved_reason": c.unresolved_reason,
+                    "killed_reason": c.killed_reason,
                     "output_tail": c.output_tail} for c in verification.checks],
         "verification_skipped": verification.skipped_reason,
         # Recorded on the run itself: a FAIL whose checks never opened is a
         # different fact from a FAIL whose checks ran, and reading it back off
         # the payload should not require inferring it from exit codes.
         "verification_unresolved": verification.unresolved_summary() or None,
+        "verification_undecided": verification.undecided_summary() or None,
         "boundary_violations": {
             "protected": verdict.protected_hits,
             "outside_writable": verdict.outside_writable,
