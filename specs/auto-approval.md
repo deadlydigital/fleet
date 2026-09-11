@@ -3040,6 +3040,12 @@ no contract makes it writable — and a person adds one line to the contract. Co
 one refused draft per new module, about £2, plus a human decision. It is the
 status quo with the cost made explicit and moved earlier.
 
+> **DECIDED 11 Sep 2026: (c).** Widen the contract one reviewed line per
+> module, when it happens. The refusal now arrives at DRAFT time naming the
+> path, so the cost is ~£2 and a person deciding whether the analytics API
+> should gain a module — which is where that question belongs. Take (a) when
+> the toll becomes annoying, not on the second instance.
+
 **Recommended: (c) now, (a) if it recurs.** Two drafts in seven is not a
 stopped pool; it is a toll. (c) costs £2 and a reviewed line, and puts "should
 the analytics API gain a module" in front of a person, which is where that

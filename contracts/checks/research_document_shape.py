@@ -56,8 +56,20 @@ FLEET = Path.home() / "fleet"
 # sentence: metorik-gap.md says "What I could not verify"; refund-hook.md says
 # "What remains" and "What would settle the question definitively". Requiring
 # one wording would have failed the second document, and it is the standard.
+#: A NUMBERED HEADING IS STILL A HEADING, and this cost £4.90 to learn.
+#:
+#: Task 64 produced a 669-line batch-11 document with `## 8. What I could not
+#: establish` and was refused for "no section saying what could not be
+#: verified". The section was there; the `8.` sat between the hashes and the
+#: words this pattern looks for. The two documents it was modelled on number
+#: nothing, so the requirement had only ever been met by imitation -- and no
+#: spec states it, including the one that produced batch 10 successfully.
+#:
+#: `(?:\d+[.)]?\s*)?` rather than a looser prefix: a number and its
+#: punctuation, and nothing else, so a heading that merely CONTAINS these words
+#: further along still does not count as the section.
 LIMITS_RE = re.compile(
-    r"^(?P<hashes>#{1,4})\s*("
+    r"^(?P<hashes>#{1,4})\s*(?:\d+[.)]?\s*)?("
     r"(what\s+)?(i|we)?\s*(could\s+not|couldn'?t|cannot|can'?t)\s+"
     r"(verify|establish|check|confirm|determine)"
     r"|limitations?\b"

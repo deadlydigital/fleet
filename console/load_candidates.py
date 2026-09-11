@@ -111,8 +111,23 @@ def band_of(cand: Dict[str, Any]) -> str | None:
         if m:
             seen.add(m.group(1).lower())
         elif "—" in section or "–" in section:
-            # Shaped like a banded heading, and the word is not one of ours.
-            unrecognised.append(section.split("—")[0].split("–")[0].strip())
+            # Shaped like a banded heading -- BUT ONLY IF THE LEAD IS ONE WORD.
+            #
+            # A dash was the whole test until 11 Sep 2026, which assumed every
+            # cited section came from the gap document. Batch 11's candidate 6
+            # cites two documents: the gap document's "Rarely — Tax reporting"
+            # AND "Reading 1 — the store's refund total against the platform's,
+            # per period" from research/EVIDENCE-refund-coverage-manifests.md,
+            # whose headings are readings and not bands. The block was refused
+            # for a convention that document never claimed to follow.
+            #
+            # A band is a single word. "Reading 1" is not one, so it is a
+            # heading from a document with other conventions and names no band.
+            # "Fortnightly" IS one, and still raises -- which is the protection
+            # this branch exists for, kept.
+            head = section.split("—")[0].split("–")[0].strip()
+            if head.isalpha():
+                unrecognised.append(head)
     if unrecognised:
         raise LoadRefused(
             f"evidence section begins {unrecognised[0]!r}, which is not one of "
