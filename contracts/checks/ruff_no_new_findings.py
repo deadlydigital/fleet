@@ -38,6 +38,9 @@ from collections import Counter
 from pathlib import Path
 
 RUFF = "/home/ubuntu/deadly-digital-platform/api/.venv/bin/ruff"
+
+#: The project's config. ASSERTED TO EXIST AND ASSERTED TO BE THE ONE RUFF
+#: PICKS, and deliberately NOT passed with `--config`. See _assert_project_root.
 CONFIG = "api/ruff.toml"
 
 
@@ -47,8 +50,24 @@ def findings(source: str, filename: str) -> Counter:
     Counted by code rather than by line, because a change that shifts a line
     would otherwise read as removing one finding and adding another.
     """
+    # NO `--config`, AND THAT IS THE WHOLE POINT OF _assert_project_root.
+    #
+    # `--config api/ruff.toml` does not mean "use this config as the project
+    # would". It also sets ruff's PROJECT ROOT to the current directory, and
+    # the project root is what isort resolves first-party imports against.
+    # Run from the worktree root, `--config api/ruff.toml` gave
+    #
+    #     linter.project_root = /home/ubuntu/deadly-digital-platform
+    #
+    # where the correct root -- the one a developer gets, and the one ruff
+    # finds by discovery -- is `.../api`. Under the wrong root `analytics` is
+    # not a first-party package, so `from analytics...` is sorted into the
+    # third-party block, and a correctly-sorted file reports I001.
+    #
+    # Letting ruff discover the config from the filename gives the developer's
+    # answer. `--stdin-filename` is what makes discovery work on stdin.
     proc = subprocess.run(
-        [RUFF, "check", "--config", CONFIG, "--output-format", "json",
+        [RUFF, "check", "--output-format", "json",
          "--stdin-filename", filename, "-"],
         input=source, capture_output=True, text=True)
     if proc.returncode not in (0, 1):
@@ -59,6 +78,42 @@ def findings(source: str, filename: str) -> Counter:
     except json.JSONDecodeError:
         print(f"could not read ruff output for {filename}: {proc.stdout[:400]}")
         sys.exit(2)
+
+
+def _assert_project_root(sample: str) -> None:
+    """Refuse to judge anything unless ruff resolved the root we expect.
+
+    THIS IS THE CHECK THAT WOULD HAVE CAUGHT ITS OWN BUG, which is why it is
+    here rather than a comment saying "do not pass --config".
+
+    The defect it replaces was invisible for EXISTING files and fatal for
+    CREATED ones. A wrongly-rooted I001 appears in the base content and the
+    head content alike, so the ratchet cancels it and nobody sees it. A file
+    the change creates has no base content, so the same spurious finding
+    counts as new. Task 58 -- a correct one-line upsert fix -- died that way,
+    on the test file the contract's own bite check obliged it to create.
+
+    Asked of ruff rather than assumed: a future version that changes discovery
+    must fail here, loudly, rather than start rejecting correct files again.
+    """
+    proc = subprocess.run(
+        [RUFF, "check", "--show-settings", sample],
+        capture_output=True, text=True)
+    want = str(Path(CONFIG).resolve().parent)
+    for line in proc.stdout.splitlines():
+        if line.strip().startswith("linter.project_root"):
+            got = line.split("=", 1)[1].strip().strip('"')
+            if got != want:
+                print(f"ruff resolved its project root to {got}, and this "
+                      f"check only means what it says when the root is {want} "
+                      f"-- the root decides which imports are first-party, so "
+                      f"a wrong one rejects correctly-sorted files. Not run.")
+                sys.exit(2)
+            return
+    print(f"could not read ruff's resolved project root from --show-settings; "
+          f"this check cannot establish that it is judging by the project's "
+          f"own rules. Not run.")
+    sys.exit(2)
 
 
 def at_base(base_sha: str, path: str) -> str | None:
@@ -79,6 +134,13 @@ def main() -> int:
     if not changed:
         print("ok: no python file changed")
         return 0
+
+    if not Path(CONFIG).exists():
+        print(f"{CONFIG} is not in this worktree, so ruff would lint with its "
+              f"own defaults and this check would be a different, laxer gate "
+              f"than the one it claims to be. Not run.")
+        return 2
+    _assert_project_root(changed[0])
 
     introduced: list[str] = []
     for path in changed:
