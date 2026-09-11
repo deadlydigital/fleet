@@ -816,6 +816,20 @@ def morning_repo_branches() -> list[tuple]:
     return sorted(seen)
 
 
+#: Every chain link with its task's state, for morning.half_failed_chains.
+MORNING_CHAINS = """
+    SELECT c.candidate_id, c.position, c.task_id, c.contract_file,
+           t.status, t.title, t.branch_name
+      FROM task_chain c
+      LEFT JOIN tasks t ON t.id = c.task_id
+     ORDER BY c.candidate_id, c.position
+"""
+
+
+def morning_chains() -> list[dict[str, Any]]:
+    return db.rows(MORNING_CHAINS)
+
+
 def morning_window() -> dict[str, Any] | None:
     return db.one(MORNING_WINDOW)
 

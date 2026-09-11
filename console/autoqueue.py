@@ -170,26 +170,65 @@ def _inside(path: str, globs: list[str]) -> bool:
     return False
 
 
-def spec_block(markdown: str) -> dict[str, Any]:
-    """The one fleet-spec block, as data, or a refusal naming what is wrong."""
+def spec_blocks(markdown: str) -> list[dict[str, Any]]:
+    """Every fleet-spec block, in order, as data.
+
+    ONE BLOCK IS ONE TASK, AND A DRAFT MAY DECLARE MORE THAN ONE. A candidate
+    whose paths no single contract covers is split by the draft that describes
+    it -- §12.4 -- because the alternative is a splitter that minimises the
+    number of contracts, and a minimiser PREFERS a contract whose writable set
+    is wide, which is §9.19's hole exactly.
+
+    The blocks become an ordered chain that merges together or not at all. The
+    order is the merge order and nothing else: the links do not depend on each
+    other to build.
+    """
     blocks = BLOCK_RE.findall(markdown or "")
-    if len(blocks) != 1:
+    if not blocks:
         raise QueueRefused(
-            f"the draft carries {len(blocks)} ```fleet-spec blocks; exactly "
-            f"one is required, which is what draft_spec_shape.py enforced when "
-            f"it was written")
-    try:
-        block = yaml.safe_load(blocks[0])
-    except yaml.YAMLError as exc:
-        raise QueueRefused(f"the fleet-spec block is not valid YAML: {exc}")
-    if not isinstance(block, dict):
-        raise QueueRefused("the fleet-spec block is not a mapping")
-    missing = [f for f in REQUIRED if not block.get(f)]
-    if missing:
-        raise QueueRefused(f"the fleet-spec block is missing {missing}")
-    if not isinstance(block.get("writable_paths"), list):
-        raise QueueRefused("the fleet-spec block's writable_paths is not a list")
-    return block
+            "the draft carries no ```fleet-spec block, so there is nothing to "
+            "queue; draft_spec_shape.py enforces at least one when it is "
+            "written")
+    out: list[dict[str, Any]] = []
+    for n, raw in enumerate(blocks, start=1):
+        where = f"fleet-spec block {n} of {len(blocks)}"
+        try:
+            block = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise QueueRefused(f"{where} is not valid YAML: {exc}")
+        if not isinstance(block, dict):
+            raise QueueRefused(f"{where} is not a mapping")
+        missing = [f for f in REQUIRED if not block.get(f)]
+        if missing:
+            raise QueueRefused(f"{where} is missing {missing}")
+        if not isinstance(block.get("writable_paths"), list):
+            raise QueueRefused(f"{where}'s writable_paths is not a list")
+        out.append(block)
+
+    # PAIRWISE DISJOINT, AND IT IS LOAD BEARING RATHER THAN TIDINESS.
+    #
+    # Each link builds from the base branch and verifies WITHOUT its siblings'
+    # changes, which is sound only while no two links can write the same file.
+    # Two links touching one file would each be verified against a tree that
+    # is not the tree that ships, and both could pass while the merge of the
+    # two does not work.
+    seen: dict[str, int] = {}
+    for n, block in enumerate(out, start=1):
+        for path in block["writable_paths"]:
+            if path in seen:
+                raise QueueRefused(
+                    f"fleet-spec blocks {seen[path]} and {n} both declare "
+                    f"{path}. Links are verified independently, which is only "
+                    f"sound while they are disjoint -- two links sharing a "
+                    f"file would each be checked against a tree without the "
+                    f"other's change.")
+            seen[path] = n
+    return out
+
+
+def spec_block(markdown: str) -> dict[str, Any]:
+    """The first fleet-spec block. Kept for callers that want exactly one."""
+    return spec_blocks(markdown)[0]
 
 
 def draft_path(patch_payload: dict[str, Any]) -> str:
@@ -243,13 +282,25 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
                 f"could not be fetched, so the spec that landed cannot be "
                 f"read: {exc}")
     markdown = _git(repo_path, "show", f"{merged_sha}:{rel}")
-    block = spec_block(markdown)
+    blocks = spec_blocks(markdown)
 
-    work_type = str(block["work_type"])
-    target_repo = str(block["repo"])
-    declared = [str(p) for p in block["writable_paths"]]
-
-    contract, contract_file = _contract_for(work_type, target_repo, declared)
+    # EVERY BLOCK RESOLVES BEFORE ANY TASK IS CREATED. A chain half-queued is
+    # the thing this feature exists to prevent, arriving in the queueing of it:
+    # if block 2 names paths no contract covers, block 1 must not already be a
+    # row somebody has to clean up.
+    resolved = []
+    for n, block in enumerate(blocks, start=1):
+        work_type = str(block["work_type"])
+        target_repo = str(block["repo"])
+        declared = [str(p) for p in block["writable_paths"]]
+        try:
+            contract, contract_file = _contract_for(work_type, target_repo, declared)
+        except QueueRefused as exc:
+            raise QueueRefused(
+                f"fleet-spec block {n} of {len(blocks)} could not be queued, "
+                f"so none of them were: {exc}")
+        resolved.append((block, work_type, target_repo, declared,
+                         contract, contract_file))
 
     # THE SPEC MAY NOT WIDEN ITS CONTRACT. draft_spec_shape.py checked the
     # declared paths against the contract's PROTECTED list when the draft ran.
@@ -257,62 +308,131 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
     # is neither protected nor writable passed that check and would still be
     # outside the boundary the task runs under, and the runner would refuse it
     # after the money was spent.
-    outside = [p for p in declared
-               if not _inside(p, list(contract.get("writable_paths") or []))]
-    if outside:
-        raise QueueRefused(
-            f"the spec declares {outside}, which {contract_file} does not make "
-            f"writable. A spec cannot widen the contract its work runs under, "
-            f"and queueing this would buy a run the boundary refuses.")
+    #
+    # EVERY LINK, BEFORE ANY ROW IS WRITTEN, for the same reason the contracts
+    # were all resolved above.
+    links = []
+    for n, (block, work_type, target_repo, declared,
+            contract, contract_file) in enumerate(resolved, start=1):
+        where = (f"fleet-spec block {n} of {len(resolved)}"
+                 if len(resolved) > 1 else "the spec")
+        outside = [p for p in declared
+                   if not _inside(p, list(contract.get("writable_paths") or []))]
+        if outside:
+            raise QueueRefused(
+                f"{where} declares {outside}, which {contract_file} does not "
+                f"make writable. A spec cannot widen the contract its work "
+                f"runs under, and queueing this would buy a run the boundary "
+                f"refuses.")
+        max_cost = contract.get("max_cost_gbp")
+        if max_cost is None:
+            raise QueueRefused(f"{contract_file} declares no max_cost_gbp")
+        frozen = {
+            "work_type": work_type,
+            "writable_paths": list(contract.get("writable_paths") or []),
+            "protected_paths": list(contract.get("protected_paths") or []),
+            "verification": list(contract.get("verification") or []),
+            "max_diff_lines": contract.get("max_diff_lines"),
+        }
+        for opt in ("creatable_paths", "paired_paths", "worktree_links",
+                    "readable_repos", "agent_tools", "auto_merge",
+                    "contract_version"):
+            if contract.get(opt) is not None:
+                frozen[opt] = contract[opt]
+        links.append({"position": n, "block": block, "work_type": work_type,
+                      "repo": target_repo, "declared": declared,
+                      "contract": contract, "contract_file": contract_file,
+                      "max_cost": max_cost, "frozen": frozen})
 
-    max_cost = contract.get("max_cost_gbp")
-    if max_cost is None:
-        raise QueueRefused(f"{contract_file} declares no max_cost_gbp")
-
-    frozen = {
-        "work_type": work_type,
-        "writable_paths": list(contract.get("writable_paths") or []),
-        "protected_paths": list(contract.get("protected_paths") or []),
-        "verification": list(contract.get("verification") or []),
-        "max_diff_lines": contract.get("max_diff_lines"),
-    }
-    for opt in ("creatable_paths", "paired_paths", "worktree_links",
-                "readable_repos", "agent_tools", "auto_merge",
-                "contract_version"):
-        if contract.get(opt) is not None:
-            frozen[opt] = contract[opt]
-
+    # ONE TRANSACTION FOR THE WHOLE CHAIN. A chain half-written is a candidate
+    # with one task that will never be held for a sibling that does not exist.
     with db.writer() as conn, conn.transaction():
-        conn.execute(
-            "INSERT INTO tasks (title, spec_md, repo, base_branch,"
-            " acceptance_contract, max_cost_gbp, timeout_seconds,"
-            " objective_ref) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (str(block["title"])[:200], markdown, target_repo,
-             str(contract.get("base_branch") or "main"), json.dumps(frozen),
-             max_cost, int(contract.get("timeout_seconds") or 1800),
-             task.get("objective_ref")))
-        new_id = conn.execute("SELECT currval('tasks_id_seq') AS id").fetchone()["id"]
+        cand_row = conn.execute(
+            "SELECT id, suggested_paths FROM candidates WHERE spec_task_id=%s"
+            " AND work_task_id IS NULL", (task["id"],)).fetchone()
+
+        # THE CHAIN MUST COVER WHAT THE CANDIDATE ASKED FOR.
+        #
+        # Checked here and not in draft_spec_shape.py because that check runs
+        # inside the draft's own worktree with no database and no candidate --
+        # the agent has no shell and no credential by design. So a draft that
+        # under-declares costs the draft's money and is refused before the
+        # BUILD money, which is the expensive half.
+        #
+        # Only when the blocks were split. A single-block draft narrowing the
+        # work is an ordinary editorial decision and always has been.
+        if cand_row is not None and len(resolved) > 1:
+            wanted = set(cand_row["suggested_paths"] or ())
+            got = {p for link in resolved for p in link[3]}
+            uncovered = sorted(wanted - got)
+            if uncovered:
+                raise QueueRefused(
+                    f"the draft splits into {len(resolved)} links covering "
+                    f"{sorted(got)}, and candidate {cand_row['id']} asked for "
+                    f"{uncovered} as well. A chain that drops half the work is "
+                    f"the half-shipped feature it exists to prevent, arriving "
+                    f"as a narrower spec instead of a failed sibling.")
+        ids = []
+        for link in links:
+            contract = link["contract"]
+            conn.execute(
+                "INSERT INTO tasks (title, spec_md, repo, base_branch,"
+                " acceptance_contract, max_cost_gbp, timeout_seconds,"
+                " objective_ref) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (str(link["block"]["title"])[:200], markdown, link["repo"],
+                 str(contract.get("base_branch") or "main"),
+                 json.dumps(link["frozen"]), link["max_cost"],
+                 int(contract.get("timeout_seconds") or 1800),
+                 task.get("objective_ref")))
+            ids.append(conn.execute(
+                "SELECT currval('tasks_id_seq') AS id").fetchone()["id"])
 
         # §9.8: work_task_id is read by two ceilings and was written by nobody,
         # because the step that should write it was the hand INSERT this
-        # function replaces. Now there is a place for it, so it is written --
-        # and the repeat-failure ceiling can finally see a build that failed
-        # rather than only a spec that did.
-        cand = conn.execute(
-            "UPDATE candidates SET work_task_id=%s"
-            " WHERE spec_task_id=%s AND work_task_id IS NULL RETURNING id",
-            (new_id, task["id"])).fetchone()
+        # function replaces. It names the FIRST link; the chain table carries
+        # the rest, so every existing reader keeps working unchanged.
+        cand = None
+        if cand_row is not None:
+            cand = conn.execute(
+                "UPDATE candidates SET work_task_id=%s WHERE id=%s RETURNING id",
+                (ids[0], cand_row["id"])).fetchone()
+            # A CHAIN IS RECORDED ONLY WHEN THERE IS MORE THAN ONE LINK. A
+            # single-task candidate is not a chain, and a row saying it is
+            # would make automerge hold it for a sibling it does not have.
+            if len(links) > 1:
+                for link, tid in zip(links, ids):
+                    conn.execute(
+                        "INSERT INTO task_chain (candidate_id, position,"
+                        " contract_file, declared_paths, task_id)"
+                        " VALUES (%s,%s,%s,%s,%s)",
+                        (cand_row["id"], link["position"],
+                         link["contract_file"], link["declared"], tid))
+        elif len(links) > 1:
+            raise QueueRefused(
+                f"the draft declares {len(links)} fleet-spec blocks but no "
+                f"candidate names spec task {task['id']}, so there is nothing "
+                f"to hang the chain on and the links would merge one at a "
+                f"time -- which is the half-shipped feature §12 exists to "
+                f"prevent.")
 
-    return Queued(task_id=new_id, title=str(block["title"]), repo=target_repo,
-                  work_type=work_type, contract_file=contract_file,
-                  spec_path=rel,
-                  candidate_id=cand["id"] if cand else None,
-                  detail=[
-                      f"queued task {new_id} under {contract_file}",
-                      f"{len(declared)} declared path(s), all inside the "
-                      f"contract's writable set",
-                      f"auto_merge is {frozen.get('auto_merge', True)!r} on "
-                      f"that contract",
-                  ] + ([f"candidate {cand['id']} now names it as its work task"]
-                       if cand else
-                       ["no candidate names this spec task, so nothing to link"]))
+    first = links[0]
+    detail = [f"queued task {ids[0]} under {first['contract_file']}",
+              f"{len(first['declared'])} declared path(s), all inside the "
+              f"contract's writable set",
+              f"auto_merge is {first['frozen'].get('auto_merge', True)!r} on "
+              f"that contract"]
+    if len(links) > 1:
+        detail.append(
+            f"CHAIN of {len(links)}: " + "; ".join(
+                f"{l['position']}. task {t} under {l['contract_file']}"
+                for l, t in zip(links, ids)))
+        detail.append("no link merges until every link has verified, so a "
+                      "failure in one leaves none of them shipped")
+    detail.append(f"candidate {cand['id']} now names task {ids[0]} as its "
+                  f"work task" if cand else
+                  "no candidate names this spec task, so nothing to link")
+
+    return Queued(task_id=ids[0], title=str(first["block"]["title"]),
+                  repo=first["repo"], work_type=first["work_type"],
+                  contract_file=first["contract_file"], spec_path=rel,
+                  candidate_id=cand["id"] if cand else None, detail=detail)

@@ -48,12 +48,31 @@ class TestReadingTheBlock:
         assert b["title"].startswith("Carry the four")
 
     def test_no_block_is_refused(self):
-        with pytest.raises(autoqueue.QueueRefused, match="0 ```fleet-spec"):
+        with pytest.raises(autoqueue.QueueRefused, match="no ```fleet-spec"):
             autoqueue.spec_block("# Just prose\n")
 
-    def test_two_blocks_are_refused(self):
-        with pytest.raises(autoqueue.QueueRefused, match="2 ```fleet-spec"):
-            autoqueue.spec_block(_draft() + _draft())
+    def test_two_blocks_are_two_links_now(self):
+        """CHANGED 11 Sep 2026 — this asserted that two blocks were refused.
+
+        specs/auto-approval.md §12: a candidate whose paths no single contract
+        covers is split by the draft into an ordered chain, one block per link,
+        and no link merges until every link has verified. Refusing the second
+        block was the rule that made gate 6 hold six of the seven live
+        candidates in the newest batch.
+
+        `spec_block` still returns one — the first — for callers that want
+        exactly one. `spec_blocks` is the chain.
+        """
+        two = _draft() + _draft({**_block(), "writable_paths": ["api/other.py"]})
+        assert len(autoqueue.spec_blocks(two)) == 2
+        assert autoqueue.spec_block(two) == autoqueue.spec_blocks(two)[0]
+
+    def test_two_blocks_declaring_the_same_path_are_still_refused(self):
+        """The disjointness the chain rests on. Links are verified without
+        each other's changes, which is only sound while no two can write the
+        same file."""
+        with pytest.raises(autoqueue.QueueRefused, match="both declare"):
+            autoqueue.spec_blocks(_draft() + _draft())
 
     @pytest.mark.parametrize("field", ["work_type", "repo", "title",
                                        "writable_paths"])

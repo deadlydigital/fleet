@@ -571,6 +571,50 @@ def unrecorded_merges(repo_root: Path, pairs: Sequence[tuple],
     return out
 
 
+def half_failed_chains(rows: Sequence[Dict[str, Any]]) -> List[Ask]:
+    """A chain where one link is over and another is still holding.
+
+    specs/auto-approval.md §12. The failure is not the held sibling's: a link
+    that failed after another passed says the SPLIT was wrong, and nothing
+    retries it, because retrying the failed half against a held half compounds
+    a bad split rather than recovering from one.
+
+    The branches stay. Unmerged, unreferenced and cheap, and they are the only
+    artefact of what the split actually produced -- which is what a person
+    needs in order to decide whether to cut the work differently.
+    """
+    by_cand: Dict[int, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_cand.setdefault(r["candidate_id"], []).append(r)
+    out: List[Ask] = []
+    for cid, links in sorted(by_cand.items()):
+        dead = [l for l in links if l["status"] in ("FAILED", "REJECTED", "ABANDONED")]
+        held = [l for l in links if l["status"] not in
+                ("FAILED", "REJECTED", "ABANDONED", "MERGED")]
+        if not dead or not held:
+            continue
+        out.append(Ask(
+            kind="CHAIN_HALF_FAILED",
+            headline=(f"candidate {cid} was split into {len(links)} links and "
+                      f"{len(dead)} of them failed, so none of them merged"),
+            detail=(
+                "Nothing shipped and nothing will: a link may not merge while "
+                "its chain is incomplete, which is the whole point of the "
+                "split. The branches are kept, unmerged — they are what the "
+                "split actually produced, and reading them is how you decide "
+                "whether the work was cut in the wrong place. The candidate is "
+                "back to PENDING; it is not retried, because retrying the half "
+                "that failed against the half that passed compounds a bad "
+                "split."),
+            href=f"/candidates",
+            href_label=f"candidate {cid}",
+            meta=[("failed", ", ".join(f"task {l['task_id']}" for l in dead)),
+                  ("held", ", ".join(f"task {l['task_id']} ({l['status']})"
+                                     for l in held))],
+            needs="NEEDS_YOU"))
+    return out
+
+
 def merge_record_index(rows: Sequence[Dict[str, Any]]) -> Dict[int, tuple]:
     """{task_id: (status, (decision ids,))}, for unrecorded_merges."""
     idx: Dict[int, tuple] = {}

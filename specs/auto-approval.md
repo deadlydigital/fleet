@@ -2193,6 +2193,60 @@ A caveat on the denominator, so nobody treats 3/17 as the rate: the sweep
 matches merge subjects containing `task <n>` or `task-<n>`. A hand-merge whose
 subject names neither is invisible to it. Seventeen is a floor.
 
+### 9.19 A contract may write files its verification never reads
+
+Found 11 Sep 2026 while designing §12, and it is the fourteenth instance this
+week of *a check that passes by construction*.
+
+`contracts/dd-docstring-proving.yaml` makes **twelve** route files writable:
+
+    api/analytics/routes/{churn,customers,dashboard,geography,manifest,orders,
+                          products,revenue,segments,setup,sources,sync}.py
+
+and its entire verification is
+
+    compileall -q api/analytics/routes/revenue.py
+    ruff check --select E9 api/analytics/routes/revenue.py
+    revenue_granularity_doc.py
+
+**Eleven of the twelve are never read by anything.** A task under this contract
+may rewrite `dashboard.py` and the gate compiles a different file, lints a
+different file, and passes. Not a check that is weak — a check that is not
+pointed at the change at all.
+
+**Measured across all eleven contracts, and it is the only one.** The
+classification is mechanical: a verification covers what it may write if any
+command expands `{changed_files}`, reads `FLEET_CHANGED_FILES`, runs a suite,
+or reads a whole tree without naming a path (`tsc --noEmit`, `vitest run`).
+
+    candidate-producer, dd-analytics-frontend, dd-infra, dd-order-filters,
+    dd-utm-source-alias, deadly-digital-platform-api, draft-spec,
+    research, research-metorik-gap        follow the change
+    dd-acquiring-page                     tsc --noEmit + vitest run read the tree
+    dd-docstring-proving                  ** 11 of 12 never read **
+
+`dd-acquiring-page` is listed because a first pass flagged it and that pass was
+wrong: it names no path either, but `tsc --noEmit` typechecks the whole
+platform, so anything it may write is read. The distinction is *named-path
+versus whole-tree*, not *named-path versus not*.
+
+**Why this is worse in the presence of §12.** A chain has to choose which
+contract each link runs under, and a chooser that minimises the number of
+contracts **prefers this one**, because a wide writable set covers more paths
+in one link. The hole and the minimiser select for each other. §12.4 puts the
+split in the draft spec for exactly this reason.
+
+**Not fixed here, and the reason is §9.13's.** Narrowing
+`dd-docstring-proving.writable_paths` to `revenue.py` is one line and refuses
+strictly more, which is the safe direction — but which of a contract's paths
+were a boundary someone meant and which are breadth nobody revisited is a
+decision about what that contract is for, and that is the user's.
+
+`tests/test_contract_reach.py` asserts the hole set is **exactly**
+`{dd-docstring-proving.yaml}`. A new contract with this shape fails; the known
+one is recorded rather than silently tolerated; and fixing it fails the test
+too, which is the prompt to delete the exception with it.
+
 ---
 
 ## 10. The first dry run over the live pool, and what it found
@@ -2384,7 +2438,7 @@ That is a question for a person and no ranking key substitutes for it.
 
 ---
 
-## 12. Dependency chaining — proposed, not built
+## 12. Dependency chaining — **BUILT 11 Sep 2026** (`037`, `task_chain`)
 
 ### 12.1 What is actually blocked, measured
 
@@ -2438,6 +2492,25 @@ Two mitigations are available and both are worse than they look:
   property of the split rather than of the machine.
 
 ### 12.3 The variant: nothing merges until everything verifies
+
+> **CORRECTED AT BUILD TIME, AND IT MADE THE FEATURE SMALLER.** This section
+> proposed basing each link on its predecessor's branch. That is not needed:
+> the halves are coupled at RUNTIME, not at build time. Nothing under
+> `platform/` imports from `api/` — checked, not assumed — and a page reaches
+> the backend over HTTP:
+>
+>     const res = await fetch(`/api/analytics/dashboard?${params}`)
+>
+> So the frontend half typechecks and its suite passes whether or not the
+> endpoint exists. Each link therefore builds from the base branch and verifies
+> independently, no link needs another's branch, and `base_branch` is untouched.
+>
+> **That equivalence is a property of the split and is enforced, not hoped
+> for.** It holds only while links touch disjoint paths — two links that could
+> write one file would each be verified against a tree that is not the tree
+> that ships. `draft_spec_shape.py` and `autoqueue.spec_blocks` both refuse a
+> non-disjoint split, before the money and again at queue time.
+
 
 **Do not merge the first half when it is ready. Hold it.**
 
@@ -2522,9 +2595,51 @@ task, a chain link depends on its predecessor, and the difference is what keeps
 `claim_task` unchanged); merging a chain partially under any circumstance; any
 automatic splitter; and any change to `boundary.derive`.
 
-**Open, and the reason this is a proposal and not a branch:** a chain that
-half-fails needs a person, and there is no route today from "B failed" back to
-"the candidate is PENDING again with A's branch kept". §9.3 refused a
-`FAILED -> MERGED` edge; this needs no edge, but it does need somebody to
-decide what happens to A's branch, and that decision has not been made.
+### 12.6 What a half-failed chain does — decided and built
+
+A link that fails after a sibling passed says something about the **split** was
+wrong. Retrying the failed link against a held sibling compounds a bad split
+rather than recovering from one, so **nothing is resumed**:
+
+* **The branches stay.** Unmerged, unreferenced, cheap — and they are the only
+  artefact of what the split actually produced, which is what a person needs in
+  order to decide whether the work was cut in the wrong place. Deleting them
+  would tidy away the evidence whose lesson is in it.
+* **The candidate returns to PENDING**, with `work_task_id` and the approval
+  decision cleared, by `automerge.release_half_failed` at the start of the
+  nightly sweep. A later night may pick it up again and a new draft may split
+  it differently — a fresh decision by the ranker, not a retry.
+* **It surfaces on the morning page** as `CHAIN_HALF_FAILED` under *What needs
+  you*, naming which link died and which is held.
+
+A chain where EVERY link failed is not this finding: nothing is held and
+nothing half-shipped, so it is an ordinary failed candidate and reporting it
+here would bury the ones that matter.
+
+### 12.7 What was built
+
+    037                          task_chain, one row per link, task_id UNIQUE
+    autoqueue.spec_blocks        N blocks, pairwise disjoint or refused
+    autoqueue.from_accepted_draft  every block resolved before any task is
+                                 created; the whole chain in one transaction;
+                                 the links must cover what the candidate asked
+    draft_spec_shape.py          every block held to every rule, disjointness
+                                 refused before the build money
+    automerge.chain_state        one query per task, handed to eligible()
+    automerge.eligible           a link may not merge while its chain is
+                                 incomplete — ahead of the re-verification,
+                                 because being told a sibling is still building
+                                 should not cost a trial clone
+    automerge.release_half_failed  the candidate back to PENDING, branches kept
+    morning.half_failed_chains   the ask
+    rank.gate 6                  spans_contracts is no longer a refusal; the
+                                 split is recorded on the result instead
+
+**A bug worth recording, because it was mine and it was the shape of the thing
+being built.** The first version of the gate 6 change `return`ed eligible, which
+short-circuited gates 7 and 8 — so a spanning candidate would have been the one
+kind of row whose probes were never re-executed. In a function where every early
+return is a refusal, returning a pass is how you skip the rest of it. It now
+falls through and carries the split onto whatever the later gates decide.
+`tests/test_task_chain.py::test_the_later_gates_still_judge_it` is that bug.
 

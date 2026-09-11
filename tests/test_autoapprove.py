@@ -861,28 +861,47 @@ class TestWorkThatSpansTwoContracts:
         assert g["rule"] not in ("spans_contracts", "unwritable_path",
                                  "protected_path"), g["detail"]
 
-    def test_work_needing_both_halves_is_held(self, console):
-        g = _g(_row(["api/analytics/routes/dashboard.py",
-                      "platform/app/(dashboard)/analytics/page.tsx"]), console)
-        assert not g["eligible"]
-        assert g["rule"] == "spans_contracts"
+    #: The two halves of the case this class was written for.
+    BOTH = ["api/analytics/routes/dashboard.py",
+            "platform/app/(dashboard)/analytics/page.tsx"]
 
-    def test_the_refusal_names_what_is_left_over(self, console):
-        """Naming the contracts alone does not tell a reader how to split the
-        candidate. Naming the remainder does."""
-        g = _g(_row(["api/analytics/routes/dashboard.py",
-                      "platform/app/(dashboard)/analytics/page.tsx"]), console)
-        assert g["not_covered"] == ["api/analytics/routes/dashboard.py"] or \
-            g["not_covered"] == ["platform/app/(dashboard)/analytics/page.tsx"]
-        assert "task 28" in g["detail"]
+    def test_work_needing_both_halves_is_no_longer_held(self, console):
+        """CHANGED 11 Sep 2026, and the refusal it replaced was correct when
+        it was written.
 
-    def test_it_withholds_the_approval_and_not_the_candidate(self, console):
-        """Same shape as the repeat-failure stop: the row stays PENDING and a
-        person may still tick it in the console having seen both halves."""
-        g = _g(_row(["api/analytics/routes/dashboard.py",
-                      "platform/app/(dashboard)/analytics/page.tsx"]), console)
-        assert g["eligible"] is False
+        A draft spec produced ONE task under ONE contract, so one half would
+        ship and nothing would queue the other — task 28. specs/auto-approval
+        .md §12 gives a draft one fleet-spec block per link and
+        console/automerge.eligible refuses to merge ANY link until every link
+        has verified, so the half that used to ship alone cannot.
+
+        This rule held six of the seven live candidates in the newest batch;
+        the pool was stopped rather than slow.
+        """
+        g = _g(_row(self.BOTH), console)
+        assert g["rule"] != "spans_contracts"
+
+    def test_the_split_is_still_recorded_even_though_it_is_not_a_refusal(
+            self, console):
+        """Naming the remainder is what tells a reader how the work was cut.
+        It was on the refusal; it is now on the result, because the brief still
+        wants to say what a candidate was split into."""
+        g = _g(_row(self.BOTH), console)
+        assert g.get("spans_contracts") is True
+        assert g["not_covered"] in (["api/analytics/routes/dashboard.py"],
+                                    ["platform/app/(dashboard)/analytics/page.tsx"])
         assert "paths" in g and "covered_by" in g
+
+    def test_the_hold_moved_to_the_merge_and_did_not_disappear(self):
+        """The safety this class asserted has not been dropped, it has moved:
+        a link may not merge while its chain is incomplete."""
+        from console import automerge
+        v = automerge.eligible(
+            {"id": 70, "acceptance_contract": {"work_type": "dd_api"}}, None,
+            {"candidate_id": 33, "position": 1, "length": 2,
+             "waiting": ["task 71 (RUNNING)"], "complete": False, "failed": []})
+        assert v.ok is False
+        assert "none of them shipped" in v.reason
 
 
 class TestAPathNoContractCovers:

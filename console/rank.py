@@ -642,6 +642,11 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
                            f"buys the same failure at the same price"),
                 "prior_failures": prior_failures}
 
+    #: Set by gate 6 when the work needs more than one contract. Carried onto
+    #: the result rather than refused: §12's chain is what makes it safe, and
+    #: a reader still wants to know the row was split.
+    spans: Dict[str, Any] = {}
+
     # 5. NO PATH THE FLEET MAY NEVER WRITE.
     #
     #    c35 is why this is a rule of its own rather than a case of gate 6.
@@ -724,31 +729,46 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
                                 + ", so no task can be queued for it at all"),
                             "paths": homeless, "covered_by": covered,
                             "prior_failures": prior_failures}
-                # The best any single contract manages, and what it leaves
-                # behind. Naming the REMAINDER is what tells a reader how to
-                # split the candidate; naming the contracts alone does not.
+                # SPANNING TWO CONTRACTS IS NO LONGER A REFUSAL, since
+                # 11 Sep 2026 and specs/auto-approval.md §12.
+                #
+                # It was one because a draft spec produced ONE task under ONE
+                # contract, so one half would ship and nothing would queue the
+                # other -- task 28. A draft may now declare one fleet-spec
+                # block per link, and console/automerge.eligible refuses to
+                # merge any link until every link has verified, so the half
+                # that used to ship alone cannot.
+                #
+                # WHAT STILL HAS TO GO RIGHT, AND WHERE IT IS CHECKED: the
+                # draft must actually declare the chain.
+                # contracts/checks/draft_spec_shape.py refuses a draft whose
+                # blocks do not cover every path this candidate suggested, so
+                # that failure lands on the DRAFT's verification -- before the
+                # build money -- rather than here or at queue time.
+                #
+                # The split is recorded either way, so the brief can still say
+                # what the work was cut into.
                 best, left = None, mine
                 for n, globs in writables:
                     rest = [p for p in mine if not _inside(p, globs)]
                     if len(rest) < len(left):
                         best, left = n, rest
-                return {"eligible": False, "rule": "spans_contracts",
-                        "detail": (
-                            f"{best} covers {len(mine) - len(left)} of its "
-                            f"{len(mine)} paths and not {left}. A draft spec "
-                            f"produces one task under one contract, so one "
-                            f"half would ship and nothing would queue the "
-                            f"other -- which is what task 28 did"),
-                        "paths": mine, "covered_by": covered,
-                        "best_contract": best, "not_covered": left,
-                        "prior_failures": prior_failures}
+                # RECORDED AND FALLEN THROUGH, NOT RETURNED. Returning
+                # eligible here would skip gates 7 and 8 -- the probes and the
+                # premise -- so a spanning candidate would be the one kind of
+                # row whose claims were never re-executed. Caught by reading
+                # the first draft of this change back; it is the shape of
+                # every other gate that an early return is a REFUSAL.
+                spans = {"spans_contracts": True, "paths": mine,
+                         "covered_by": covered, "best_contract": best,
+                         "not_covered": left}
 
     # 7. The probes still hold at the current HEAD.
     probes = check_probes(candidate)
     if not probes["ok"]:
         return {"eligible": False, "rule": "probes_failed",
                 "detail": probes["why"], "probes": probes,
-                "prior_failures": prior_failures}
+                "prior_failures": prior_failures, **spans}
 
     # 8. AND THE GROUND IS STILL THERE. Behind the probes rather than ahead of
     #    them, though both cost the same: a row whose gap has closed is not
@@ -758,7 +778,7 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
     if not premise["ok"]:
         return {"eligible": False, "rule": "premise_failed",
                 "detail": premise["why"], "probes": probes,
-                "premise": premise, "prior_failures": prior_failures}
+                "premise": premise, "prior_failures": prior_failures, **spans}
 
     return {"eligible": True, "rule": None, "detail": None, "probes": probes,
-            "premise": premise, "prior_failures": prior_failures}
+            "premise": premise, "prior_failures": prior_failures, **spans}

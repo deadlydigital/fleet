@@ -183,6 +183,7 @@ def index(request: Request):
         # .md §9.18: a reading and never a gate. One git walk per base branch
         # and one query, which is about a second.
         fleet_blocked=(morning.fleet_blocked(credit, deployments, stages)
+                       + morning.half_failed_chains(queries.morning_chains())
                        + morning.unrecorded_merges(
                            config.repo_root(), queries.morning_repo_branches(),
                            morning.merge_record_index(

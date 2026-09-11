@@ -133,7 +133,107 @@ def _check(reverification: Any, needle: str) -> Optional[dict]:
     return None
 
 
-def eligible(task: dict, reverification: Any) -> Eligibility:
+#: A link is ready when it has verified and is waiting to merge, or has
+#: already merged. Anything else -- still queued, running, failed, rejected --
+#: means the chain is not complete.
+CHAIN_READY = ("READY_FOR_REVIEW", "MERGED")
+
+
+HALF_FAILED = ("FAILED", "REJECTED", "ABANDONED")
+
+
+def half_failed_chains(conn) -> list[dict]:
+    """Chains where one link is over and another is still holding.
+
+    A link that failed after a sibling passed says something about the SPLIT
+    was wrong. specs/auto-approval.md §12: retrying the failed link against a
+    held sibling compounds a bad split rather than recovering from it, so
+    nothing here resumes anything.
+    """
+    rows = conn.execute(
+        "SELECT c.candidate_id, c.position, c.task_id, t.status, t.title,"
+        "       t.branch_name, c.contract_file"
+        "  FROM task_chain c LEFT JOIN tasks t ON t.id = c.task_id"
+        " ORDER BY c.candidate_id, c.position").fetchall()
+    by_cand: dict = {}
+    for r in rows:
+        by_cand.setdefault(r["candidate_id"], []).append(r)
+    out = []
+    for cid, links in by_cand.items():
+        dead = [l for l in links if l["status"] in HALF_FAILED]
+        if not dead:
+            continue
+        if all(l["status"] in HALF_FAILED for l in links):
+            # EVERY link is over. Nothing is held and nothing half-shipped;
+            # this is an ordinary failed candidate and not this finding.
+            continue
+        out.append({"candidate_id": cid, "links": links, "dead": dead,
+                    "held": [l for l in links
+                             if l["status"] not in HALF_FAILED]})
+    return out
+
+
+def release_half_failed(conn, log=print) -> list[int]:
+    """Return the candidate to PENDING and leave every branch where it is.
+
+    THE BRANCHES STAY. Unmerged, unreferenced, and cheap -- and they are the
+    evidence of what the split produced, which is the thing a person needs in
+    order to decide whether the split was the problem. Deleting them would
+    tidy away the only artefact of a failure whose lesson is in it.
+
+    NOTHING IS RESUMED. The candidate is PENDING, so a later night may pick it
+    up again and a new draft may split it differently. That is a fresh
+    decision by the ranker, not a retry of a chain that half-failed.
+    """
+    released = []
+    for chain in half_failed_chains(conn):
+        cid = chain["candidate_id"]
+        row = conn.execute(
+            "SELECT disposition FROM candidates WHERE id=%s", (cid,)).fetchone()
+        if row is None or row["disposition"] == "PENDING":
+            continue                      # already released
+        dead = ", ".join(f"task {l['task_id']} ({l['status']})"
+                         for l in chain["dead"])
+        held = ", ".join(f"task {l['task_id']} ({l['status']})"
+                         for l in chain["held"])
+        conn.execute(
+            "UPDATE candidates SET disposition='PENDING', work_task_id=NULL,"
+            " approval_decision_id=NULL, decided_at=NULL WHERE id=%s", (cid,))
+        log(f"candidate {cid}: chain half-failed — {dead}; {held} held and "
+            f"not merged. Returned to PENDING; branches kept.")
+        released.append(cid)
+    return released
+
+
+def chain_state(conn, task_id: int) -> Optional[dict]:
+    """This task's chain, or None if it is not a link.
+
+    Read as one query for the task rather than per link, and returned as data
+    so `eligible` stays pure -- the same argument console/rank.gate makes for
+    taking `writables` and `floor` as arguments.
+    """
+    row = conn.execute(
+        "SELECT candidate_id, position FROM task_chain WHERE task_id = %s",
+        (task_id,)).fetchone()
+    if row is None:
+        return None
+    links = conn.execute(
+        "SELECT c.position, c.task_id, t.status"
+        "  FROM task_chain c LEFT JOIN tasks t ON t.id = c.task_id"
+        " WHERE c.candidate_id = %s ORDER BY c.position",
+        (row["candidate_id"],)).fetchall()
+    waiting = [f"task {l['task_id']} ({l['status'] or 'not queued'})"
+               for l in links
+               if l["task_id"] != task_id and l["status"] not in CHAIN_READY]
+    return {"candidate_id": row["candidate_id"], "position": row["position"],
+            "length": len(links), "waiting": waiting,
+            "complete": not waiting,
+            "failed": [f"task {l['task_id']}" for l in links
+                       if l["status"] in ("FAILED", "REJECTED", "ABANDONED")]}
+
+
+def eligible(task: dict, reverification: Any,
+             chain: Optional[dict] = None) -> Eligibility:
     """May this task merge with nobody watching?
 
     Every branch below refuses. There is no path that returns ok=True by
@@ -156,6 +256,31 @@ def eligible(task: dict, reverification: Any) -> Eligibility:
         return Eligibility(False, (
             "the spec set auto_merge: false, so this one is for a person to "
             "look at. It is waiting in the console."))
+
+    # 2b. A LINK MAY NOT MERGE WHILE ITS CHAIN IS INCOMPLETE.
+    #
+    #     specs/auto-approval.md §12. A candidate whose paths no single
+    #     contract covers is split into an ordered chain, and the whole point
+    #     is that the halves merge together or not at all. Task 28 is what
+    #     happens otherwise: the comparison-window backend merged on 9 Sep,
+    #     the half that would have made it reachable was queued by hand six
+    #     hours later and failed, and candidates 22 and 30 are still PENDING.
+    #
+    #     AHEAD OF THE RE-VERIFICATION because it is free and that is not, and
+    #     behind the hard rules so a row they hold keeps reporting them.
+    #
+    #     IT FAILS CLOSED. `chain` is passed IN; a caller that does not supply
+    #     it gets no hold, which is right for every existing caller -- a task
+    #     with no chain is not a link -- and console/automerge.sweep reads it
+    #     for every task it considers.
+    if chain and not chain.get("complete"):
+        waiting = chain.get("waiting") or []
+        return Eligibility(False, (
+            f"this is link {chain.get('position')} of {chain.get('length')} "
+            f"for candidate {chain.get('candidate_id')}, and "
+            f"{len(waiting)} of its links {'is' if len(waiting) == 1 else 'are'} "
+            f"not ready: {waiting}. No link merges until every link has "
+            f"verified, so a failure in one leaves none of them shipped."))
 
     # 3. There must be evidence the NEW behaviour works, not merely that
     #    nothing broke. Everything from here down is about that.
@@ -262,6 +387,14 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
             "SELECT * FROM tasks WHERE status = 'READY_FOR_REVIEW'"
             " ORDER BY id").fetchall()
 
+    # BEFORE ANYTHING IS CONSIDERED. A chain that half-failed is holding a
+    # sibling that will never merge, and leaving it held means the ranker sees
+    # a candidate it cannot re-approve and the queue carries a task nothing
+    # will ever take. §12: released, never resumed.
+    if not dry_run:
+        with db.writer() as conn, conn.transaction():
+            release_half_failed(conn, log)
+
     for task in waiting:
         tid = task["id"]
         run = None
@@ -279,8 +412,19 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
         branch = task["branch_name"]
         contract = task["acceptance_contract"] or {}
 
+        with db.connect() as conn:
+            chain = chain_state(conn, tid)
+
         # Cheap refusals first, so an ineligible task never builds a clone.
-        early = eligible(task, None) if contract.get("work_type") in NEVER_UNATTENDED \
+        # The chain hold is among them: a link whose sibling is still running
+        # must not spend a trial clone and a full verification to be told so.
+        if chain and not chain.get("complete"):
+            held = eligible(task, None, chain)
+            log(f"task {tid}: left for review — {held.reason}")
+            out.append({"task_id": tid, "merged": False, "reason": held.reason})
+            continue
+
+        early = eligible(task, None, chain) if contract.get("work_type") in NEVER_UNATTENDED \
             or contract.get("auto_merge") is False else None
         if early is not None and not early.ok:
             log(f"task {tid}: left for review — {early.reason}")
@@ -310,7 +454,7 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
                                if (patch.get("file_status") or {}).get(p) != "D"],
                 keep_on_success=True)
 
-            verdict = eligible(task, again)
+            verdict = eligible(task, again, chain)
             if not verdict.ok:
                 log(f"task {tid}: left for review — {verdict.reason}")
                 out.append({"task_id": tid, "merged": False,
