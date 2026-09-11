@@ -2947,3 +2947,115 @@ a candidate and a task.** §13 says nothing can turn one candidate into several
 specs; §14 says a single spec cannot always name its own boundary. They are the
 same shortage seen from two sides.
 
+---
+
+## 15. The api contract cannot express work that adds a module — open
+
+### 15.1 What is true, measured
+
+`contracts/deadly-digital-platform-api.yaml` lists **27 writable paths and not
+one glob**. Every entry is an existing file. So the contract can express *edit
+these files, and add a test* — `creatable_paths` covers
+`api/tests/analytics/test_fleet_*.py` — and nothing else. A spec that adds a
+route or a service is outside it, and `autoqueue` refuses the task.
+
+**How often that bites, measured on the drafts written so far rather than
+assumed.** Seven `dd_api` drafts exist. **Two proposed a new module**:
+
+    fleet/task-23   api/analytics/routes/coupons.py, services/coupon_report.py
+    fleet/task-24   api/analytics/services/category_report.py
+
+Both tasks FAILED and were abandoned on 11 Sep. Task 23 also declared
+`api/analytics/__init__.py`, which *exists* and is still outside the list — so
+the gap is not only about creation: the enumeration is 27 of the 31 files in
+those two directories.
+
+**One correction to the framing, because it changes what to fix.** No candidate
+in the pool names a file that does not exist — I checked all of them. The
+candidates name existing files; it is the **draft agent**, designing the
+change, that decides a new module is the right shape. So this does not block
+"every create candidate". It blocks roughly two drafts in seven, at the point
+where the design is already written and paid for.
+
+### 15.2 The obvious fix is refused, and on purpose
+
+    writable_paths:
+      - api/analytics/routes/**
+      - api/analytics/services/**
+
+Attempted against a throwaway database:
+
+    contract is self-contradictory: api/analytics/routes/** overlaps
+    api/analytics/routes/interventions.py; api/analytics/services/** overlaps ...
+
+`enforce_contract_floor` has two halves. The first requires every floor glob to
+appear in `protected_paths`; the second refuses a `writable` glob that reaches
+a `protected` one. Three floored files sit inside those directories —
+`routes/interventions.py`, `services/gdpr.py`, `services/trigger_router.py` —
+so the glob reaches them and the contract cannot be stored.
+
+**This is asserted, not incidental.** `023_platform_floor_assertions.sql` P4:
+
+> the intervention surface sits INSIDE the analytics tree, so the obvious
+> analytics glob must be refused for reaching it. This is the assertion that
+> makes enumeration in `dd-analytics-frontend.yaml` a consequence of the floor
+> rather than a style choice somebody can revise.
+
+So enumeration is the designed outcome of where the floored files live. Any
+proposal that starts "just use a glob" is proposing to delete that assertion.
+
+**What a glob would actually widen, enumerated:** five existing files —
+`routes/__init__.py`, `routes/interventions.py`, `services/__init__.py`,
+`services/gdpr.py`, `services/trigger_router.py` — of which three are floored.
+Plus every file added to those directories in future, which is the point.
+
+**And the floor would still hold.** Measured against `boundary.enforce` with a
+glob-writable, file-protected contract: a floored path inside the glob is
+refused (`protected_hits`), a new file inside it is clean, a path outside is
+refused. The enforcement has no ambiguity here. The clash rule is refusing a
+contract that the boundary check would have judged correctly.
+
+### 15.3 Three ways out, and what each costs
+
+**(a) Move the floored files out of the globbed trees.** `interventions.py`,
+`gdpr.py` and `trigger_router.py` go somewhere no analytics glob reaches, the
+floor rows follow them, and `routes/**` / `services/**` become storable. This
+makes the floor a property of *location*, which is what the glob rule already
+assumes. Cost: moving live code and its imports in the platform repo, and
+editing `protected_path_floor` — a change to the safety document itself, for
+the convenience of a contract. It is the only option that leaves every rule
+intact.
+
+**(b) Let a writable glob coexist with a protected path inside it.** The
+smallest change, and `boundary.enforce` already does the right thing. Cost, and
+it is not small: the contract stops being *a reviewed list of the files this
+work may touch* and becomes *this tree, minus whatever the floor says today*.
+Those are different statements, maintained in different places for different
+reasons, and 023's assertions exist to say so. It also requires rewriting P2
+and P4, which were written to keep this exact door shut.
+
+**(c) Keep enumeration and widen it per module, by hand.** A draft that needs a
+new file is refused — since 11 Sep, at *draft* time, naming the path and saying
+no contract makes it writable — and a person adds one line to the contract. Cost:
+one refused draft per new module, about £2, plus a human decision. It is the
+status quo with the cost made explicit and moved earlier.
+
+**Recommended: (c) now, (a) if it recurs.** Two drafts in seven is not a
+stopped pool; it is a toll. (c) costs £2 and a reviewed line, and puts "should
+the analytics API gain a module" in front of a person, which is where that
+question belongs. (a) is the structural answer and should be taken when the
+toll is paid often enough to be annoying rather than on the second instance.
+
+**Not recommended: (b).** It is the one that trades a stated property for
+convenience, and the property — a contract enumerates what may be touched — is
+the one every other gate in this document leans on.
+
+### 15.4 What this is not
+
+It is not §13 and it is not §14. §13 is that one candidate cannot become
+several specs; §14 was that a spec could not name its own boundary. This is
+narrower and more concrete: **the boundary a spec can name does not contain the
+files the work needs.** All three are the same shortage of expressiveness
+between a candidate and a task, and this is the one with the cheapest
+workaround.
+
