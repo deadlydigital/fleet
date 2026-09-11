@@ -1795,7 +1795,7 @@ itself the answer) makes the question decidable instead of plausible. Until
 then, `decided_via` may be read as "which code decided", never as "what made
 it run", and §4's morning sentences must not say "a timer" over it.
 
-### 9.15 A killed check is not a verdict — **FIXED 11 Sep 2026** (`runner/verify.Check.killed_reason`)
+### 9.15 A killed check is not a verdict — **FIXED 11 Sep 2026** (`runner/verify.Check.undecided_reason`)
 
 `could_not_run` exists to keep "the check said no" apart from "the check never
 ran". It held one member — a checker that is not on disk — and missed the two
@@ -1819,7 +1819,7 @@ in a week — §9.10 is the first.
 
 **The rule.** A process terminated by a signal did not return a verdict. `sh`
 reports a signalled child as 128+N and `subprocess.run` reports a signalled
-shell as −N; both are now `killed_reason`, which `Check.passed` refuses ahead
+shell as −N; both are now `undecided_reason`, which `Check.passed` refuses ahead
 of the skip branch and which `reverify` maps to `could_not_run`. The cgroup's
 `memory.events` `oom_kill` counter is read either side of every check, because
 where it moves it *names* the cause instead of inferring it from 137.
@@ -1895,6 +1895,58 @@ statement of its own: the columns beside it are §9.6's, and folding a newer
 column into that write would make every future column a way to stop the
 reason being recorded. When several runs have reported, `MEASURED_PEAK_MIB`
 moves to what a tick actually costs.
+
+### 9.16 The only contract carrying `evidence_queries` cannot be selected any more
+
+Found 11 Sep 2026 from `research/refund-coverage.md` (task 57), which says "not
+measured" against most of its own requirements and names the reason in its first
+finding. Verified from the contracts and from `console.autoqueue`'s real
+resolution rule.
+
+There are two `research` contracts for `repo: fleet`:
+
+| contract | `writable_paths` | `evidence_queries` |
+|---|---|---|
+| `research.yaml` | `research/**` | **none** |
+| `research-metorik-gap.yaml` | `research/metorik-gap-2026-08-30.md` | 5 |
+
+The one with the queries is pinned to **a single literal filename carrying a
+date**. §9.13's resolution rule keeps the contracts whose writable set covers
+every declared path and refuses unless exactly one survives — so that contract
+can be selected only by a task writing to that exact file, which no future task
+will. Every other research path resolves to `research.yaml`. Measured:
+
+    ['research/refund-coverage.md'] -> ['research.yaml']
+    ['research/metorik-gap.md']     -> ['research.yaml']      <-- misses by a date suffix
+
+`runner/cycle.py:248` runs the pack only `if contract.get("evidence_queries")`,
+so for every research task but that one the step is skipped in silence. There is
+no error, because nothing declares that a research task ought to have evidence.
+
+**And `research.yaml`'s own header describes the mechanism it does not
+configure:**
+
+> THE AGENT HAS NO SHELL AND NO CREDENTIAL. It cannot reach a database. The
+> runner runs the queries named below, before the agent starts, as roles holding
+> SELECT and nothing else, and writes the results into the worktree as a file.
+
+It names none below. Combined with `agent_tools` holding no `Bash`, a research
+task under this contract has no route to a measurement at all — not a degraded
+one, none. So the document was right to report its own numbers as prior readings
+with the dates they were taken rather than quoting August as though it were
+today, and the contract, not the agent, is why.
+
+This is §9.13's ambiguity with the failure running the other way. There the
+concern was two contracts matching and the queue refusing; here the narrow one
+can never match, so the wide one always wins and the refusal never fires. A
+`work_type` that does not identify a contract fails silently in both directions.
+
+**Not fixed here.** The repair is either to widen
+`research-metorik-gap.yaml`'s writable path so it can be resolved, or to put an
+`evidence_queries` block on `research.yaml` — and those are different decisions
+about what a research contract is for, which is the user's call. What must not
+happen is a third research contract: that makes the ambiguity worse in exactly
+the way §9.13 measured.
 
 ---
 
