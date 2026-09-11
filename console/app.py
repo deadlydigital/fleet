@@ -373,6 +373,30 @@ log = logging.getLogger("console")
 _OUTCOMES: dict[int, dict[str, Any]] = {}
 
 
+def _failed_check_detail(again: Any) -> list[str]:
+    """What each failing re-verification check said, not merely its code.
+
+    Kept to the tail the record already holds. A check that could not run is
+    labelled as such rather than being reported as a failure, because the two
+    refuse for different reasons and are read differently.
+    """
+    out: list[str] = []
+    for c in (again.checks if again else []):
+        if c.get("exit_code") == 0 and not c.get("undecided_reason"):
+            continue
+        why = (c.get("undecided_reason") or c.get("unresolved_reason")
+               or c.get("skipped_reason"))
+        head = (f"re-verification COULD NOT RUN: {c['command']} exited "
+                f"{c['exit_code']}" if why else
+                f"re-verification FAILED: {c['command']} exited "
+                f"{c['exit_code']}")
+        out.append(f"{head} -- {why}" if why else head)
+        tail = (c.get("output_tail") or "").strip()
+        if tail:
+            out.append("what it printed: " + " / ".join(tail.splitlines()[-8:]))
+    return out
+
+
 def _record_outcome(task_id: int, outcome: dict[str, Any]) -> None:
     """Store a decision outcome, and log it whether or not anyone reads it.
 
@@ -474,14 +498,26 @@ def accept(request: Request, task_id: int,
             worktree.discard_trial_clone(Path(again.trial_path))
 
     if not result.ok:
+        # A REFUSAL THAT CANNOT SAY WHAT IT SAW IS ONE NOBODY CAN ACT ON.
+        #
+        # This recorded `exited {code}` and discarded the output with the trial
+        # clone, which is thrown away in the `finally` above. On 11 Sep 2026
+        # that cost a full re-run to answer a question the failing run already
+        # had the answer to: task 67 was refused on `exited 2` and `exited 1`,
+        # and the only way to find out that both were environment failures and
+        # the branch was clean was to build another trial and run the whole
+        # gate again, 16 minutes of it.
+        #
+        # The output tail is already carried on every check -- reverify keeps
+        # the last 800 bytes of it -- so this is a matter of printing what was
+        # collected rather than collecting anything new. The undecided reason
+        # comes with it, because "could not run" and "failed" send the reader
+        # to different places and the code alone does not say which.
         _record_outcome(task_id, {
             "ok": False, "headline": "Not merged, and nothing recorded",
             "loud": result.merged or result.pushed,
             "detail": ([result.reason] + [d for d in result.detail if d]
-                       + ([f"re-verification: {c['command']} exited "
-                           f"{c['exit_code']}"
-                           for c in (again.checks if again else [])
-                           if c["exit_code"] != 0]))})
+                       + _failed_check_detail(again))})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     merge_record = {

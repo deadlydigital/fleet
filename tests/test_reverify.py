@@ -319,3 +319,85 @@ def test_an_ordinary_failing_check_still_reads_as_a_failure(repo, wt_root):
     assert not r.ok
     assert not r.could_not_run
     assert "FAILS when merged" in r.reason
+
+
+class TestARefusalSaysWhatItSaw:
+    """Two reporting defects that cost a 16-minute re-run on 11 Sep 2026.
+
+    Task 67 was refused twice on one accept -- `tests/analytics` exit 1 and
+    `tests/unit` exit 2 -- and the record kept only those two integers. The
+    branch passed every check when re-run alone against the same merged tree.
+    """
+
+    def _check(self, **kw):
+        base = {"command": "pytest_unit_per_file.sh api tests/unit",
+                "exit_code": 2, "timed_out": False, "duration_ms": 10,
+                "output_tail": "FAIL: the test database is not accepting "
+                               "connections.\n      Reported as 'could not "
+                               "run' (2), never as a pass."}
+        base.update(kw)
+        return base
+
+    def test_the_output_reaches_the_record(self):
+        from console.app import _failed_check_detail
+
+        class _R:
+            checks = [self._check(undecided_reason="the check exited 2")]
+        detail = " | ".join(_failed_check_detail(_R()))
+        assert "not accepting" in detail, (
+            "the refusal records the exit code and discards what the check "
+            "printed, which is why this took a re-run to answer")
+
+    def test_could_not_run_is_labelled_differently_from_failed(self):
+        from console.app import _failed_check_detail
+
+        class _CouldNot:
+            checks = [self._check(undecided_reason="the check exited 2")]
+
+        class _Failed:
+            checks = [self._check(exit_code=1, undecided_reason=None,
+                                  output_tail="FAIL: 2 of 31 files failed")]
+        assert "COULD NOT RUN" in " ".join(_failed_check_detail(_CouldNot()))
+        assert "FAILED" in " ".join(_failed_check_detail(_Failed()))
+
+    def test_a_passing_check_is_not_reported(self):
+        from console.app import _failed_check_detail
+
+        class _Ok:
+            checks = [self._check(exit_code=0, undecided_reason=None,
+                                  output_tail="PASS: 31 files")]
+        assert _failed_check_detail(_Ok()) == []
+
+
+class TestTheRefusalDoesNotAssertACauseItHasNotChecked:
+    """"The base moved under it" was printed whether or not it had.
+
+    Fixed 11 Sep 2026. It was false for task 53 (a SIGABRT, see above) and
+    false again for task 67 the same night, where the recorded base WAS the
+    tip of main -- so the merged tree was byte-for-byte the branch that had
+    just passed every check in the runner. A reader handed a cause goes and
+    looks for it; both times there was nothing there.
+    """
+
+    def test_it_says_so_when_the_base_really_moved(self, repo, wt_root):
+        point, _ = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+        advance_main(repo, {"api/expects.txt": "v3\n"})
+        r = reverify.run(repo, wt_root, task_for(repo), contract(),
+                         "fleet/task-1", recorded_base=point,
+                         changed_files=["api/provides.txt"])
+        assert not r.ok
+        assert "moved from" in r.reason
+        assert "has NOT moved" not in r.reason
+
+    def test_it_says_the_base_is_unchanged_when_it_is(self, repo, wt_root):
+        """Task 67's shape: the base is the tip, so the diff is not the suspect."""
+        point, _ = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+        r = reverify.run(repo, wt_root, task_for(repo),
+                         contract(verification=["false"]),
+                         "fleet/task-1", recorded_base=point,
+                         changed_files=["api/provides.txt"])
+        assert not r.ok
+        assert "has NOT moved" in r.reason, r.reason
+        assert "moved from" not in r.reason
+        # and it points at the environment rather than at the change
+        assert "not at the diff" in r.reason

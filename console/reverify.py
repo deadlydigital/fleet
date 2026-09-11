@@ -317,12 +317,38 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         if not result.passed:
             failed = [c for c in result.checks if not c.passed]
             named = failed[0].command if failed else "a check"
+            # WHAT HAPPENED TO THE BASE, NOT A CAUSE ASSERTED ABOUT IT.
+            #
+            # "The base moved under it" was unconditional here until 11 Sep
+            # 2026 -- printed whether or not the base had moved, as a flat
+            # statement of cause. The comment above already records it being
+            # false for task 53; it was false again for task 67 the same
+            # night, where the recorded base WAS the tip of main and the
+            # merged tree was byte-for-byte the branch that had just passed.
+            # A reader given a cause goes looking for it, and both times the
+            # cause did not exist.
+            #
+            # So this says which of the two situations it is and stops there.
+            # When the base has not moved, the merged tree IS the branch tree,
+            # and a check that passed in the run and fails here cannot be
+            # about the diff -- which is the fact worth handing the reader.
+            if base_sha == recorded_base:
+                moved = (f"{base} has NOT moved since the branch was cut -- it "
+                         f"is still {base_sha[:12]} -- so the merged tree is "
+                         f"the branch tree. This check passed when the runner "
+                         f"ran it against the same tree, so look at what "
+                         f"differs about where it ran, not at the diff")
+            else:
+                moved = (f"{base} moved from {recorded_base[:12]} to "
+                         f"{base_sha[:12]} since the branch was cut, so this "
+                         f"is a verdict about the merged tree and not about "
+                         f"the branch on its own")
             return Reverification(
                 ok=False, base_sha=base_sha, merged_sha=head,
                 verification=result, checks=checks,
                 reason=(f"the branch verifies on its own and FAILS when merged "
-                        f"into {base} as it stands now: {named}. The base moved "
-                        f"under it. Nothing was recorded."),
+                        f"into {base} as it stands now: {named}. {moved}. "
+                        f"Nothing was recorded."),
                 duration_s=time.monotonic() - started)
 
         keep = keep_on_success

@@ -205,12 +205,38 @@ def unwritable(worktree: Path, links: Sequence[Path] = ()) -> list[str]:
     return problems
 
 
+#: Every check script under contracts/checks/ documents the same three-way
+#: contract, and pytest and ruff use it too: 0 passed, 1 a verdict of failure,
+#: 2 THE CHECK COULD NOT RUN. pytest_unit_per_file.sh states it on line 5 and
+#: has eight `exit 2` paths, every one of them an environment failure -- no
+#: interpreter, the services would not start, the database is not accepting
+#: connections, the exclusive lock was not taken, no test files under the
+#: target, less memory available than its floor. new_test_bites.sh states it
+#: too and honours it INTERNALLY, distinguishing 2 from 1 when it reads its
+#: own runner's exit.
+COULD_NOT_RUN_EXIT = 2
+
+
 def killed_by(exit_code: int, oom_kills_delta: int | None) -> str | None:
     """Why this exit code is not a verdict, or None if it is one.
 
     `exit_code` is what `subprocess.run(shell=True)` returned: negative when
     the shell itself was signalled, 128+N when the shell reports a signalled
     child.
+
+    EXIT 2 JOINED THIS CLASS ON 11 Sep 2026, and it is the gap that sent a
+    clean branch back as a failure. The checks already documented 2 as "could
+    not run"; this function only knew about signals and OOM kills, so a 2 fell
+    through as a verdict and the console reported "the branch FAILS when merged
+    into main as it stands now" about a tree whose every check passes.
+
+    WHY APPLYING IT TO EVERY COMMAND IS SAFE, stated because it is the part
+    worth arguing with. A check whose 2 really did mean failure now reads as
+    undecided instead -- and undecided REFUSES, exactly as a failure does:
+    `Check.ok` is false either way and not knowing is not permission. So the
+    cost of being wrong here is a less precise sentence, and the cost of the
+    previous behaviour was a correct branch refused with a reason that sent
+    the reader to the diff. Those are not symmetric.
     """
     if oom_kills_delta:
         return (f"the kernel OOM-killed a process in this check "
@@ -223,6 +249,12 @@ def killed_by(exit_code: int, oom_kills_delta: int | None) -> str | None:
     elif 128 < exit_code < 128 + 32:
         signum = exit_code - 128
     if signum is None:
+        if exit_code == COULD_NOT_RUN_EXIT:
+            return (f"the check exited {COULD_NOT_RUN_EXIT}, which every check "
+                    f"under contracts/checks/ documents as COULD NOT RUN "
+                    f"rather than as a failure -- the gate did not decide "
+                    f"anything about the tree. Its output says which "
+                    f"precondition was missing.")
         return None
     name = _SIGNAL_NAMES.get(signum, f"signal {signum}")
     hint = ""

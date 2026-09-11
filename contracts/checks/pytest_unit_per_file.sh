@@ -76,6 +76,29 @@ if ! docker exec deadly-digital-test-db pg_isready >/dev/null 2>&1; then
     sleep 3
 fi
 cleanup() {
+    # THE SERVICES GO DOWN BEFORE THE LOCK IS RELEASED, AND THE ORDER IS THE
+    # WHOLE POINT.
+    #
+    # It was the other way round until 11 Sep 2026, and that is a hole the
+    # lock cannot cover. A second gate blocked on the lock -- for up to the 35
+    # minutes below -- unblocks the instant fd 9 closes, and then races this
+    # teardown for the database it just won the right to use. It does not
+    # collide loudly: it reads a Postgres that is being deleted underneath it
+    # and reports failures belonging to no branch at all.
+    #
+    # That is not hypothetical and it is not new. It is the same corruption
+    # the lock comment below describes invalidating three runs on 7 Sep 2026,
+    # and the source of TEST-004's 81-failure baseline -- a number reproduced
+    # for weeks that never described the code. It happened again on the night
+    # of 11 Sep: one accept of task 67 ran verification twice, the first run
+    # reported `tests/analytics` exit 1 and the second reported `tests/unit`
+    # exit 2 two seconds later, and the branch passed every check when re-run
+    # alone. Neither exit code was about the branch.
+    #
+    # Down first, then release. A gate that waits for the lock now inherits a
+    # stopped stack and starts its own, which is slower by one compose cycle
+    # and correct.
+    [ "$STARTED_SERVICES" -eq 1 ] && docker compose -f "$COMPOSE_FILE" down >/dev/null 2>&1
     # Close the write end of the FIFO: db_lock.py hold is blocked on stdin, so
     # EOF is what releases the advisory lock. This runs on every exit path, and
     # if the gate is killed outright the fd closes with the shell anyway --
@@ -83,7 +106,6 @@ cleanup() {
     exec 9>&- 2>/dev/null || true
     [ -n "${LOCK_PID:-}" ] && wait "$LOCK_PID" 2>/dev/null
     [ -n "${LOCK_DIR:-}" ] && rm -rf "$LOCK_DIR"
-    [ "$STARTED_SERVICES" -eq 1 ] && docker compose -f "$COMPOSE_FILE" down >/dev/null 2>&1
 }
 trap cleanup EXIT
 

@@ -262,8 +262,44 @@ class TestAKilledCheckIsNotAVerdict:
         assert why and "OOM-killed" in why and "not a verdict" in why
 
     def test_no_oom_and_an_ordinary_code_is_still_a_verdict(self):
+        """1 is a verdict, and so is any code with no meaning attached.
+
+        2 USED TO BE ASSERTED HERE AND IS NOT ANY MORE -- see the test below.
+        3 stands in for "an ordinary non-zero", which is what this protects.
+        """
         assert verify.killed_by(1, 0) is None
-        assert verify.killed_by(2, None) is None
+        assert verify.killed_by(3, None) is None
+        assert verify.killed_by(9, None) is None
+
+    def test_exit_2_is_could_not_run_and_not_a_failure(self):
+        """The convention the checks document and this classifier did not know.
+
+        Changed 11 Sep 2026. Task 67 was refused with "the branch FAILS when
+        merged into main as it stands now" on a `pytest_unit_per_file.sh api
+        tests/unit` exit 2 -- and re-run alone against the same merged tree,
+        every check passed. The script states its contract on line 5 ("0 if
+        all pass, 1 naming the files that did not, 2 if the gate could not run
+        at all") and has eight exit-2 paths, every one an environment failure.
+        """
+        why = verify.killed_by(2, None)
+        assert why is not None, "exit 2 is not a verdict about the tree"
+        assert "COULD NOT RUN" in why
+
+    def test_the_check_scripts_really_do_use_2_for_could_not_run(self):
+        """Read the artefact, per conftest: this rule is about THEM.
+
+        A classifier asserting a convention the scripts do not follow would be
+        worse than the gap it replaces.
+        """
+        import re
+        from pathlib import Path
+        for name in ("pytest_unit_per_file.sh", "new_test_bites.sh"):
+            body = Path("contracts/checks") / name
+            text = body.read_text()
+            assert "exit 2" in text, f"{name} has no exit 2 to classify"
+            # every `exit 2` is reached from a precondition failure, never
+            # from the branch's own test results
+            assert not re.search(r"failed\+=.*\n.*exit 2", text), name
 
     def test_the_whole_signal_range_is_covered(self):
         """128+N for every N a process can die on. A short list is how 134
@@ -461,3 +497,39 @@ class TestATimeoutIsInTheSameClass:
         v = verify.run(tmp_path, ["sleep 5"], 1)
         assert v.checks[0].timed_out is True
         assert v.checks[0].unresolved_reason is None
+
+
+class TestTheGateDoesNotDestroyTheRunWaitingBehindIt:
+    """The teardown order in pytest_unit_per_file.sh's cleanup().
+
+    Reordered 11 Sep 2026. Releasing the exclusive lock BEFORE stopping the
+    services hands the database to the next gate and then deletes it: the
+    waiter unblocks the instant fd 9 closes and races `docker compose down`
+    for the Postgres it just won. It does not collide loudly -- it reports
+    failures belonging to no branch, which is where TEST-004's 81-failure
+    baseline came from and what refused task 67 on the night of 11 Sep.
+
+    Asserted on the script because the script is what runs; there is no
+    Python in this path to unit-test.
+    """
+
+    def _cleanup_body(self) -> str:
+        from pathlib import Path
+        text = Path("contracts/checks/pytest_unit_per_file.sh").read_text()
+        start = text.index("cleanup() {")
+        return text[start:text.index("\n}", start)]
+
+    def test_services_go_down_before_the_lock_is_released(self):
+        body = self._cleanup_body()
+        down = body.index("docker compose")
+        release = body.index("exec 9>&-")
+        assert down < release, (
+            "cleanup() releases the exclusive lock before stopping the test "
+            "services, so a gate blocked on that lock inherits a database "
+            "being deleted underneath it")
+
+    def test_both_steps_are_still_there(self):
+        """A reorder that dropped one of them would pass the test above."""
+        body = self._cleanup_body()
+        assert "docker compose" in body and "down" in body
+        assert "exec 9>&-" in body
