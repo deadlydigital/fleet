@@ -20,6 +20,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 # {changed_files} expands to the paths the RUNNER derived from git, never to
 # the agent's account of what it changed. {changed_files:.py} narrows to a
@@ -65,7 +66,7 @@ class Check:
     #: The two most likely environment failures in this system are exactly
     #: this and the read-only filesystem, and neither was in the class that
     #: exists to hold them.
-    killed_reason: str | None = None
+    undecided_reason: str | None = None
 
     @property
     def ran(self) -> bool:
@@ -77,7 +78,7 @@ class Check:
         """
         return (self.skipped_reason is None
                 and self.unresolved_reason is None
-                and self.killed_reason is None)
+                and self.undecided_reason is None)
 
     @property
     def passed(self) -> bool:
@@ -98,7 +99,7 @@ class Check:
             return False
         # AHEAD OF THE SKIP BRANCH, for the reason the unresolved branch is:
         # falling through would turn a check the kernel killed into a PASS.
-        if self.killed_reason is not None:
+        if self.undecided_reason is not None:
             return False
         if not self.ran:
             return True
@@ -156,6 +157,52 @@ def _cgroup_oom_kills() -> int | None:
     except (OSError, ValueError, IndexError):
         return None
     return None
+
+
+def unwritable(worktree: Path, links: Sequence[Path] = ()) -> list[str]:
+    """Paths a check will need to write and cannot. Empty means proceed.
+
+    THE PRECONDITION, AND IT EXISTS BECAUSE THE EXIT CODE CANNOT CARRY THIS.
+
+    A check that dies on the filesystem exits NORMALLY. vitest returned 1 on
+
+        EROFS: open '<trial>/platform/node_modules/.vite/vitest/results.json'
+
+    and nothing separated it from a test that failed. The signal classifier
+    above cannot help: nothing was signalled. Reading the output for "EROFS"
+    is the answer this codebase already refuses for git's wording -- an error
+    string is not an API, it is localised, it changes between versions, and a
+    check that never prints it fails silently anyway.
+
+    So the question is asked BEFORE anything runs, of the filesystem, by
+    writing to it. An answer obtained by doing the thing is the only kind
+    that cannot be out of date: a directory can be writable by mode and
+    unwritable because the mount is read-only, and `os.access` believes the
+    mode.
+
+    WHAT IS CHECKED: the worktree root, and every path `link_dependencies`
+    created. The second is the one that bit -- the link is the boundary
+    between a tree that is thrown away and one that must not be written to,
+    and a farmed link is writable only if it was farmed.
+
+    Returns a list of sentences rather than raising, because the caller turns
+    them into `could_not_run` and the point is to name every path at once
+    instead of one per attempt.
+    """
+    problems: list[str] = []
+    for path in [worktree, *links]:
+        if not path.is_dir():
+            continue
+        probe = path / ".fleet-write-probe"
+        try:
+            probe.touch()
+            probe.unlink()
+        except OSError as exc:
+            problems.append(
+                f"{path} is not writable ({exc.strerror or exc}), and a check "
+                f"that needs to write there will fail in a way that looks "
+                f"like the branch failing")
+    return problems
 
 
 def killed_by(exit_code: int, oom_kills_delta: int | None) -> str | None:
@@ -294,11 +341,11 @@ class Verification:
         Both mean the same thing to the merge -- nothing is known -- and
         console/reverify.py maps both to `could_not_run`.
         """
-        return any(c.killed_reason for c in self.checks)
+        return any(c.undecided_reason for c in self.checks)
 
     def undecided_summary(self) -> str:
-        return "; ".join(f"{c.command}: {c.killed_reason}"
-                         for c in self.checks if c.killed_reason)
+        return "; ".join(f"{c.command}: {c.undecided_reason}"
+                         for c in self.checks if c.undecided_reason)
 
     @property
     def passed(self) -> bool:
@@ -324,7 +371,8 @@ class Verification:
 
 def run(worktree: Path, commands: list[str], deadline_seconds: float,
         changed: list[str] | None = None,
-        facts: dict[str, str] | None = None) -> Verification:
+        facts: dict[str, str] | None = None,
+        links: Sequence[Path] = ()) -> Verification:
     """Each command in turn, stopping at the first failure.
 
     Stopping early is deliberate: the second command's output is not evidence
@@ -350,6 +398,27 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
     # first genuine failure as THE answer when the real answer is "this could
     # not be judged". Checking up front means the report names the missing
     # path instead of an exit code from a check that never opened.
+    # WRITABLE BEFORE ANYTHING RUNS, and ahead of the resolution check for
+    # the same reason that one is ahead of the commands: a verification that
+    # cannot establish anything should say so instead of spending the wall
+    # clock proving it one check at a time.
+    #
+    # This is the class the signal classifier cannot reach. A check that dies
+    # on the filesystem exits normally -- vitest returned 1 on EROFS -- so
+    # there is nothing in the code to read. Asked here, of the filesystem,
+    # before a check has had the chance to be misread as a failing one.
+    problems = unwritable(worktree, links)
+    if problems:
+        why = ("; ".join(problems)
+               + ". Nothing was run: a check that cannot write is not a "
+                 "check that failed")
+        for command in commands:
+            result.checks.append(Check(
+                command, 0, 0, "",
+                expanded=expand_changed_files(command, changed)[0],
+                undecided_reason=why))
+        return result
+
     resolution = [(c, expand_changed_files(c, changed)[0]) for c in commands]
     resolution = [(c, e, unresolved_paths(e)) for c, e in resolution]
     if any(missing for _, _, missing in resolution):
@@ -381,8 +450,15 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
 
         remaining = deadline_seconds - sum(c.duration_ms for c in result.checks) / 1000
         if remaining <= 0:
-            result.checks.append(Check(command, -1, 0, "", timed_out=True,
-                                       expanded=expanded))
+            # NEVER STARTED, because the checks before it spent the deadline.
+            # The same class for the same reason: this one did not merely fail
+            # to answer, it was never asked.
+            result.checks.append(Check(
+                command, -1, 0, "", timed_out=True, expanded=expanded,
+                undecided_reason=(
+                    f"the contract's {deadline_seconds:.0f}s deadline was "
+                    f"already spent by the checks before it, so this one "
+                    f"never ran and there is no verdict to read")))
             break
         started = time.monotonic()
         # READ BEFORE AND AFTER, so an OOM kill is attributed to THIS check
@@ -406,15 +482,28 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
         oom_after = _cgroup_oom_kills()
         delta = (None if oom_before is None or oom_after is None
                  else oom_after - oom_before)
-        # A TIMEOUT IS ALREADY ITS OWN THING and keeps its own field. It is
-        # not classified as killed here because `timed_out` already stops
-        # `passed` and already reads as "did not answer" everywhere
-        # downstream -- see the module note on what else belongs in this
-        # class.
-        killed = None if timed_out else killed_by(code, delta)
+        # A TIMEOUT IS IN THE SAME CLASS, since 11 Sep 2026.
+        #
+        # It keeps `timed_out` -- readers distinguish the three -- but it is
+        # also a check that did not return a verdict, and it reached
+        # console/reverify.py's failure branch as an ordinary non-zero until
+        # now: "the branch verifies on its own and FAILS when merged". A
+        # timeout is as often a slow or loaded host as a loop in the branch,
+        # and NOTHING IN THE EXIT TELLS YOU WHICH. The deadline expiring is
+        # the only fact there is, so that is what the sentence says.
+        #
+        # The cost, stated rather than hidden: a genuine infinite loop in a
+        # branch now reads as "could not run" instead of as a failure. It is
+        # still refused -- not knowing is not permission -- and the reader is
+        # sent to the deadline, where the loop is also visible.
+        killed = (f"the check exceeded its {deadline_seconds:.0f}s deadline "
+                  f"without returning, so there is no verdict to read. That "
+                  f"is a loop in the branch or a host too slow to finish in "
+                  f"time, and the deadline expiring does not say which."
+                  if timed_out else killed_by(code, delta))
         result.checks.append(
             Check(command, code, duration_ms, out[-4000:], timed_out,
-                  expanded=expanded, killed_reason=killed))
+                  expanded=expanded, undecided_reason=killed))
         if code != 0 or timed_out:
             break
     return result

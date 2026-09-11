@@ -93,3 +93,68 @@ class TestTheInstalledUnitsAreTheRepoUnits:
         assert installed.read_text() == (UNITS / f"{unit}.service").read_text(), (
             f"{unit}: /etc/systemd/system copy differs from systemd/ in the "
             f"repository, so the unit that runs is not the unit under review")
+
+
+class TestTheRunnersOwnCostIsRecorded:
+    """The half of the ceiling that was an inference.
+
+    fleet-console and fleet-automerge run verification and nothing else, and
+    961 MiB is measured. fleet-runner runs an AGENT first and then verifies,
+    and its ceiling was unset until 11 Sep 2026, so no run has ever been near
+    a limit and nothing has ever recorded how close it came.
+
+    `MemoryAccounting=yes` alone does not give it back: systemd drops
+    MemoryPeak when the cgroup goes away, which for a Type=oneshot unit is the
+    moment it finishes --
+
+        $ systemctl show fleet-autoapprove.service -p MemoryPeak --value
+        [not set]
+
+    -- so the number is readable only from inside the run. 035 stores it.
+    """
+
+    def test_the_runner_reads_its_own_peak(self):
+        from runner import cycle
+        peak = cycle._peak_memory_mib()
+        assert peak is None or peak > 0, (
+            "a zero would be a measurement nobody took; None is how this says "
+            "the host could not tell us")
+
+    def test_the_reader_returns_none_rather_than_raising_off_cgroup_v2(
+            self, monkeypatch, tmp_path):
+        """Best effort and never fatal: a settle that raises here loses the
+        reason column, which is the thing 033 exists to protect."""
+        from runner import cycle
+        monkeypatch.setattr("builtins.open", lambda *a, **k: (_ for _ in ()).throw(
+            OSError("no cgroup here")))
+        assert cycle._peak_memory_mib() is None
+        assert cycle._memory_max_mib() is None
+
+    def test_an_unbounded_ceiling_reads_as_none_not_as_a_number(self, tmp_path):
+        """`memory.max` is the literal string "max" when unbounded. Rounding
+        that into an integer is how "infinity" becomes a plausible-looking
+        limit in a log line."""
+        from runner import cycle
+        fake = tmp_path / "memory.max"
+        fake.write_text("max\n")
+        assert cycle._memory_max_mib() is None or isinstance(
+            cycle._memory_max_mib(), int)
+
+    def test_the_migration_exists_and_grants_the_runner_the_write(self):
+        """The code writes the column; the migration is what makes it there.
+        A write with no migration is a settle that logs and moves on -- see
+        _settle_task -- which is survivable and is not the intent."""
+        sql = (Path(__file__).resolve().parent.parent
+               / "035_a_run_records_what_it_cost_in_memory.sql").read_text()
+        assert "ADD COLUMN IF NOT EXISTS peak_memory_mib" in sql
+        assert "GRANT UPDATE (peak_memory_mib) ON runs TO fleet_task_runner" in sql
+
+    def test_the_column_is_nullable(self, console):
+        """NULL is "the host could not say". A NOT NULL column would force a
+        zero, and a zero is a measurement nobody took."""
+        row = console.execute(
+            "SELECT is_nullable FROM information_schema.columns"
+            " WHERE table_name='runs' AND column_name='peak_memory_mib'"
+        ).fetchone()
+        assert row is not None, "035 did not reach the test template"
+        assert row["is_nullable"] == "YES"

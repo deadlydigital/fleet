@@ -223,7 +223,7 @@ class TestAKilledCheckIsNotAVerdict:
             'python3 -c "import os, signal; os.kill(os.getpid(), signal.SIGABRT)"'], 60)
         check = v.checks[0]
         assert check.exit_code == 134
-        assert check.killed_reason and "SIGABRT" in check.killed_reason
+        assert check.undecided_reason and "SIGABRT" in check.undecided_reason
         assert check.passed is False
         assert check.ran is False, "a killed check established nothing"
         assert v.undecided is True
@@ -232,14 +232,14 @@ class TestAKilledCheckIsNotAVerdict:
     def test_a_killed_check_is_not_reported_as_unresolved(self):
         """Different sentences, different repairs. Unresolved sends a reader
         to the contract; killed sends them to the unit's limits."""
-        killed = verify.Check("c", 137, 1, "", killed_reason="SIGKILL")
+        killed = verify.Check("c", 137, 1, "", undecided_reason="SIGKILL")
         assert verify.Verification(checks=[killed]).unresolved is False
         assert verify.Verification(checks=[killed]).undecided is True
 
     def test_an_ordinary_failure_is_still_a_failure(self, tmp_path):
         """The gate this change must not widen. exit 1 is a verdict."""
         v = verify.run(tmp_path, ["exit 1"], 60)
-        assert v.checks[0].killed_reason is None
+        assert v.checks[0].undecided_reason is None
         assert v.checks[0].passed is False
         assert v.undecided is False, (
             "a check that said no must not be reported as a check that "
@@ -350,3 +350,114 @@ class TestAFarmedLinkIsWritable:
         root.mkdir()
         worktree.link_dependencies(root, {"reference/dd": str(src)})
         assert (root / "reference/dd").is_symlink()
+
+
+# ---- the precondition: writable before anything runs ----------------------
+
+class TestWritableBeforeAnythingRuns:
+    """The class the signal classifier cannot reach.
+
+    A check that dies on the filesystem exits NORMALLY. vitest returned 1 on
+    `EROFS: open '<trial>/platform/node_modules/.vite/vitest/results.json'`
+    and nothing in the exit code separated it from a failing test, so the
+    accept path reported the branch as failing to verify.
+
+    Reading the output for "EROFS" is the answer this codebase refuses for
+    git's wording. So the filesystem is asked first, by writing to it.
+    """
+
+    def _ro_link(self, tmp_path):
+        import os
+        ro = tmp_path / "vendor_src"
+        ro.mkdir()
+        os.chmod(ro, 0o555)
+        root = tmp_path / "wt"
+        (root / "platform").mkdir(parents=True)
+        links = worktree.link_dependencies(root, {"platform/vendor": str(ro)})
+        return root, links, ro
+
+    def test_an_unwritable_link_stops_the_run_before_a_check_executes(
+            self, tmp_path):
+        import os
+        root, links, ro = self._ro_link(tmp_path)
+        try:
+            marker = tmp_path / "it-ran"
+            v = verify.run(root, [f"touch {marker}"], 60, links=links)
+            assert not marker.exists(), (
+                "a check ran despite the precondition failing")
+            assert v.undecided is True
+            assert v.passed is False
+            assert "not writable" in v.checks[0].undecided_reason
+            assert str(ro) in v.checks[0].undecided_reason or "vendor" in \
+                v.checks[0].undecided_reason
+        finally:
+            os.chmod(ro, 0o755)
+
+    def test_it_names_the_path_rather_than_the_symptom(self, tmp_path):
+        import os
+        root, links, ro = self._ro_link(tmp_path)
+        try:
+            v = verify.run(root, ["true"], 60, links=links)
+            assert "vendor" in v.checks[0].undecided_reason
+        finally:
+            os.chmod(ro, 0o755)
+
+    def test_a_writable_tree_is_not_delayed_by_the_check(self, tmp_path):
+        v = verify.run(tmp_path, ["true"], 60)
+        assert v.passed is True and v.undecided is False
+
+    def test_a_farmed_node_modules_passes_the_precondition(self, tmp_path):
+        """The fix and the assertion that proves it, in one test. A farmed
+        link is writable; that is the whole difference."""
+        src = tmp_path / "node_modules"
+        (src / "pkg").mkdir(parents=True)
+        (src / ".vite").mkdir()
+        root = tmp_path / "wt"
+        (root / "platform").mkdir(parents=True)
+        links = worktree.link_dependencies(root, {"platform/node_modules": str(src)})
+        assert verify.unwritable(root, links) == []
+
+    def test_the_probe_leaves_nothing(self, tmp_path):
+        before = set(p.name for p in tmp_path.iterdir())
+        verify.unwritable(tmp_path)
+        assert set(p.name for p in tmp_path.iterdir()) == before
+
+
+# ---- a timeout is a check that did not answer -----------------------------
+
+class TestATimeoutIsInTheSameClass:
+    """As often a slow host as a loop in the branch, and nothing in the exit
+    tells you which. The deadline expiring is the only fact there is."""
+
+    def test_a_timeout_reports_no_verdict(self, tmp_path):
+        v = verify.run(tmp_path, ["sleep 5"], 1)
+        check = v.checks[0]
+        assert check.timed_out is True
+        assert check.undecided_reason and "deadline" in check.undecided_reason
+        assert v.undecided is True
+        assert v.passed is False
+
+    def test_the_sentence_does_not_claim_which_it_was(self, tmp_path):
+        v = verify.run(tmp_path, ["sleep 5"], 1)
+        why = v.checks[0].undecided_reason
+        assert "does not say which" in why
+
+    def test_a_check_that_never_started_is_also_undecided(self, tmp_path):
+        """The deadline already spent when the check came up. Not merely
+        unanswered: never asked.
+
+        Driven with a zero deadline rather than by racing two commands --
+        `remaining <= 0` is reachable only when a check finishes exactly on
+        the boundary, and a test that depends on that is a test that fails on
+        a fast morning."""
+        v = verify.run(tmp_path, ["true"], 0)
+        assert v.undecided is True
+        assert any("never ran" in (c.undecided_reason or "") for c in v.checks)
+        assert v.passed is False
+
+    def test_timed_out_is_still_recorded_separately(self, tmp_path):
+        """Readers distinguish the three. The class is shared; the field is
+        not collapsed."""
+        v = verify.run(tmp_path, ["sleep 5"], 1)
+        assert v.checks[0].timed_out is True
+        assert v.checks[0].unresolved_reason is None

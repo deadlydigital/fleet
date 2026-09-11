@@ -1831,32 +1831,42 @@ refuses the merge — not knowing is not permission — in a sentence pointing a
 the environment. A program that deliberately `exit(137)` is indistinguishable
 from here and is violating the same convention the shell is using.
 
-**WHAT ELSE BELONGS IN THIS CLASS.** In it now: a checker not on disk
-(`unresolved`), a signalled check, a kernel OOM kill. Not in it, in the order
-they should be taken:
+**WHAT IS IN THIS CLASS.** A checker not on disk (`unresolved`); a signalled
+check; a kernel OOM kill; a timeout; a check the deadline never reached; and a
+tree a check cannot write to. The last three were added on 11 Sep 2026 after
+the first list was written, and each is here for the same reason:
 
-1. **Timeouts, and this one is a real gap today.** A check that hits
-   `DEADLINE_SECONDS` sets `timed_out`, which stops `passed` — and then falls
-   into `reverify`'s failure branch and prints the same false sentence. A hang
-   in the branch is a fact about the branch; a slow or loaded host is not; and
-   nothing distinguishes them. "Did not return a verdict" is true either way,
-   which is the argument for moving it. The cost is that a genuine infinite
-   loop stops reading as a failure, which is why it is named here rather than
-   changed in passing.
-2. **Environment failures that exit normally, which the fix above does NOT
-   catch.** vitest exited 1 on `EROFS`. So did nothing else distinguish it.
-   `ENOSPC`, `EACCES` and `EMFILE` all arrive the same way, and none is
-   visible in an exit code. Pattern-matching the output is not the answer —
-   this codebase already refuses that for git's wording. The answer is a
-   **precondition**: assert before any check runs that the trial tree and
-   every farmed cache directory are writable, and report a failed assertion
-   as `could_not_run` naming the path. That turns a whole class from a lie
-   into a refusal, and it is the single highest-value item left here.
-3. **`exit 127` from a relative command.** `unresolved_paths` only resolves
+* **A timeout did not return a verdict.** It keeps `timed_out` — readers
+  distinguish the three — but it reached `reverify`'s failure branch as an
+  ordinary non-zero until now. A hang in the branch is a fact about the
+  branch; a slow or loaded host is not; and nothing in the exit tells you
+  which, so the sentence says only that the deadline expired without a
+  return. The cost, stated rather than hidden: a genuine infinite loop now
+  reads as "could not run" instead of as a failure. It is still refused.
+* **A check the deadline never reached was never asked.**
+* **A tree a check cannot write to is a PRECONDITION, and it is the part the
+  signal classifier cannot reach.** vitest exited **1** on `EROFS`; so does
+  `ENOSPC`, `EACCES`, `EMFILE`. None is visible in an exit code, and matching
+  the output for "EROFS" is the answer this codebase refuses for git's
+  wording — an error string is not an API. So `verify.unwritable` asks the
+  filesystem BEFORE any check runs, by writing to it, and reports a failure
+  as `could_not_run` naming the path. It is asked of the worktree and of
+  every path `link_dependencies` created, because the link is the boundary
+  between a tree that is thrown away and one that must not be written to,
+  and that is the one that bit. An answer obtained by doing the thing is the
+  only kind that cannot be out of date: a directory can be writable by mode
+  and unwritable because the mount is read-only, and `os.access` believes the
+  mode. Both the runner and the accept path ask it, which is the point —
+  they disagreed about task 53 precisely because only one of them had
+  `ReadWritePaths` for the real checkout.
+
+**Still outside it**, and named so it is not rediscovered:
+
+1. **`exit 127` from a relative command.** `unresolved_paths` only resolves
    ABSOLUTE paths, deliberately — a relative path belongs to the tree under
-   test. A contract naming a tool that is not on `PATH` therefore reads as a
-   failing check.
-4. **A check that could not reach something it needs** — a network, a
+   test. A contract naming a tool that is not on `PATH` reads as a failing
+   check.
+2. **A check that could not reach something it needs** — a network, a
    database. None is reachable from a check today by design, so this is a
    class with no members yet rather than one that is missing.
 
@@ -1865,11 +1875,26 @@ commands and exist to agree about them held three answers: runner unset
 (infinity), console 2G, automerge 512M. All three are now 2G, measured against
 the heaviest verification sequence any contract declares, run whole, inside
 the confinement it runs in — `dd-analytics-frontend` at **961 MiB**, against
-274 MiB for the API contract and 46 MiB for a draft spec. `MemoryAccounting`
-is on so the next measurement comes from a real run rather than another probe,
-and `tests/test_unit_ceilings.py` fails if one of the three is edited alone.
-`fleet-autoapprove` is deliberately not held to it: it re-executes candidate
-probes and never runs a contract.
+274 MiB for the API contract and 46 MiB for a draft spec. `tests/test_unit_ceilings.py` fails if one of
+the three is edited alone. `fleet-autoapprove` is deliberately not held to it:
+it re-executes candidate probes and never runs a contract.
+
+**The runner's half of that number is still an inference, and 035 is what
+ends it.** The other two units verify and nothing else; the runner runs an
+agent first, and its ceiling was unset until now, so nothing has ever recorded
+how close a real tick came. `MemoryAccounting=yes` does not give it back on
+its own — systemd drops `MemoryPeak` when the cgroup goes away, which for a
+`Type=oneshot` unit is the moment it finishes:
+
+    $ systemctl show fleet-autoapprove.service -p MemoryPeak --value
+    [not set]
+
+So the peak is read from `memory.peak` by `runner/cycle.py` at settle, which
+is the last moment it can be read, and stored on `runs`. It is written as a
+statement of its own: the columns beside it are §9.6's, and folding a newer
+column into that write would make every future column a way to stop the
+reason being recorded. When several runs have reported, `MEASURED_PEAK_MIB`
+moves to what a tick actually costs.
 
 ---
 

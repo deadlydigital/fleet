@@ -402,6 +402,12 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 wt_path, contract["verification"], remaining,
                 changed=[p for p in change.paths
                          if change.status.get(p) != "D"],
+                # The same precondition the accept path gets. The runner has
+                # ReadWritePaths for the real checkouts and has never hit the
+                # read-only case -- which is exactly why the two paths
+                # disagreed about task 53, and why both ask now rather than
+                # one of them being the place where it is noticed.
+                links=links,
                 # FLEET_CONTRACT is the FROZEN contract from the row, not the
                 # yaml on disk. A check that read contracts/*.yaml would be
                 # judging this task against whatever that file says now, which
@@ -422,15 +428,16 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             worktree.unlink_dependencies(links)
         result.verification = verification
         for check in verification.checks:
-            # KILLED IS ITS OWN MARK, not FAIL. The runner's log is where a
-            # person looks first, and "FAIL tsc" over a check the cgroup
-            # killed is the same false sentence the accept path used to
-            # print -- see runner/verify.Check.killed_reason.
+            # NOVERDICT IS ITS OWN MARK, not FAIL. The runner's log is where
+            # a person looks first, and "FAIL tsc" over a check the cgroup
+            # killed -- or one that ran out of deadline -- is the same false
+            # sentence the accept path used to print. See
+            # runner/verify.Check.undecided_reason.
             mark = ("NORUN" if check.unresolved_reason
-                    else "KILLED" if check.killed_reason
+                    else "NOVERDICT" if check.undecided_reason
                     else "skip" if not check.ran
                     else "ok  " if check.passed else "FAIL")
-            why = (check.unresolved_reason or check.killed_reason
+            why = (check.unresolved_reason or check.undecided_reason
                    or check.skipped_reason)
             log(f"  {mark} {check.command} ({check.duration_ms}ms)"
                 + (f"  -- {why}" if why else ""))
@@ -662,7 +669,7 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
                     "exit_code": c.exit_code, "duration_ms": c.duration_ms,
                     "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                     "unresolved_reason": c.unresolved_reason,
-                    "killed_reason": c.killed_reason,
+                    "undecided_reason": c.undecided_reason,
                     "output_tail": c.output_tail} for c in verification.checks],
         "verification_skipped": verification.skipped_reason,
         # Recorded on the run itself: a FAIL whose checks never opened is a
@@ -707,6 +714,36 @@ def _branch_exists(repo: Path, branch: str | None) -> bool:
         return False
 
 
+def _peak_memory_mib() -> int | None:
+    """This cgroup's high-water memory, in MiB, or None if it cannot be read.
+
+    Best effort and never fatal. A host without cgroup v2, a namespace that
+    hides the file, a kernel older than 5.19: all of them mean "cannot say",
+    and 035 stores that as NULL rather than as a zero somebody would average.
+    """
+    try:
+        with open("/proc/self/cgroup") as fh:
+            rel = fh.readline().strip().split(":", 2)[2]
+        with open(f"/sys/fs/cgroup{rel}/memory.peak") as fh:
+            return round(int(fh.read().strip()) / 1048576)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _memory_max_mib() -> int | None:
+    """The cgroup's own ceiling, so the peak is printed beside what it must
+    clear. `max` means unbounded, which is what fleet-runner carried until
+    11 Sep 2026 and is worth seeing when it comes back."""
+    try:
+        with open("/proc/self/cgroup") as fh:
+            rel = fh.readline().strip().split(":", 2)[2]
+        with open(f"/sys/fs/cgroup{rel}/memory.max") as fh:
+            raw = fh.read().strip()
+        return None if raw == "max" else round(int(raw) / 1048576)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def _settle_task(runner, task, settings, result, log) -> None:
     """Move the task and close the run. Never to a deploying state.
 
@@ -741,6 +778,42 @@ def _settle_task(runner, task, settings, result, log) -> None:
             "UPDATE runs SET status=%s, reason=%s, completed_at=now()"
             " WHERE id=%s",
             (status, result.reason or None, result.run_id))
+
+        # WHAT THE TICK COST IN MEMORY, read here because here is the last
+        # moment it CAN be read. `memory.peak` is the cgroup's high-water mark
+        # and the cgroup goes away when this unit exits, taking systemd's own
+        # MemoryPeak with it: `systemctl show <unit> -p MemoryPeak` on a
+        # finished oneshot returns "[not set]". See 035.
+        #
+        # It covers the AGENT as well as the verification after it, which is
+        # the number fleet-runner's MemoryMax has to hold and the half of that
+        # ceiling nobody has measured.
+        #
+        # A SEPARATE STATEMENT, AND NOT ONLY BECAUSE 035 MAY BE UNAPPLIED.
+        # The two columns above are §9.6's: they are what a run knew, and the
+        # whole argument of 033 is that they must not be lost on the way out.
+        # Folding a newer column into that statement makes every future column
+        # a way to stop the reason being written. This one is additive, its
+        # absence is survivable, and it says so here rather than taking the
+        # settle down with it.
+        peak = _peak_memory_mib()
+        if peak is not None:
+            # Logged as well as stored. The ceiling this is measured against
+            # lives in three unit files, and the person who changes one of
+            # them is reading journalctl, not the database.
+            log(f"  peak memory {peak} MiB of the unit's "
+                f"{_memory_max_mib() or '?'} MiB ceiling")
+            try:
+                runner.execute(
+                    "UPDATE runs SET peak_memory_mib=%s WHERE id=%s",
+                    (peak, result.run_id))
+            except psycopg.errors.UndefinedColumn:
+                # 035 is written and not applied. Said out loud, in the run's
+                # own log, rather than left as a column that is silently NULL
+                # for every row and read later as "the runner used no memory".
+                log(f"  peak was {peak} MiB and was NOT recorded: "
+                    f"runs.peak_memory_mib does not exist. Apply "
+                    f"035_a_run_records_what_it_cost_in_memory.sql.")
 
     if result.outcome == "READY_FOR_REVIEW":
         runner.execute(

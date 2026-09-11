@@ -200,6 +200,11 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         result = verify.run(
             trial, commands, DEADLINE_SECONDS,
             changed=changed_files,
+            # THE LINKS ARE HANDED OVER so the precondition can test them.
+            # The trial tree itself is writable by construction -- it is a
+            # clone this function just made -- and the LINK is the boundary
+            # where that stops being true. That is the one that bit.
+            links=links,
             facts={"FLEET_BASE_SHA": base_sha, "FLEET_HEAD_SHA": head,
                    "FLEET_TASK_ID": str(task["id"]),
                    "FLEET_CONTRACT": json.dumps(contract),
@@ -216,7 +221,7 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                    "exit_code": c.exit_code, "duration_ms": c.duration_ms,
                    "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                    "unresolved_reason": c.unresolved_reason,
-                   "killed_reason": c.killed_reason,
+                   "undecided_reason": c.undecided_reason,
                    "output_tail": c.output_tail[-800:]} for c in result.checks]
 
         if not verdict.clean:
