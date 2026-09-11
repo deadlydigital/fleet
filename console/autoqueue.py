@@ -65,7 +65,7 @@ from typing import Any
 
 import yaml
 
-from console import config, db
+from console import config, db, requirements
 
 #: The same block the draft-spec check reads. One shape, one parser.
 BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
@@ -327,6 +327,39 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
         max_cost = contract.get("max_cost_gbp")
         if max_cost is None:
             raise QueueRefused(f"{contract_file} declares no max_cost_gbp")
+
+        # THE SPEC MAY NOT BE BIGGER THAN THE CONTRACT WILL PAY FOR.
+        #
+        # Checked here, before the money, because the two things that stop an
+        # oversized spec -- the spend cap and max_diff_lines -- both stop it
+        # AFTER a run has been bought, and neither says what was actually
+        # wrong. Task 62 bought the same lesson twice: £3.00 at the cap with no
+        # branch, then £5.02 with 494 lines against a 400-line limit. Its spec
+        # numbers 25 requirements against a contract whose largest merged spec
+        # numbers 5, and every leaf of those 25 has to be cited in the diff.
+        #
+        # A CEILING, NOT AN ESTIMATE. Nothing here predicts what the work will
+        # cost -- there is no estimator anywhere in this system, which is the
+        # gap this sits in rather than fills. It refuses a spec that is far
+        # outside what this contract has ever delivered, and says so in a
+        # sentence naming both numbers.
+        #
+        # Absent means no ceiling, deliberately: contracts/research.yaml
+        # produces a document with no diff limit to blow, and its two merged
+        # specs numbered 17 and 23 without trouble.
+        ceiling = contract.get("max_requirements")
+        if ceiling is not None:
+            numbered = requirements.parse(markdown)
+            if len(numbered) > int(ceiling):
+                raise QueueRefused(
+                    f"the spec numbers {len(numbered)} requirements and "
+                    f"{contract_file} accepts {ceiling}. It is not queued, "
+                    f"because a task this size under that contract has failed "
+                    f"on the spend cap or the {contract.get('max_diff_lines')}"
+                    f"-line diff limit rather than on its merits, and buying "
+                    f"the run is how that is discovered. Split the work into "
+                    f"smaller specs, or raise max_requirements in "
+                    f"{contract_file} knowing what it is being raised past.")
         frozen = {
             "work_type": work_type,
             "writable_paths": list(contract.get("writable_paths") or []),

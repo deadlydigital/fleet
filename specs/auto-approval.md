@@ -2637,6 +2637,48 @@ A chain where EVERY link failed is not this finding: nothing is held and
 nothing half-shipped, so it is an ordinary failed candidate and reporting it
 here would bury the ones that matter.
 
+### 12.6b Where chaining does NOT reach, measured on task 62
+
+Task 62 failed twice for one reason — the spec is too big for one task — and
+the second failure is the interesting one, because the obvious repair is the
+chain §12 just built and **it does not work here.**
+
+The spec has a real seam. The branch `fleet/task-62.2` adds four functions to
+`analytics_engine.py`: `lifetime_spend_sql` and `_ltv_population_cte` (the
+shared definition, §1), then `ltv_distribution` (§2, §4) and
+`ltv_retention_curve` (§3), with `routes/sources.py` consuming the helper
+(§5). A shared foundation and three independent consumers. **Three reasons it
+still cannot be a chain:**
+
+**1. The links are not disjoint.** §2, §3 and §5 all land in
+`analytics_engine.py` — 247 of the 490 added lines. `spec_blocks` refuses two
+blocks declaring one file, and that refusal is load-bearing rather than
+fastidious: it is what makes independent verification sound.
+
+**2. They are build-coupled, which §12 assumed away.** §12.3's argument is that
+the halves are coupled at RUNTIME because `platform/` reaches `api/` over HTTP
+and imports nothing from it. Here the coupling is *within* `api/`, Python to
+Python: `ltv_retention_curve` and `routes/sources.py` both call the helper §1
+adds. A link verified without its sibling would not import. The disjointness
+rule refuses this case correctly, for the right reason.
+
+**3. `spec_requirements_cited.py` bites every link, and this one is not about
+the split at all.** `from_accepted_draft` gives every link the WHOLE draft as
+its `spec_md`, and the check obliges the diff to cite every leaf requirement in
+it. Computed against task 62's 25:
+
+    link A  §1 + §2   cites 13, leaves  8 uncited   FAILS
+    link B  §3        cites  4, leaves 20 uncited   FAILS
+    link C  §5        cites  2, leaves 22 uncited   FAILS
+
+Every link of every chain fails this check unless the draft's requirements are
+partitioned per block — which nothing does and `requirements.parse` has no
+notion of. **So §12's chaining is unusable for any draft that numbers
+requirements per document rather than per link**, which is every draft written
+so far. That is a defect in §12 as built, not a property of task 62, and it is
+recorded here rather than in a commit message because fixing it is a decision
+about what a requirement belongs to.
+
 ### 12.7 What was built
 
     037                          task_chain, one row per link, task_id UNIQUE

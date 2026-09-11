@@ -442,6 +442,28 @@ auto_merge: true
 # 600 rather than the retired contract's 800. A page, its proxy and one render
 # test is a few hundred lines; a frontend diff approaching 800 under a contract
 # this narrow is a task that found something the spec did not describe.
+# THE SPEC MAY NOT NUMBER MORE REQUIREMENTS THAN THIS.
+#
+# A ceiling like max_diff_lines, checked at queue time BEFORE the money, and
+# added 11 Sep 2026 after task 62 failed twice for the same reason in two
+# different disguises: first £3.00 at the spend cap with no branch, then £5.02
+# with 494 lines against a 400-line limit. Its spec numbers 25 requirements,
+# and contracts/checks/spec_requirements_cited.py obliges the diff to cite
+# every leaf of them.
+#
+# MEASURED, from the specs that actually merged under each work_type:
+#
+#     dd_api        4, 5, 5, 5      max 5
+#     dd_frontend   8               max 8
+#     research      17, 23          max 23   -- and deliberately NOT capped
+#
+# Research is uncapped because it produces a DOCUMENT: it has no diff limit to
+# blow and its two merged specs numbered 17 and 23 without trouble. The failure
+# this refuses is a code task's budget, and a document has none.
+#
+# 12: measured: the largest dd_frontend spec that merged numbers 8, doubled for headroom.
+max_requirements: 12
+
 max_diff_lines: 600
 max_cost_gbp: 3.00
 # tsc 29s + vitest 65s + the bite check ~9s (two single-file runs) + paired
