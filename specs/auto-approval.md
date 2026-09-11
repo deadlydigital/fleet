@@ -2782,3 +2782,128 @@ Candidate 36 is `NOT_NOW` — a person's judgement about one candidate, which is
 what this is — rather than `PENDING`, which would invite the ranker to buy the
 same draft again.
 
+---
+
+## 14. A fleet-spec block declares its contract — proposed, not built
+
+### 14.1 The case
+
+Task 63's draft merged and queued nothing. Its block declares
+
+    work_type: dd_api
+    repo: deadly-digital-platform
+    writable_paths:
+      - api/analytics/routes/orders.py
+      - api/analytics/services/order_query.py
+
+Three contracts match `(dd_api, deadly-digital-platform)`. Two of them cover
+both declared paths, so §9.13's rule — keep the contracts whose writable set
+covers every declared path, and refuse unless exactly one survives — refuses.
+**The refusal is right.** The two survivors are not near-duplicates:
+
+| | `dd-order-filters` | `deadly-digital-platform-api` |
+|---|---|---|
+| writable paths | 2 | 27 |
+| `max_diff_lines` | 150 | 400 |
+| `creatable_paths` | none | `api/tests/analytics/test_fleet_*.py` |
+| `auto_merge` | absent | `true` |
+| verification | compile, ruff, one shape check | + `spec_requirements_cited`, two pytest runs, the bite check |
+
+Choosing between those is choosing **whether the work is tested at all**, and
+whether it may merge unattended — `automerge.eligible` refuses a contract with
+no `creatable_paths` because the agent could not have added a test that bites.
+A tiebreak would be picking that silently.
+
+### 14.2 The rule is not "ambiguous work is refused"
+
+Worth stating because it changes what is being fixed. All three contracts have
+existed since 30–31 Aug and five dd_api tasks have queued since without
+trouble — 2, 7, 26, 28, 58, 62. They queued because their declared paths did
+not happen to fall inside the narrow contract: task 58 named `sync_engine.py`,
+which `dd-order-filters` does not cover, so only one survived.
+
+So the current rule resolves by an accident of **which paths a draft happens to
+name**. Whether the queue works is downstream of prose. Task 63 is not a new
+failure; it is the first draft to name a set that fits two.
+
+### 14.3 The proposal
+
+A block may name its contract by filename:
+
+    ```fleet-spec
+    work_type: dd_api
+    repo: deadly-digital-platform
+    contract: deadly-digital-platform-api.yaml
+    title: ...
+    writable_paths:
+      - api/analytics/routes/orders.py
+      - api/analytics/services/order_query.py
+    ```
+
+The draft-spec agent already reads `contracts/` — `draft_spec_shape.py`
+resolves `work_type` against that directory, and the agent has `Read` and
+`Glob`. It knows which boundary it means. **Making it say so removes the guess
+rather than automating it**, which is the distinction §9.19 and §12.4 both turn
+on: a chooser that minimises contracts prefers a wide writable set with a
+narrow verification, and that is the contract you least want picked for you.
+
+**Required, not optional.** An optional field leaves the derivation in place
+for the cases that look unambiguous today, and §14.2 is the argument against
+that: unambiguous is a property of the paths a draft happened to name, not of
+the work. A field that is filled in only when something already went wrong is
+filled in by whoever is debugging, not by whoever knows.
+
+### 14.4 What validates the choice, and where
+
+**At draft time, in `draft_spec_shape.py`, which is the point.** That check runs
+as the draft task's own verification — so a wrong contract fails the draft,
+before it merges and before the code task is queued or paid for. Today the same
+mistake is found by `autoqueue`, after the draft has merged, which is the
+§13-shaped cost: money spent to discover a spec cannot be used.
+
+Four checks, all of them mechanical:
+
+1. **The file exists** in `contracts/`. A typo is a refusal, not a fallback.
+2. **Its `work_type` and `repo` match the block's.** Otherwise the block says
+   two things and nothing decides which.
+3. **Its `writable_paths` cover every declared path.** This is the check the
+   section title asks for: a declared contract that does not cover the declared
+   paths refuses at draft time. It is the same predicate `autoqueue` applies —
+   `rank._inside` — so the two cannot disagree.
+4. **No declared path is on that contract's protected floor.** Already checked
+   against `work_type`; it moves to being checked against the named contract,
+   which is stricter and more honest.
+
+And one that is not about the declaration: **a block with no `contract` is
+refused when more than one contract survives the coverage filter**, naming the
+survivors. That converts task 63's silent queue-time refusal into a draft-time
+message that says which two and asks for a choice.
+
+### 14.5 What it does not do
+
+It does not decide **which** of two covering contracts is right. That is a
+judgement about whether the work wants the narrow boundary or the tested one,
+and it stays with the agent that wrote the spec and the person who reads it.
+What changes is that the judgement is written down in the diff, reviewable, and
+refused when it is inconsistent with itself — rather than inferred from a path
+list by a rule that works for five tasks and refuses the sixth.
+
+It also does not help §13. A declared contract makes *one* task queueable; it
+does nothing for a candidate that needs to be three.
+
+### 14.6 Three walls in three attempts
+
+Recorded together because the pattern is the finding:
+
+    task 62   run 31   spend cap        the spec is too big for one task
+    task 62   run 32   diff limit       the same fact, a different ceiling
+    task 63            contract ambiguity   the rule resolves by accident of prose
+
+Each refusal is correct. Each is a different wall. Underneath both sits §12's
+chaining, which cannot split either case — build-coupled seams for 62, and for
+63 nothing to split at all. **Three attempts, three walls, no shipped work, and
+the common factor is that a draft spec is the only unit this system has between
+a candidate and a task.** §13 says nothing can turn one candidate into several
+specs; §14 says a single spec cannot always name its own boundary. They are the
+same shortage seen from two sides.
+
