@@ -40,12 +40,26 @@
 
 work_type: research
 repo: fleet
-# The fleet repository has no `main`: the work lives on
-# track-2-foundation. A task's base branch is immutable once it
-# exists, so getting this wrong means abandoning the task rather
-# than editing it -- which is the state machine treating the base
-# branch as part of a task's identity, correctly.
-base_branch: track-2-foundation
+# The fleet repository has no `main`: the trunk is `master`, and has been
+# since 9 Sep 2026 when track-2-foundation and spec/daily-brief were
+# consolidated into it.
+#
+# THIS SAID track-2-foundation UNTIL 11 SEP 2026, AND IT WAS LEFT THAT WAY ON
+# PURPOSE. specs/auto-approval.md §2.5 fixed the same staleness in
+# console/approve.py and contracts/draft-spec.yaml on 10 Sep and noted these
+# two as latent, on the grounds that "the local refs are the same commit
+# today". That was true when it was written and stopped being true: by 11 Sep
+# master was 53 commits ahead of track-2-foundation and the branch was 0
+# ahead of master.
+#
+# What it cost: task 60 was built against a tree four commits stale, the
+# console could not accept it because the base kept moving underneath, and
+# both it and task 57 had to be merged by hand.
+#
+# A task's base branch is immutable once the row exists, so getting this wrong
+# means abandoning the task rather than editing it -- which is the state
+# machine treating the base branch as part of a task's identity, correctly.
+base_branch: master
 contract_version: 1
 
 writable_paths:

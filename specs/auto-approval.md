@@ -505,6 +505,27 @@ Three changes inside `approve.py`, all small:
    local refs are the same commit today, so they are latent in exactly the way
    this was.
 
+   > **THAT NOTE WAS THE FIX THAT DID NOT HAPPEN. Fixed 11 Sep 2026, after it
+   > cost three things.** "The local refs are the same commit today" was true
+   > when it was written and was the whole argument for deferring — and it is
+   > a statement with a shelf life, recorded in prose, in a section about a
+   > different repair. By 11 Sep `master` was **53 commits ahead** of
+   > `track-2-foundation`, which was 0 ahead of it.
+   >
+   > What it cost: task 60 was built against a tree four commits stale; the
+   > console could not accept it because the base kept moving underneath; and
+   > tasks 57 and 60 were merged by hand. **And one thing nobody had noticed:**
+   > the console's merge of task 57 landed on `track-2-foundation` — because
+   > that is what the contract said its base was — producing merge commit
+   > `4bf6541`, which is `origin/track-2-foundation`'s tip.
+   > `research/refund-coverage.md` **is not on master**, and task 57's row says
+   > MERGED.
+   >
+   > `tests/test_contract_base_branch.py` replaces the note with a mechanism:
+   > every contract's `base_branch` must name a branch that exists in the repo
+   > it targets, AND must not be behind that repo's trunk. Existing was never
+   > the property that mattered — `track-2-foundation` existed the whole time.
+
    The original argument, unchanged and still the reason it was worth doing
    first: `contracts/candidate-producer.yaml` records that the trunk became
    `master` on 9 Sep 2026 when track-2-foundation was consolidated into it.
