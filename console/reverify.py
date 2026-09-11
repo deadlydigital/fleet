@@ -51,7 +51,11 @@ import subprocess
 from runner import boundary, verify, worktree
 
 TRIAL_PREFIX = "fleet-accept-trial"
-DEADLINE_SECONDS = 900
+
+#: Fallback only, for a task row that carries no timeout. The deadline itself
+#: comes from the TASK, which is where the runner's comes from -- see
+#: _deadline_for.
+DEFAULT_DEADLINE_SECONDS = 900
 
 
 @dataclass
@@ -87,6 +91,37 @@ class Reverification:
                 "violations": self.violations, "duration_s": round(self.duration_s, 1),
                 "checks": self.checks, "skipped_reason": self.skipped_reason,
                 "could_not_run": self.could_not_run}
+
+
+def _deadline_for(task: dict[str, Any]) -> float:
+    """How long the contract's verification may take here.
+
+    FROM THE TASK, BECAUSE THAT IS WHERE THE RUNNER'S COMES FROM. This was a
+    hardcoded 900 until 11 Sep 2026, while runner/cycle.py gives verification
+    the task's own `timeout_seconds` less whatever the agent spent. Two numbers
+    for one question, and they were 900 and ~3460 for the same task.
+
+    Measured that day on task 58's contract: `pytest_unit_per_file.sh api
+    tests/analytics` alone takes 695s and the whole block about 956s. It passed
+    in the runner and could not pass here, so a dd_api branch was
+    unmergeable by construction -- and before the timeout joined the
+    could-not-run class that would have read as "the branch FAILS when merged".
+
+    THE RESIDUAL DIVERGENCE IS NAMED RATHER THAN HIDDEN. The runner splits one
+    budget between the agent and the verification; this path has no agent and
+    gives the whole of it. So the accept path is at least as permissive as the
+    runner for the same task, which is the safe direction -- a branch the
+    runner passed cannot fail here for want of time -- but the two are still
+    not the same number when the agent ran long. The fix for that is a
+    verification budget on the CONTRACT, separate from the task's wall clock,
+    and it is not built here.
+    """
+    seconds = task.get("timeout_seconds")
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return float(DEFAULT_DEADLINE_SECONDS)
+    return seconds if seconds > 0 else float(DEFAULT_DEADLINE_SECONDS)
 
 
 def run(repo: Path, trial_root: Path, task: dict[str, Any],
@@ -198,7 +233,7 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         # on the re-verification is a check that reports could-not-run at
         # exactly the moment auto-merge consults it.
         result = verify.run(
-            trial, commands, DEADLINE_SECONDS,
+            trial, commands, _deadline_for(task),
             changed=changed_files,
             # THE LINKS ARE HANDED OVER so the precondition can test them.
             # The trial tree itself is writable by construction -- it is a

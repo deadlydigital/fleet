@@ -158,3 +158,94 @@ class TestTheRunnersOwnCostIsRecorded:
         ).fetchone()
         assert row is not None, "035 did not reach the test template"
         assert row["is_nullable"] == "YES"
+
+
+class TestTheThreeAgreeOnEverythingThatDecidesAPass:
+    """Four dimensions have now disagreed, and they were found one at a time.
+
+        memory          MemoryMax unset / 2G / 512M     -> tsc SIGABRT, false FAIL
+        interpretation  what counts as a verdict        -> a killed check read as a failure
+        time            deadline 900s vs the task's     -> a dd_api branch unmergeable
+        writability     ReadWritePaths on one of three  -> vitest EROFS, false FAIL
+
+    Interpretation is shared by construction: all three call runner.verify.
+    Memory and time are now equal. Writability CANNOT be equalised -- the
+    console's entire safety argument is that it may not write the checkouts --
+    so it is made irrelevant instead, by verify.unwritable refusing to judge
+    rather than letting a check fail for the filesystem.
+
+    THIS TEST IS THE POINT. Enumerating today's four dimensions fixes today's
+    four. What keeps the next one from being found the same way -- at a cost of
+    a terminal failure and an afternoon -- is asking the three units whether
+    they still agree, on every property that can decide a pass, rather than
+    trusting three files to stay in step.
+    """
+
+    #: Properties that decide whether a check passes, and must therefore be
+    #: identical. Add to this list; do not add exceptions to it.
+    MUST_AGREE = (
+        "MemoryMax", "MemoryAccounting", "TasksMax", "CPUQuotaPerSecUSec",
+        "ProtectHome", "ProtectSystem", "PrivateTmp", "NoNewPrivileges",
+        "LimitNOFILESoft", "LimitNPROCSoft", "RestrictAddressFamilies",
+    )
+
+    #: The one that must DIFFER, with the reason, because a test that demanded
+    #: agreement here would be demanding the console be allowed to write the
+    #: repositories it exists not to write.
+    MUST_DIFFER = ("ReadWritePaths",)
+
+    def _show(self, unit, prop):
+        import subprocess
+        return subprocess.run(
+            ["systemctl", "show", f"{unit}.service", "-p", prop, "--value"],
+            capture_output=True, text=True).stdout.strip()
+
+    @pytest.mark.skipif(not Path("/run/systemd/system").exists(),
+                        reason="no systemd on this host")
+    @pytest.mark.parametrize("prop", MUST_AGREE)
+    def test_the_three_units_agree(self, prop):
+        seen = {u: self._show(u, prop) for u in VERIFYING_UNITS}
+        if not any(seen.values()):
+            pytest.skip(f"{prop} is not reported on this systemd")
+        assert len(set(seen.values())) == 1, (
+            f"{prop} differs across the units that must agree about whether a "
+            f"branch passes: {seen}. A branch that passes under one and is "
+            f"stopped under another is reported as a branch that fails.")
+
+    @pytest.mark.skipif(not Path("/run/systemd/system").exists(),
+                        reason="no systemd on this host")
+    @pytest.mark.parametrize("prop", MUST_DIFFER)
+    def test_the_documented_exception_still_holds(self, prop):
+        """The runner writes worktrees; the other two may not write anything.
+
+        Asserted rather than assumed: if the console ever gains a
+        ReadWritePath it has stopped being the thing its own unit file argues
+        it is, and that should fail here rather than be noticed later.
+        """
+        runner = self._show("fleet-runner", prop)
+        assert runner, "the runner must be able to write its worktrees"
+        for u in ("fleet-console", "fleet-automerge"):
+            assert not self._show(u, prop), (
+                f"{u} has gained {prop}, so it can now write outside its "
+                f"trial clone -- which is the property that makes 'the trial "
+                f"leaves nothing' true")
+
+    def test_the_deadline_is_not_a_constant_in_the_accept_path(self):
+        """Time was the third dimension. The accept path took 900s from a
+        module constant while the runner took the task's own timeout."""
+        src = (Path(__file__).resolve().parent.parent
+               / "console" / "reverify.py").read_text()
+        assert "_deadline_for(task)" in src, (
+            "the accept path must take its deadline from the task, which is "
+            "where the runner takes its budget from")
+        assert "\nDEADLINE_SECONDS = 900" not in src, (
+            "the bare module constant is what the runner disagreed with; "
+            "DEFAULT_DEADLINE_SECONDS is the fallback and is fine")
+
+    def test_the_deadline_comes_from_the_task_row(self):
+        from console import reverify
+        assert reverify._deadline_for({"timeout_seconds": 3600}) == 3600
+        assert reverify._deadline_for({"timeout_seconds": None}) == 900
+        assert reverify._deadline_for({}) == 900
+        assert reverify._deadline_for({"timeout_seconds": 0}) == 900, (
+            "a zero timeout would make every check report could-not-run")

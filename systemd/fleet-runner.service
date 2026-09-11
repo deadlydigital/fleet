@@ -102,6 +102,23 @@ ReadWritePaths=/home/ubuntu/.cache/claude-cli-nodejs
 #
 # tests/test_unit_ceilings.py asserts these three stay equal and stay above
 # the measured peak recorded there. Editing one of them alone fails that test.
+# THE SAME SOCKET POLICY AS THE OTHER TWO, since 11 Sep 2026.
+#
+# This unit had no RestrictAddressFamilies at all while fleet-console and
+# fleet-automerge restricted to these three, so a verification check using any
+# other family would work here and be stopped there -- the fifth dimension on
+# which the three units that must agree about a branch did not.
+#
+# Found by tests/test_unit_ceilings.TestTheThreeAgreeOnEverythingThatDecidesAPass
+# on its first run, which is the argument for that test existing: the four
+# before it were each found by a failure.
+#
+# Tightening rather than loosening, and measured before it was applied: under
+# this exact policy, getaddrinfo resolves, HTTPS reaches api.anthropic.com, and
+# `git ls-remote` over ssh succeeds. The console has been pushing git under it
+# all along.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
 MemoryAccounting=yes
 MemoryMax=2G
 #
