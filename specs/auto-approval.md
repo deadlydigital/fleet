@@ -1948,6 +1948,150 @@ about what a research contract is for, which is the user's call. What must not
 happen is a third research contract: that makes the ambiguity worse in exactly
 the way §9.13 measured.
 
+### 9.17 A task that shipped reads NOT_DELIVERED — proposed, not built
+
+Four instances, and the fourth is code that will be in production tomorrow:
+
+| task | row says | what actually happened |
+|---|---|---|
+| 49 | FAILED | merged by hand as `e275adb`, decision 25 |
+| 51 | FAILED | `deploy.sh` was on main that morning and had run three times |
+| 55 | FAILED | merged by hand as `8128243`, decisions 28 and 29 |
+| 58 | FAILED | merged as `2ce6f50` after re-verification, decision 31 |
+
+`decision_outcomes` derives delivery from `tasks.status` alone
+(`010_decision_log.sql:258-263`), so decision 31 renders **`task NOT_DELIVERED
+£1.90`** over a merged refund fix. The morning page reads the same view.
+
+**§9.3's refusal still stands and this does not reopen it.** A
+`FAILED -> MERGED` edge would hand every future sweep the rule *a failure may
+become a merge*, and no reader of `tasks.status` could be trusted again. What
+follows adds no edge and no status.
+
+#### The pointer
+
+    ALTER TABLE decision_log
+        ADD CONSTRAINT decision_log_id_task_key UNIQUE (id, task_id);
+
+    ALTER TABLE tasks
+        ADD COLUMN shipped_by_decision_id integer;
+
+    ALTER TABLE tasks
+        ADD CONSTRAINT tasks_shipped_by_decision_fk
+        FOREIGN KEY (shipped_by_decision_id, id)
+        REFERENCES decision_log (id, task_id);
+
+`shipped_by_decision_id` is *the decision that records this task's work
+reaching its base branch*. NULL is the ordinary state and means no such
+decision exists — which for a MERGED task is normal, because the machine did
+it and needed no one to vouch.
+
+**THE COMPOSITE KEY IS THE POINT, AND IT IS NOT DECORATION.** The foreign key
+is `(shipped_by_decision_id, id)` against `(id, task_id)`, so a decision can
+only be named here if it *cites this very task*. Verified on a throwaway
+database rather than assumed:
+
+    pointer NULL                                  allowed
+    task 58 -> decision 31 (cites 58)             allowed
+    task 55 -> decision 31 (cites 58)             REFUSED
+    task 55 -> decision 25 (task_id IS NULL)      REFUSED
+
+The last line is the useful one. Decision 25 is *"Merge task 49 by hand"* and
+carries `task_id IS NULL` — it cites the task in prose and in evidence, and not
+in the column. The constraint refuses the link until that is repaired, which is
+the right order: a pointer into a decision that does not admit to being about
+this task is the same class of false statement this exists to end.
+
+#### Why the pointer and not a derivation from `decision_log`
+
+Because "a decision cites this task" and "this decision shipped it" are
+different, and the pool already shows it: **decisions 28 and 29 both cite task
+55.** 28 is the merge; 29 records that it was pushed and deployed. Deriving
+delivery from the existence of a citing decision would count the deploy record
+as a second delivery, and would mean any future decision mentioning a task
+silently changes that task's outcome. Only the task row can say *which* one,
+so that is where the pointer lives — which is the direction asked for.
+
+#### What the view then says
+
+    WHEN d.task_id IS NULL                     THEN NULL
+    WHEN t.status = 'MERGED'                   THEN 'DELIVERED'
+    WHEN t.shipped_by_decision_id IS NOT NULL  THEN 'DELIVERED_BY_HAND'
+    WHEN t.status IN ('ABANDONED','REJECTED','FAILED') THEN 'NOT_DELIVERED'
+    ELSE 'IN_FLIGHT'
+
+A distinct value, not folded into `DELIVERED`. *The machine merged it* and *a
+person merged it and wrote down why* are different facts, and the second is the
+one worth reading: it says the automated path did not close this and somebody
+carried it. `console/templates/decisions.html:70` renders three states today
+and needs a fourth; a fold would hide exactly the rows this is for.
+
+`attempts_to_green` stays NULL for these rows, deliberately. It means *the
+machine got this green in N attempts*, and it did not.
+
+#### TWO READERS INFER THIS, NOT ONE
+
+`proposer/precedent.py:60` carries its own copy —
+
+    _NOT_DELIVERED = ("ABANDONED", "REJECTED", "FAILED")
+
+— so a pointer the view follows and precedent does not gives two answers to one
+question, which is the defect in a second place. Either precedent reads
+`decision_outcomes`, or the tuple goes. This is not optional work that can
+follow later: shipping the view change alone makes the disagreement worse than
+the thing it fixes, because the two would now differ on rows that matter.
+
+#### Who may write it
+
+`fleet_console`, and nothing else:
+
+    GRANT UPDATE (shipped_by_decision_id) ON tasks TO fleet_console;
+
+It is the identity that records decisions, and this is a fact about a decision.
+`fleet_task_runner` must not hold it: a runner that can mark its own failed
+task as shipped is the `FAILED -> MERGED` edge again, wearing a column instead
+of a transition. Set atomically with the decision — `fleet decision record`
+gains `--shipped-task N` — so a pointer without a decision cannot exist.
+
+#### THE SAFETY ARGUMENT, STATED PLAINLY
+
+Nothing reads it to decide anything. `claim_task` orders by `(priority, id)`
+over QUEUED rows; the merge sweep selects `READY_FOR_REVIEW`;
+`console/autodeploy.py` reads deployments; every gate in `rank.gate` reads
+`disposition` and `status`. None of them changes behaviour by one row. A FAILED
+task stays unclaimable, unmergeable and undeployable by every machine path,
+**and that is the whole difference between this and the edge §9.3 refused.**
+The pointer changes what is displayed, never what is done.
+
+If that stops being true — if anything ever branches on it — this becomes the
+refused edge by another name, and the guard is that it has no reader outside
+the view and the page.
+
+#### The backfill, measured rather than assumed
+
+    58 -> 31                      clean
+    55 -> 28                      the merge, NOT 29, which is the deploy record
+    49 -> 25                      BLOCKED: decision 25 has task_id IS NULL
+    51 -> none                    no decision cites it AT ALL
+
+Task 51 is the one this does not fix, and it should be said rather than left to
+be discovered: its work shipped and **nothing anywhere records that it did**.
+The pointer would be correctly NULL. That is a second gap — a delivery with no
+decision — and it wants its own answer, not a nullable column pressed into
+service as one.
+
+#### Cost, and what is not proposed
+
+One migration, one view replacement, one grant, one CLI flag, one template
+state, and the removal of `precedent.py`'s copy. No new table, no trigger, no
+status, no transition.
+
+**Not proposed:** a `DELIVERED` status, any edge out of FAILED, or a rule that
+a task with a pointer may be treated as merged by anything. Also not proposed:
+making `tasks.status` say something truer. It already says the true thing about
+the *run* — the run did fail — and §9.6's argument is that the row should hold
+more of what was known, not that it should hold something else.
+
 ---
 
 ## 10. The first dry run over the live pool, and what it found
