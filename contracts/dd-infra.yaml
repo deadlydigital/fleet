@@ -141,5 +141,11 @@ verification:
 max_requirements: 10
 
 max_diff_lines: 500
-max_cost_gbp: 3.00
+# 6.00, measured 11 Sep 2026, was 3.00. PROVISIONAL -- it rests on two
+# observations. The reasoning, the two runs it rests on, and what a
+# re-measurement needs to replace are recorded once in
+# contracts/deadly-digital-platform-api.yaml, because both observations are
+# dd_api runs. In short: £3.00 stopped 4 of 13 code tasks, and the only two
+# code runs ever allowed past it cost £5.02 and ~£5.50.
+max_cost_gbp: 6.00
 timeout_seconds: 1800

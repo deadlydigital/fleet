@@ -151,5 +151,12 @@ verification:
 # and this step is deliberately cheap because its whole purpose is to make the
 # expensive step (a code task on a wrong path) not happen.
 max_diff_lines: 400
-max_cost_gbp: 2.00
+# 2.50, measured 11 Sep 2026, was 2.00. Twelve draft specs have completed:
+# mean £1.64, sd £0.29, max £1.97 -- 98% of the old ceiling. That is a
+# distribution pressed against a wall, not one that fits under it, and task 66
+# (run 36) was stopped by the cap having produced no branch and no diff.
+# 2.50 is mean+3sd and 27% above the dearest spec that has ever finished, so a
+# spec that reaches it is an outlier rather than an ordinary long one. This
+# family is tight and well sampled, so it does not need the headroom code does.
+max_cost_gbp: 2.50
 timeout_seconds: 1800

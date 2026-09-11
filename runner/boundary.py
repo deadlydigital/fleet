@@ -79,6 +79,11 @@ class Change:
     paths: list[str] = field(default_factory=list)
     status: dict[str, str] = field(default_factory=dict)   # path -> A/M/D/R
     diff_lines: int = 0
+    #: path -> added+deleted for that path. The total above is the sum, kept
+    #: because it is what every recorded payload has always meant. The split
+    #: lives here because `derive` has git and no contract, and which lines are
+    #: the MANDATED TEST is a question only the contract can answer.
+    lines: dict[str, int] = field(default_factory=dict)
     ignored_writes: list[str] = field(default_factory=list)
     reported: list[str] | None = None      # what the agent SAID. Never consulted.
 
@@ -143,11 +148,16 @@ def derive(worktree: Path, base_sha: str) -> Change:
 
     numstat = git(worktree, "diff", "--numstat", f"{base_sha}..{head_sha}")
     for line in numstat.splitlines():
-        added, deleted, *_ = line.split("\t")
+        if not line.strip():
+            continue
+        added, deleted, path = line.split("\t")[:3]
+        n = 0
         if added != "-":
-            change.diff_lines += int(added)
+            n += int(added)
         if deleted != "-":
-            change.diff_lines += int(deleted)
+            n += int(deleted)
+        change.diff_lines += n
+        change.lines[path] = change.lines.get(path, 0) + n
 
     change.paths = sorted(set(change.paths))
     change.ignored_writes = _ignored_writes(worktree)
@@ -176,6 +186,10 @@ class Boundary:
     over_diff_limit: bool = False
     diff_lines: int = 0
     max_diff_lines: int = 0
+    over_test_limit: bool = False
+    prod_diff_lines: int = 0
+    test_diff_lines: int = 0
+    max_test_diff_lines: int = 0
 
     def reasons(self) -> list[str]:
         out = []
@@ -184,15 +198,23 @@ class Boundary:
         for path in self.outside_writable:
             out.append(f"{path} is outside every writable path")
         if self.over_diff_limit:
-            out.append(f"{self.diff_lines} changed lines exceeds the "
+            # Worded without "production" when there is no test allowance,
+            # because then there is no second category to distinguish from and
+            # the sentence is the one this check has always printed.
+            what = ("changed lines outside the added test"
+                    if self.max_test_diff_lines else "changed lines")
+            out.append(f"{self.prod_diff_lines} {what} exceeds the "
                        f"contract's {self.max_diff_lines}")
+        if self.over_test_limit:
+            out.append(f"{self.test_diff_lines} lines of added test exceeds "
+                       f"the contract's {self.max_test_diff_lines}")
         return out
 
 
 def enforce(change: Change, contract: dict) -> Boundary:
     """Judge the derived change against the contract.
 
-    Three ways to fail, kept apart because they mean different things to the
+    Four ways to fail, kept apart because they mean different things to the
     person reading the branch:
 
       protected      it edited something it was told not to. The suite, the
@@ -201,7 +223,11 @@ def enforce(change: Change, contract: dict) -> Boundary:
                      malicious, usually -- but the contract is the statement
                      of what this task was allowed to be, and a diff wider
                      than that is a diff nobody scoped.
-      over limit     more lines than the contract allows.
+      over limit     more PRODUCTION lines than the contract allows. Too big
+                     to review, which is what max_diff_lines asks.
+      over test      the one added test is longer than its own allowance.
+                     A separate question, and a much rarer answer -- see the
+                     note on the two budgets below.
 
     CREATABLE PATHS: ADD IS PERMITTED, MODIFY IS NOT
     ------------------------------------------------
@@ -249,14 +275,44 @@ def enforce(change: Change, contract: dict) -> Boundary:
         if not matches_any(path, writable):
             outside.append(path)
 
-    over = bool(limit) and change.diff_lines > limit
+    # TWO BUDGETS, BECAUSE THEY ANSWER TWO QUESTIONS
+    #
+    # max_diff_lines asks "is this change too big to review". The test
+    # allowance asks "did you write a thorough test". A single budget makes
+    # them compete, and the competition has a winner: an agent near the ceiling
+    # thins the test, which is the one artefact new_test_bites.sh exists to
+    # make mean something. Measured 11 Sep 2026, both dd_api tasks refused on
+    # size were ordinary changes carrying a mandated test -- 494 = 300 + 194
+    # and 459 = 272 + 187, production code well inside the 400 they broke.
+    #
+    # The test side is exactly what `creatable_paths` admitted: ADDED, and
+    # matching a creatable glob. That is the same predicate used above to let
+    # the file in, and the same one new_test_bites.sh uses to pick the test it
+    # proves, so all three agree on which file is the test by construction.
+    test_limit = int(contract.get("max_test_diff_lines") or 0)
+    test_lines = 0
+    if test_limit:
+        for path, n in change.lines.items():
+            if change.status.get(path) == "A" and matches_any(path, creatable):
+                test_lines += n
+    # Anything the split did not claim counts against the review budget --
+    # including a path git reported in numstat but not in name-status. The
+    # unrecognised case lands on the stricter side on purpose.
+    prod_lines = change.diff_lines - test_lines
+
+    over = bool(limit) and prod_lines > limit
+    over_test = bool(test_limit) and test_lines > test_limit
     return Boundary(
-        clean=not hits and not outside and not over,
+        clean=not hits and not outside and not over and not over_test,
         protected_hits=hits,
         outside_writable=sorted(outside),
         over_diff_limit=over,
         diff_lines=change.diff_lines,
         max_diff_lines=limit,
+        over_test_limit=over_test,
+        prod_diff_lines=prod_lines,
+        test_diff_lines=test_lines,
+        max_test_diff_lines=test_limit,
     )
 
 

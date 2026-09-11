@@ -368,6 +368,12 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         # ---- the boundary, before anything is run ----
         verdict = boundary.enforce(change, contract)
         result.verdict = verdict
+        if verdict.max_test_diff_lines:
+            # Printed whether or not it failed: the split is the thing a
+            # reader needs to see to judge whether either number is right.
+            log(f"  {verdict.prod_diff_lines} production lines of "
+                f"{verdict.max_diff_lines}, {verdict.test_diff_lines} test "
+                f"lines of {verdict.max_test_diff_lines}")
         keep_branch = True
         if not verdict.clean:
             result.outcome = "FAILED"
@@ -635,6 +641,7 @@ def _record_patch(task, run_id, base_sha, change, outcome, log,
             "file_status": change.status,
             "diff_lines": change.diff_lines,
             "ignored_writes": change.ignored_writes,
+            "lines_by_path": change.lines,
             "agent_reported_files": change.reported,
             "divergence": change.divergence,
         })
@@ -682,6 +689,14 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
             "outside_writable": verdict.outside_writable,
             "over_diff_limit": verdict.over_diff_limit,
             "diff_lines": verdict.diff_lines,
+            # diff_lines stays the TOTAL, because that is what every payload
+            # written before 11 Sep 2026 meant and a reader comparing across
+            # runs should not have to know when the split arrived. The two
+            # figures the limits are actually judged against sit beside it.
+            "prod_diff_lines": verdict.prod_diff_lines,
+            "test_diff_lines": verdict.test_diff_lines,
+            "over_test_limit": verdict.over_test_limit,
+            "max_test_diff_lines": verdict.max_test_diff_lines,
         },
     }
     with _connect(config.verifier_dsn()) as conn:

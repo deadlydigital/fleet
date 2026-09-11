@@ -147,5 +147,9 @@ verification:
   - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/candidate_block_shape.py --max-candidates 10
 
 max_diff_lines: 2000
-max_cost_gbp: 5.00
+# 6.00, measured 11 Sep 2026, was 5.00. Three producer runs have completed:
+# £3.84, £4.10, £4.90 -- mean £4.28, sd £0.55, and the dearest is 98% of the
+# old £5.00 ceiling. None has been stopped by it yet, which is the argument for
+# moving it before one is. 6.00 is mean+3sd and 23% above the dearest.
+max_cost_gbp: 6.00
 timeout_seconds: 3600

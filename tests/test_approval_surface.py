@@ -263,7 +263,8 @@ class TestTheMonthlyCredit:
     def test_a_batch_beyond_the_remaining_credit_is_refused(self, console, admin):
         committed = console.execute(
             "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
-        # Room for one draft-spec task at £2.00, and not for two.
+        # Room for one draft-spec task at the contract's ceiling, and not
+        # for two, at any ceiling below £3.
         self._pool(admin, committed + 3)
         b = _batch(console)
         ids = [_cand(console, b, "one"), _cand(console, b, "two")]
@@ -304,9 +305,19 @@ class TestTheMonthlyCredit:
         after = console.execute(
             "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
 
-        # £2.00 is the draft-spec contract's max_cost_gbp, and it is what a
-        # task reserves — not an estimate of what it will probably cost.
-        assert round(after - before, 2) == 2.00
+        # What a task reserves is the draft-spec contract's max_cost_gbp —
+        # not an estimate of what it will probably cost. Read from the real
+        # contract rather than typed, per the conftest rule: approve_batch()
+        # loads the same file at approval time, so a typed literal would stop
+        # testing the link the moment the ceiling moved. It has moved once
+        # already (2.00 -> 2.50, 11 Sep 2026).
+        import yaml
+
+        from console import config
+        cap = float(yaml.safe_load(
+            (config.PROJECT_ROOT / "contracts" / "draft-spec.yaml").read_text()
+        )["max_cost_gbp"])
+        assert round(after - before, 2) == round(cap, 2)
 
     def test_the_ceiling_is_on_tasks_and_not_only_in_the_surface(
         self, console, admin

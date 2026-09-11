@@ -105,6 +105,22 @@ def load_contract(repo: str, path: Path | None = None) -> dict[str, Any]:
     if not contract["verification"]:
         raise RuntimeError(f"{path} declares no verification commands")
 
+    # A CONTRACT THAT MANDATES A TEST MUST BUDGET FOR IT
+    #
+    # creatable_paths is what lets the agent add a test, and new_test_bites.sh
+    # is what makes that test mean something. Before 11 Sep 2026 the lines it
+    # costs came out of max_diff_lines, so the two ceilings competed and the
+    # test lost: both dd_api tasks refused on size were ordinary changes whose
+    # mandated test pushed them over. Declaring the permission without the
+    # allowance recreates that exactly, and silently, so it is refused here
+    # rather than discovered again in a run that has already been paid for.
+    if contract.get("creatable_paths") and not contract.get("max_test_diff_lines"):
+        raise RuntimeError(
+            f"{path} declares creatable_paths but no max_test_diff_lines. A "
+            f"contract that requires an added test must give it its own "
+            f"budget, or the test competes with the change it is testing for "
+            f"room under max_diff_lines.")
+
     # The database refuses this too. Catching it here means the message names
     # the file rather than the trigger.
     clashes = [

@@ -465,7 +465,25 @@ auto_merge: true
 max_requirements: 12
 
 max_diff_lines: 600
-max_cost_gbp: 3.00
+
+# 300, added 11 Sep 2026, same basis and the same provisionality as
+# contracts/deadly-digital-platform-api.yaml -- see the note there, which
+# carries the measurements. This contract has exactly one observation of its
+# own: task 53's test_fleet_order_filters.test.tsx at 190 lines, which merged.
+#
+# max_diff_lines above is unchanged and now counts production lines only, so
+# it loosened by whatever the test costs without the number moving. Task 53's
+# production half was 112 of its 302, which is the only evidence this contract
+# has about its own production sizes -- too little to re-derive 600, so it
+# stands.
+max_test_diff_lines: 300
+# 6.00, measured 11 Sep 2026, was 3.00. PROVISIONAL -- it rests on two
+# observations. The reasoning, the two runs it rests on, and what a
+# re-measurement needs to replace are recorded once in
+# contracts/deadly-digital-platform-api.yaml, because both observations are
+# dd_api runs. In short: £3.00 stopped 4 of 13 code tasks, and the only two
+# code runs ever allowed past it cost £5.02 and ~£5.50.
+max_cost_gbp: 6.00
 # tsc 29s + vitest 65s + the bite check ~9s (two single-file runs) + paired
 # paths ~0s = ~105s of verification, out of one clock shared with the agent.
 timeout_seconds: 1800

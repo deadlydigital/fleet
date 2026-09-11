@@ -89,6 +89,22 @@ until re-measured.** Re-run, do not quote.
 **Read a field before storing a derived copy of it.** A stored value that looked
 obviously right has twice turned out to mean something else.
 
+**A ceiling set without measurement is found wrong by the work, not by review.**
+Three have been, each written when there was nothing of its own kind to
+measure. `max_cost_gbp: 3.00` for code and `max_diff_lines: 400` went into a
+new file together on 30 August, at a moment when exactly one run in the
+system's history had produced a diff — three lines of `dd_docs` — and there
+were no `dd_api` observations at all. `max_cost_gbp: 2.00` for a draft spec
+followed on 7 September, before any draft spec had ever run. Each was found wrong
+the same way: by a task that hit it, produced nothing, and charged for the
+attempt. Nobody reviewing the files caught any of them, because a number with no
+stated derivation gives a reader nothing to disagree with. In the same file,
+`max_requirements: 10` carries its derivation — "the largest dd_api spec that
+merged numbers 5, doubled for headroom" — and it is the only one of the four
+that has never refused anything. **Write the derivation beside the number, and
+if there is nothing to derive it from, say so there in those words.** A ceiling
+marked provisional invites the re-measurement; a bare integer gets believed.
+
 ---
 
 ## What we will not do

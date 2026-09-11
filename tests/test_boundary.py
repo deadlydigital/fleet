@@ -330,3 +330,197 @@ def test_a_contract_with_no_creatable_paths_behaves_exactly_as_before():
         _change({"api/tests/analytics/test_fleet_28_windows.py": "A"}), plain)
     assert not v.clean
     assert v.protected_hits
+
+
+# ---------------------------------------------------------------------------
+# TWO BUDGETS: the production diff and the mandated test are counted apart.
+#
+# Added 11 Sep 2026. The defect these protect is measured, not hypothetical:
+# two dd_api tasks were refused on size whose production halves were well
+# inside the limit they broke, because the test `creatable_paths` requires
+# them to add came out of the same budget as the change it tests.
+#
+#   task 62   494 = 300 production + 194 test   refused against 400
+#   task 67   459 = 272 production + 187 test   refused against 400
+#
+# Both are reproduced below at their real figures.
+# ---------------------------------------------------------------------------
+
+TEST_GLOB = "api/tests/analytics/test_fleet_*.py"
+
+SPLIT_CONTRACT = {
+    "writable_paths": ["api/analytics/services/analytics_engine.py"],
+    "protected_paths": ["api/tests/**", "api/pytest.ini", "api/alembic/**"],
+    "creatable_paths": [TEST_GLOB],
+    "max_diff_lines": 400,
+    "max_test_diff_lines": 300,
+}
+
+
+def _write(repo, rel, churn):
+    """Write `rel` so the derived diff for it is exactly `churn` lines.
+
+    The runner counts added PLUS deleted, and these fixture files are not
+    empty, so replacing one costs its existing length in deletions. The tests
+    below assert real figures from real runs, and they are only those figures
+    if that is taken off here rather than left to drift.
+    """
+    p = _ensure(repo / rel)
+    existing = len(p.read_text().splitlines()) if p.exists() else 0
+    added = churn - existing
+    assert added >= 0, f"{rel} is already {existing} lines, over a {churn} budget"
+    p.write_text("\n".join(f"x{i} = {i}" for i in range(added))
+                 + ("\n" if added else ""))
+
+
+def _verdict(repo, base, contract):
+    boundary.commit_agent_work(repo, "work")
+    return boundary.enforce(boundary.derive(repo, base), contract)
+
+
+def test_the_added_test_does_not_spend_the_production_budget(repo):
+    """Task 67's real shape: 272 production + 187 test, against 400 and 300.
+
+    Under one budget this is 459 against 400 and is refused. It is the change
+    the split exists for, so it is the first thing asserted about it.
+    """
+    base = base_sha(repo)
+    _write(repo, "api/analytics/services/analytics_engine.py", 272)
+    _write(repo, "api/tests/analytics/test_fleet_orders_export.py", 187)
+    verdict = _verdict(repo, base, SPLIT_CONTRACT)
+
+    assert verdict.prod_diff_lines == 272
+    assert verdict.test_diff_lines == 187
+    assert verdict.diff_lines == 459, "the recorded total still means the total"
+    assert not verdict.over_diff_limit
+    assert not verdict.over_test_limit
+    assert verdict.clean
+
+
+def test_task_62s_shape_also_passes(repo):
+    """494 = 300 + 194. The other run refused by the single budget."""
+    base = base_sha(repo)
+    _write(repo, "api/analytics/services/analytics_engine.py", 300)
+    _write(repo, "api/tests/analytics/test_fleet_ltv.py", 194)
+    verdict = _verdict(repo, base, SPLIT_CONTRACT)
+    assert (verdict.prod_diff_lines, verdict.test_diff_lines) == (300, 194)
+    assert verdict.clean
+
+
+def test_the_same_two_changes_are_refused_without_an_allowance(repo):
+    """The broken state, demonstrated rather than described.
+
+    Same diff, same 400, and the only difference is that the contract does not
+    budget for the test it mandates. If this ever stops failing, the split
+    above is no longer doing anything and its passes mean nothing.
+    """
+    base = base_sha(repo)
+    _write(repo, "api/analytics/services/analytics_engine.py", 272)
+    _write(repo, "api/tests/analytics/test_fleet_orders_export.py", 187)
+    no_allowance = {k: v for k, v in SPLIT_CONTRACT.items()
+                    if k != "max_test_diff_lines"}
+    verdict = _verdict(repo, base, no_allowance)
+
+    assert verdict.over_diff_limit
+    assert not verdict.clean
+    assert verdict.prod_diff_lines == 459, "with no allowance, all of it is production"
+    assert verdict.test_diff_lines == 0
+
+
+def test_an_oversized_production_diff_is_still_refused(repo):
+    """The split widens one budget; it does not remove the other."""
+    base = base_sha(repo)
+    _write(repo, "api/analytics/services/analytics_engine.py", 401)
+    verdict = _verdict(repo, base, SPLIT_CONTRACT)
+    assert verdict.over_diff_limit
+    assert not verdict.clean
+    assert "401 changed lines outside the added test exceeds the contract's 400" \
+        in verdict.reasons()
+
+
+def test_an_oversized_test_is_refused_on_its_own_budget(repo):
+    """A ceiling that cannot fire is not a ceiling. 301 against 300."""
+    base = base_sha(repo)
+    _write(repo, "api/analytics/services/analytics_engine.py", 10)
+    _write(repo, "api/tests/analytics/test_fleet_huge.py", 301)
+    verdict = _verdict(repo, base, SPLIT_CONTRACT)
+    assert verdict.over_test_limit
+    assert not verdict.over_diff_limit
+    assert not verdict.clean
+    assert "301 lines of added test exceeds the contract's 300" in verdict.reasons()
+
+
+def test_a_modified_test_is_not_an_added_one(repo):
+    """creatable_paths is ADD-only, and the split follows it exactly.
+
+    A test that already exists is protected, and editing one must not buy the
+    change a second budget to hide production lines in.
+    """
+    base = base_sha(repo)
+    existing = _ensure(repo / "api/tests/analytics/test_fleet_existing.py")
+    existing.write_text("x = 1\n")
+    run(repo, "git", "add", "-A")
+    run(repo, "git", "-c", "user.email=t@t", "-c", "user.name=t",
+        "commit", "-m", "the test already exists")
+    base = base_sha(repo)
+
+    existing.write_text("\n".join(f"y{i} = {i}" for i in range(50)) + "\n")
+    verdict = _verdict(repo, base, SPLIT_CONTRACT)
+
+    assert verdict.test_diff_lines == 0, "modifying a test buys no allowance"
+    assert "api/tests/analytics/test_fleet_existing.py" in verdict.protected_hits
+    assert not verdict.clean
+
+
+def test_a_contract_with_no_allowance_behaves_exactly_as_before(repo):
+    """Every contract without creatable_paths is unchanged by all of this.
+
+    CONTRACT has no creatable_paths and a limit of 100. The message is the one
+    this check has always printed, word for word.
+    """
+    base = base_sha(repo)
+    _write(repo, "api/analytics/services/analytics_engine.py", 101)
+    verdict = _verdict(repo, base, CONTRACT)
+    assert verdict.over_diff_limit
+    assert verdict.test_diff_lines == 0
+    assert verdict.prod_diff_lines == verdict.diff_lines == 101
+    assert "101 changed lines exceeds the contract's 100" in verdict.reasons()
+
+
+def test_a_contract_mandating_a_test_must_budget_for_it(tmp_path):
+    """config.load_contract refuses creatable_paths with no allowance.
+
+    This is the defect made unrepeatable rather than merely fixed. Granting
+    the permission without the budget is exactly the state the api contract
+    was in between 9 and 11 Sep 2026, and it cost two runs that had already
+    been paid for before anyone saw it.
+    """
+    import yaml
+
+    from runner import config
+
+    base = yaml.safe_load(
+        Path("contracts/deadly-digital-platform-api.yaml").read_text())
+    assert base["creatable_paths"] and base["max_test_diff_lines"], \
+        "the fixture is only meaningful if the real contract declares both"
+
+    del base["max_test_diff_lines"]
+    p = tmp_path / "broken.yaml"
+    p.write_text(yaml.safe_dump(base))
+    with pytest.raises(RuntimeError, match="max_test_diff_lines"):
+        config.load_contract(base["repo"], p)
+
+
+def test_every_real_contract_still_loads():
+    """A whole-file assertion, because the rule above can refuse one of ours.
+
+    Reads the real contracts rather than a fixture: conftest's rule is that a
+    test about a ceiling reads the artefact that decides.
+    """
+    import yaml
+
+    from runner import config
+
+    for path in sorted(Path("contracts").glob("*.yaml")):
+        data = yaml.safe_load(path.read_text())
+        config.load_contract(data["repo"], path)

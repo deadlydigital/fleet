@@ -11,7 +11,7 @@ WHAT RANKS, AND WHAT DELIBERATELY DOES NOT
 -------------------------------------------
 Three keys: the work class read off the probes, the band, the candidate id.
 
-COST DOES NOT RANK. Every draft-spec task reserves the same £2.00 from
+COST DOES NOT RANK. Every draft-spec task reserves the same £2.50 from
 contracts/draft-spec.yaml and `est_cost_gbp` is NULL on every row. Cost is a
 CEILING here -- the credit check, the per-task cap, the pace -- and a ceiling is
 not a rank. Ranking on a number that is identical for every row is a way of

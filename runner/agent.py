@@ -233,6 +233,7 @@ def build_prompt(task: dict, contract: dict, *, paths_file=None) -> str:
     protected = "\n".join(f"  - {p}" for p in contract["protected_paths"])
     creatable_note = _creatable_note(contract)
     paired_note = _paired_note(contract)
+    size_note = _size_note(contract)
     cite_note = _cite_note(task, contract)
     paths_note = ""
     if paths_file:
@@ -267,7 +268,7 @@ require editing a protected path, stop and say so instead: a branch that
 explains why it could not be done is useful, and one that quietly widened its
 own boundary is not.
 {creatable_note}{paired_note}{cite_note}
-Keep the whole change under {contract['max_diff_lines']} changed lines.
+{size_note}
 Do not commit anything. Do not create branches. Do not run git.
 
 When you are finished, end your reply with a JSON block listing every file
@@ -280,6 +281,42 @@ you changed, relative to the repository root:
 That list is recorded but is not what decides whether the branch is accepted.
 The runner derives the real diff from git and judges that.
 """
+
+
+def _size_note(contract: dict) -> str:
+    """The size budget, in the units the runner actually counts.
+
+    TWO NUMBERS, BECAUSE A SINGLE ONE PENALISED THE TEST. Measured 11 Sep
+    2026: the two dd_api tasks refused on size were 494 = 300 production + 194
+    test and 459 = 272 + 187. Both were ordinary changes whose mandated test
+    pushed the total over a limit set before tests were mandated. An agent
+    rationing one budget across both thins the test, and the test is the one
+    artefact new_test_bites.sh exists to make mean something.
+
+    SAYING "ADDED AND DELETED" IS THE POINT. The runner counts
+    `git diff --numstat` added PLUS deleted, so rewriting 200 lines scores 400.
+    "Changed lines" read as "lines of change" to anyone who had not read
+    boundary.derive, which is everyone the prompt is addressed to.
+
+    The agent has Read/Edit/Write/Grep/Glob and no Bash, and is told not to run
+    git, so it cannot measure any of this. These are estimates it is being
+    asked to keep, and the wording says so rather than implying a meter.
+    """
+    limit = contract["max_diff_lines"]
+    test_limit = contract.get("max_test_diff_lines")
+    counted = ("Lines are counted as added PLUS deleted, so replacing a line "
+               "costs two. You cannot run git, so keep a rough tally as you "
+               "go rather than checking.")
+    if not test_limit:
+        return (f"Keep the whole change under {limit} changed lines. {counted}")
+    return f"""## Two size budgets, and they do not share
+
+Keep the change under {limit} changed lines, NOT counting the test file you
+add. {counted}
+
+The test file has its own budget of {test_limit} lines and does not come out of
+the {limit}. Write the test the change deserves: a thorough test is the point of
+being allowed to add one, and thinning it to save room buys you nothing here."""
 
 
 def parse_report(text: str) -> list[str] | None:

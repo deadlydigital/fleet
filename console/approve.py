@@ -74,6 +74,11 @@ def _draft_spec_contract() -> tuple[Dict[str, Any], float, int, str]:
         "worktree_links": data.get("worktree_links", {}),
         "max_diff_lines": data["max_diff_lines"],
     }
+    # draft-spec.yaml declares neither today. Carried anyway so that adding a
+    # test mandate to it later cannot silently drop the allowance here.
+    for opt in ("creatable_paths", "max_test_diff_lines"):
+        if data.get(opt) is not None:
+            contract[opt] = data[opt]
     return (contract, float(data["max_cost_gbp"]),
             int(data["timeout_seconds"]), str(data["base_branch"]))
 
@@ -424,8 +429,9 @@ def approve_batch(*, reason: str, approve_ids: List[int],
         # 500.
         #
         # Reserved at max_cost_gbp, NOT at the candidate's est_cost_gbp, which
-        # is why est_cost_gbp is still only displayed. Two of the eight settled
-        # runs on this host landed at exactly their max_cost_gbp, because
+        # is why est_cost_gbp is still only displayed. Five of the thirty-five
+        # settled runs on this host landed at exactly their max_cost_gbp
+        # (re-counted 11 Sep 2026; it was two of eight), because
         # settle_model_budget() refuses an actual above the reservation and
         # settles at the bound. An estimate calibrated against figures that are
         # themselves clipped at the cap under-counts precisely the runs worth

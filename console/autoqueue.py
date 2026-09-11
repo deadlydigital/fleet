@@ -422,9 +422,12 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
             "verification": list(contract.get("verification") or []),
             "max_diff_lines": contract.get("max_diff_lines"),
         }
-        for opt in ("creatable_paths", "paired_paths", "worktree_links",
-                    "readable_repos", "agent_tools", "auto_merge",
-                    "contract_version"):
+        # max_test_diff_lines travels with creatable_paths or the task loses
+        # its test allowance and the boundary falls back to one budget --
+        # §9.4's flattened objective_ref, arriving by the same route.
+        for opt in ("creatable_paths", "max_test_diff_lines", "paired_paths",
+                    "worktree_links", "readable_repos", "agent_tools",
+                    "auto_merge", "contract_version"):
             if contract.get(opt) is not None:
                 frozen[opt] = contract[opt]
         links.append({"position": n, "block": block, "work_type": work_type,
