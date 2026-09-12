@@ -190,3 +190,65 @@ To stop it without touching the runner or the merge:
 **It is scoped and it has a stated end condition.** `specs/auto-approval.md` §0:
 this is reversed once Deadly Digital has a customer. If it has one and this
 timer is still enabled, that is the bug.
+
+---
+
+## The chain: one timer where there were three
+
+**12 September 2026. `specs/one-entry-point.md`.**
+
+`fleet-chain` replaces the three timers that encoded the chain's order in a
+clock: `fleet-autoapprove.timer` (01:30), `fleet-runner.timer` (02:00–04:00,
+every 20 minutes) and `fleet-automerge.timer` (03:30). Those three got the
+order wrong in one specific way — a task finishing at 03:40 had missed the
+night's only merge slot and waited a day for a decision that takes seconds.
+
+    sudo cp fleet-chain.service fleet-chain.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl disable --now fleet-autoapprove.timer
+    sudo systemctl disable --now fleet-runner.timer
+    sudo systemctl disable --now fleet-automerge.timer
+    sudo systemctl enable --now fleet-chain.timer
+
+**The three `.timer` FILES are gone from this repository and the three
+`.service` files are not.** That is the whole arrangement:
+`run_automerge.py` argues for its own separation on the ground that "at 3am on
+a bad night the thing you want to stop is one of the three, not all of them",
+and that argument is about stopping a stage rather than scheduling one. So the
+services stay, timerless, and `systemctl start fleet-automerge` still runs that
+stage alone. `run_task.py --task 69` is unchanged.
+
+**Removing the timer files does not disable the timers.** They are installed
+under `/etc/systemd/system/` and enabled; until the `disable` lines above are
+run they keep firing, and running both them and the chain means two things
+claiming the same queue. `chain.py` takes no lock against that — `claim_task`'s
+`FOR UPDATE SKIP LOCKED` stops two builders taking the same task, but nothing
+stops two approvals in one night.
+
+**Stopping a stage inside a running loop is a file edit, not a systemctl
+command.** `chain.yaml` carries a switch per stage, read at the top of every
+pass, so a stage turned off mid-run takes effect on the next pass:
+
+    stages:
+      build: true
+      merge: false      # merge nothing tonight; keep building
+      approve: true
+
+**The loop owns its clock.** `chain.yaml`'s `wall_clock_seconds` (7200) is the
+mechanism; `fleet-chain.service`'s `TimeoutStartSec=10800` is a backstop that
+should never fire. `fleet-runner.service`'s 4200 was sized for one task, and a
+chain that builds two or three exceeds it — being killed by systemd mid-merge
+is the hardest failure to read in the morning.
+
+`fleet-autodeploy.timer` is untouched. Accept and deploy stay yours.
+
+### A correction to the section above
+
+This file says of auto-approval: *"The unit runs with `--dry-run` and that is
+the whole point of this stage."* It does not, and has not for some time —
+`fleet-autoapprove.service`'s `ExecStart` carries no `--dry-run`, and the
+installed copy matches the repository byte for byte. The paragraph describing
+how to remove the flag describes a flag that is not there. Whoever removed it
+did not update this file; noted here rather than silently corrected above,
+because the interesting fact is that the README and the unit disagreed for
+long enough that nobody noticed.

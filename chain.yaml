@@ -1,0 +1,44 @@
+# The loop's settings. specs/one-entry-point.md §4.
+#
+# A FILE RATHER THAN A TABLE, for the reason runner.yaml gives about its own
+# thresholds: "retuning one must not be a redeploy". Turning a stage off at 3am
+# on a bad night must not need an edit, a restart and a credential. A table was
+# the other candidate and needs fleet_owner, which three other pieces of work
+# are already queued behind.
+
+# Per-stage switches, read at the top of EVERY pass rather than once at start,
+# so a stage turned off mid-run takes effect on the next pass instead of at the
+# next invocation.
+#
+# This is what replaces "stop one unit at 3am". The four services are kept and
+# are timerless, so `systemctl start fleet-automerge` still runs that stage
+# alone -- but stopping a stage inside a running loop is a file edit, and these
+# are the flags it edits.
+stages:
+  build: true
+  merge: true
+  approve: true
+
+# THE LOOP'S OWN DEADLINE, and the reason it has one.
+#
+# fleet-runner.service carries TimeoutStartSec=4200, sized for ONE task. A chain
+# that builds two or three exceeds it, and being killed by systemd mid-merge is
+# the hardest failure to read in the morning: the merge either happened or did
+# not, the decision row either exists or does not, and the journal stops
+# mid-sentence.
+#
+# So the loop stops itself. The deadline is checked BETWEEN stages and never
+# inside one -- a stage that has started is allowed to finish -- and
+# fleet-chain.service's TimeoutStartSec sits well above this as a backstop that
+# should never fire.
+#
+# 7200 = two hours. Sized against measurement, not preference: a dd_api task is
+# ~14 minutes of verification plus the agent's time, the pace ceiling is one
+# candidate a night, and a full chain is a draft spec plus its code task plus
+# two merges. Two hours covers that twice over and still ends before the box's
+# morning traffic.
+wall_clock_seconds: 7200
+
+# Restrict the loop to one queue, as run_task.py --queue does. null is every
+# queue, which is what a single-queue fleet wants.
+queue: null

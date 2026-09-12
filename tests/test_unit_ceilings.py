@@ -22,7 +22,13 @@ UNITS = Path(__file__).resolve().parent.parent / "systemd"
 #: Every unit that runs `runner.verify.run` against a contract's commands.
 #: fleet-autoapprove is deliberately NOT here: it re-executes a candidate's
 #: PROBES -- path_exists and grep_count -- and never runs a contract.
-VERIFYING_UNITS = ("fleet-runner", "fleet-console", "fleet-automerge")
+VERIFYING_UNITS = ("fleet-runner", "fleet-console", "fleet-automerge",
+                   # 12 Sep 2026: the loop runs the runner's stage AND the
+                   # merge stage in one process, so it runs both verification
+                   # paths and must carry the same answer to "how much memory
+                   # may that take". A fourth unit with a fourth ceiling is
+                   # exactly what task 53 was killed by.
+                   "fleet-chain")
 
 #: MiB, the heaviest verification sequence measured 11 Sep 2026, whole and
 #: inside the units' own confinement, read from the cgroup's memory.peak.
@@ -200,11 +206,29 @@ class TestTheThreeAgreeOnEverythingThatDecidesAPass:
             ["systemctl", "show", f"{unit}.service", "-p", prop, "--value"],
             capture_output=True, text=True).stdout.strip()
 
+    def _installed(self, units):
+        """Only the units this host actually has. AN UNINSTALLED UNIT IS NOT A
+        DISAGREEMENT, and reading it as one is a false failure that teaches
+        people to ignore this test.
+
+        `systemctl show` answers for a unit it has never heard of, with
+        DEFAULTS -- MemoryMax=infinity, ProtectSystem=(empty). So a unit added
+        to the repository and not yet installed reports a ceiling of infinity
+        and fails every comparison here, saying the units disagree when what is
+        true is that one of them is not on the box. The repo-file class above
+        is what covers an uninstalled unit; this class compares what is running.
+        """
+        return [u for u in units
+                if (Path("/etc/systemd/system") / f"{u}.service").exists()]
+
     @pytest.mark.skipif(not Path("/run/systemd/system").exists(),
                         reason="no systemd on this host")
     @pytest.mark.parametrize("prop", MUST_AGREE)
     def test_the_three_units_agree(self, prop):
-        seen = {u: self._show(u, prop) for u in VERIFYING_UNITS}
+        units = self._installed(VERIFYING_UNITS)
+        if len(units) < 2:
+            pytest.skip("fewer than two of the verifying units are installed")
+        seen = {u: self._show(u, prop) for u in units}
         if not any(seen.values()):
             pytest.skip(f"{prop} is not reported on this systemd")
         assert len(set(seen.values())) == 1, (

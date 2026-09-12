@@ -1,0 +1,27 @@
+[Unit]
+Description=fleet chain, nightly
+Documentation=file:/home/ubuntu/fleet/specs/one-entry-point.md
+
+[Timer]
+Unit=fleet-chain.service
+# ONE FIRE, WHERE THERE WERE FOURTEEN.
+#
+# It replaces fleet-autoapprove.timer (01:30), fleet-runner.timer (02:00-04:00
+# every 20 minutes, seven fires) and fleet-automerge.timer (03:30). Those three
+# encoded the chain's order in a clock, and got it wrong in one specific way: a
+# task finishing at 03:40 had missed the night's only merge slot and waited a
+# day for a decision that takes seconds. A loop does not need the clock to know
+# what follows what.
+#
+# 02:00, which is where the runner's window opened. Not 01:30: the loop drains
+# before it adds, so approval happens inside the run rather than ahead of it.
+OnCalendar=*-*-* 02:00:00
+AccuracySec=1m
+# NOT Persistent, on the same argument the three timers it replaces all made: a
+# missed slot is a night nobody ran, which is the safe direction, and the next
+# slot considers the same work anyway. A chain that catches up after a reboot
+# would start unattended at whatever hour the box came back.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

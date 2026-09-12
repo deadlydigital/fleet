@@ -1,0 +1,86 @@
+[Unit]
+Description=Fleet chain: approve, build, merge, until nothing is left
+Documentation=file:/home/ubuntu/fleet/specs/one-entry-point.md
+After=network-online.target
+Wants=network-online.target
+
+# Every fleet unit reports its own failure. Without this a unit that fails
+# to start is silent: systemd knows, the brief cannot say so, and the
+# failure waits for somebody to run a sweep. See
+# systemd/fleet-unit-failed@.service.
+OnFailure=fleet-unit-failed@%n.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fleet
+ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_chain.py
+
+# 0 ONLY, and the loop's exit codes are chosen to suit it.
+#
+# run_chain.py exits 0 when the loop ran out of work or stopped on its own
+# clock -- an idle night is an ordinary night, which is run_autoapprove.py's
+# precedent and the reason approving nothing is not a failure. It exits 1 on
+# the two safety stops (the credit ceiling, the same task failing twice) and on
+# the pass ceiling, all three of which belong in `systemctl --failed` because
+# all three mean the loop stopped early and somebody should read why.
+SuccessExitStatus=0
+
+# THE BACKSTOP, NOT THE MECHANISM, and this is the one line that differs in
+# kind from fleet-runner.service's.
+#
+# The runner's TimeoutStartSec=4200 is sized for ONE task. A chain that builds
+# two or three exceeds it, and being killed by systemd mid-merge is the hardest
+# failure to read in the morning: the merge either happened or did not, the
+# decision row either exists or does not, and the journal stops mid-sentence.
+#
+# So the loop carries its own deadline -- chain.yaml's wall_clock_seconds,
+# 7200 -- and checks it BETWEEN stages, never inside one. This number sits an
+# hour above that so it can only fire if the loop's own clock has failed to,
+# which is a bug rather than a long night.
+TimeoutStartSec=10800
+
+SyslogIdentifier=fleet-chain
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+# THE UNION OF WHAT IT HOSTS. This unit runs the runner's stage AND the merge
+# stage in one process, so it needs both sets of exceptions and nothing beyond
+# them. Each is argued for where it was first granted:
+#
+#   .fleet-worktrees   the worktree created and destroyed every build
+#   deadly-digital-platform   git worktree/branch/push writes .git; the working
+#                      tree is never touched and worktree.Untouched asserts it
+#   fleet              the same, for draft-spec and research tasks
+#   .claude*           the agent CLI's own state; without it the tick fails
+#                      inside _execute with an attempt already spent
+#   trial clones       automerge's merge is made in a throwaway clone, under
+#                      the trial root, and promoted rather than rebuilt
+ReadWritePaths=/home/ubuntu/.fleet-worktrees
+ReadWritePaths=/home/ubuntu/deadly-digital-platform
+ReadWritePaths=/home/ubuntu/fleet
+ReadWritePaths=/home/ubuntu/.claude
+ReadWritePaths=/home/ubuntu/.claude.json
+ReadWritePaths=/home/ubuntu/.cache/claude-cli-nodejs
+
+# THE SAME SOCKET POLICY AND THE SAME CEILING AS THE THREE UNITS THAT DECIDE A
+# PASS, because this unit now runs both of their verification paths in one
+# process. fleet-runner, fleet-console and fleet-automerge were found carrying
+# three different answers to "how much memory may verification take" -- and
+# task 53's tsc exited 134 under automerge's 512M and was rendered as "the
+# branch verifies on its own and FAILS when merged into main as it stands now".
+#
+# A fourth unit running the same commands under a fourth ceiling would
+# reintroduce exactly that, so this one joins VERIFYING_UNITS in
+# tests/test_unit_ceilings.py rather than choosing its own number.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+MemoryAccounting=yes
+MemoryMax=2G
+
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
