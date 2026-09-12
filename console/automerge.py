@@ -397,20 +397,38 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
 
     for task in waiting:
         tid = task["id"]
-        run = None
-        with db.connect() as conn:
-            r = conn.execute(
-                "SELECT id FROM runs WHERE task_id = %s ORDER BY id DESC LIMIT 1",
-                (tid,)).fetchone()
-            run = r["id"] if r else None
-            patch = conn.execute(
-                "SELECT s.payload FROM run_steps s JOIN runs r ON r.id = s.run_id"
-                " WHERE r.task_id = %s AND s.step_type = 'PATCH_PROPOSED'"
-                " ORDER BY s.id DESC LIMIT 1", (tid,)).fetchone()
-        patch = (patch or {}).get("payload") or {}
         repo = config.repo_root() / task["repo"]
         branch = task["branch_name"]
         contract = task["acceptance_contract"] or {}
+
+        # THE RUN IS THE ONE THAT PRODUCED THIS BRANCH, not the newest one.
+        #
+        # This took the newest patch step, which was the same row right up
+        # until 038 made it possible for branch_name to point at an earlier
+        # run's branch. On task 69 -- adopted at fleet/task-69.3 from run 44 --
+        # the newest step belonged to run 45 and fleet/task-69.4, so this swept
+        # one branch and checked another. It refused, which is the right
+        # failure and not a reason to leave it: a sweep whose refusal names the
+        # wrong two shas sends somebody to look for tampering that never
+        # happened. See console.queries.PATCH_FOR_TIP.
+        tip = merge.branch_tip(repo, branch or "")
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT s.run_id, s.payload FROM run_steps s"
+                " JOIN runs r ON r.id = s.run_id"
+                " WHERE r.task_id = %s AND s.step_type = 'PATCH_PROPOSED'"
+                "   AND s.payload->>'patch_commit_sha' = %s"
+                " ORDER BY s.run_id DESC LIMIT 1", (tid, tip)).fetchone() if tip else None
+        if row is None:
+            reason = (f"no run of this task recorded {branch} at the commit it "
+                      f"is on, so nothing says what would merge")
+            log(f"task {tid}: left for review — {reason}")
+            out.append({"task_id": tid, "merged": False, "reason": reason})
+            continue
+        patch = row["payload"] or {}
+        # The run whose verdict this merge would be standing on, which is now
+        # the run that built the branch rather than whichever ran last.
+        run = row["run_id"]
 
         with db.connect() as conn:
             chain = chain_state(conn, tid)

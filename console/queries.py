@@ -94,6 +94,33 @@ SELECT sequence, step_type, actor, created_at, payload
   FROM run_steps WHERE run_id = %(run_id)s ORDER BY sequence
 """
 
+# THE RUN THAT PRODUCED THIS BRANCH, IDENTIFIED BY THE COMMIT IT RECORDED.
+#
+# Not the newest run. Every reader here used to take the newest -- TASK_DETAIL
+# still does for the page's run panel -- and that was correct only because the
+# runner writes branch_name from the run it has just finished, so "the task's
+# branch" and "the newest run's patch" were the same thing by construction.
+# 038's adoption is the first operation that points branch_name at an OLDER
+# run's branch, and the moment it did, accept() and automerge began comparing
+# task 69's adopted branch (fleet/task-69.3, run 44) against the patch sha of
+# run 45, which had verified fleet/task-69.4. Two branches, one comparison, and
+# a refusal that read as though the branch had been tampered with.
+#
+# So the run is selected by the tip the caller is actually holding. Recency was
+# standing in for identity; this asks for identity.
+#
+# Newest first among matches: a re-run that somehow reproduced a commit exactly
+# would give two rows saying the same thing, and the later one is the one whose
+# checks are current.
+PATCH_FOR_TIP = """
+SELECT s.run_id, s.payload
+  FROM run_steps s JOIN runs r ON r.id = s.run_id
+ WHERE r.task_id = %(task_id)s
+   AND s.step_type = 'PATCH_PROPOSED'
+   AND s.payload->>'patch_commit_sha' = %(tip)s
+ ORDER BY s.run_id DESC LIMIT 1
+"""
+
 # Both sides of the budget. `runs.committed_gbp` cannot say on its own whether
 # a reservation was exceeded: settle_model_budget refuses an actual above the
 # reservation and settles at the cap, so the overspend is only visible by
@@ -328,6 +355,18 @@ def task_runs(task_id: int) -> list[dict[str, Any]]:
 
 def run_steps(run_id: int) -> list[dict[str, Any]]:
     return db.rows(RUN_STEPS, {"run_id": run_id}) if run_id else []
+
+
+def patch_for_tip(task_id: int, tip: str) -> dict[str, Any] | None:
+    """The run that recorded this commit as its patch, or None.
+
+    None is a refusal and never a reason to fall back to the newest run: if no
+    run of this task verified the commit the branch is sitting on, there is
+    nothing that says anything about what would merge. See PATCH_FOR_TIP.
+    """
+    if not tip:
+        return None
+    return db.one(PATCH_FOR_TIP, {"task_id": task_id, "tip": tip})
 
 
 def run_budget(run_id: int) -> list[dict[str, Any]]:

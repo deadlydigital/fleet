@@ -312,6 +312,109 @@ class TestTheTreeIsAskedTheTwoQuestionsTheRowCannotAnswer:
                                (task,)).fetchone()["status"] == "FAILED"
 
 
+# ---- the readers pick their run by the branch, not by recency ---------------
+
+class TestRecencyIsNotIdentity:
+    """What adoption broke the first time it was used, and how it was found.
+
+    Every reader took the NEWEST run of a task and treated its patch step as
+    the thing to check `branch_name` against. That was correct only because the
+    runner writes branch_name from the run it has just finished, so the two
+    were the same row BY CONSTRUCTION. Adoption is the first operation that
+    points branch_name at an older run's branch.
+
+    On the first adoption -- task 69, fleet/task-69.3 from run 44 -- the accept
+    page compared that branch's tip against run 45's patch sha, which belonged
+    to fleet/task-69.4, and reported: "fleet/task-69.3 is at cb4b80f5841c but
+    the run verified c585d46faf8b." Two branches, one comparison, and a
+    sentence that reads as tampering.
+
+    IT FAILED CLOSED, which is the only reason this is a test rather than an
+    incident: preflight refuses on tip mismatch, so nothing merged and nothing
+    could be accepted. The task was stuck, not at risk.
+    """
+
+    @pytest.fixture
+    def two_runs(self, console, runner, agent_conn, verifier_conn, repo):
+        """Task 69's shape: an older green run, a newer one on another branch."""
+        sh(repo, "git", "checkout", "-q", "-b", "fleet/task-1.2", "main")
+        (repo / "thing.py").write_text("value = 99\n")
+        sh(repo, "git", "commit", "-qam", "the rebuild")
+        sh(repo, "git", "checkout", "-q", "main")
+
+        task = failed_task(console, runner, verifier_conn, repo)   # run A, .3-like
+        older = runner.execute(
+            "SELECT id FROM runs WHERE task_id=%s ORDER BY id DESC LIMIT 1",
+            (task,)).fetchone()["id"]
+        agent_conn.execute(
+            "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
+            " VALUES (%s, 1, 'PATCH_PROPOSED', 'fleet-runner/agent', %s)",
+            (older, Jsonb({"base_commit_sha": base_sha(repo),
+                           "patch_commit_sha": head_sha(repo, "fleet/task-1")})))
+        newer = runner.execute(
+            "INSERT INTO runs (task_id, work_type, contract_version,"
+            " spend_limit_gbp, status) VALUES (%s, 'dd_api', 1, 3.00, 'FAILED')"
+            " RETURNING id", (task,)).fetchone()["id"]
+        # Committed before the agent references it: two connections, and the
+        # second cannot see the first's uncommitted row.
+        runner.commit()
+        agent_conn.execute(
+            "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
+            " VALUES (%s, 1, 'PATCH_PROPOSED', 'fleet-runner/agent', %s)",
+            (newer, Jsonb({"base_commit_sha": base_sha(repo),
+                           "patch_commit_sha": head_sha(repo, "fleet/task-1.2")})))
+        agent_conn.commit()
+        return task, older, newer
+
+    def test_the_query_finds_the_run_by_the_commit(self, dsns, two_runs, repo,
+                                                    monkeypatch):
+        from console import queries
+        task, older, newer = two_runs
+        assert queries.patch_for_tip(task, head_sha(repo))["run_id"] == older
+        assert queries.patch_for_tip(
+            task, head_sha(repo, "fleet/task-1.2"))["run_id"] == newer
+
+    def test_the_adopted_branch_selects_its_own_run_not_the_newest(
+            self, dsns, console, runner, verifier_conn, two_runs, repo, settings):
+        """The exact inversion: branch_name is the OLDER run's branch."""
+        from console import app
+        task, older, newer = two_runs
+        row = console.execute("SELECT * FROM tasks WHERE id=%s", (task,)).fetchone()
+        run_id, patch, tip = app._patch_for_branch(row)
+        assert run_id == older, "the newest run verified a different branch"
+        assert patch["patch_commit_sha"] == head_sha(repo)
+        assert tip == head_sha(repo)
+
+    def test_a_commit_nothing_verified_is_a_refusal_and_not_the_newest_run(
+            self, dsns, console, runner, verifier_conn, two_runs, repo, settings):
+        """The guard preflight was built for, kept: a commit appended after
+        verification must not silently borrow another run's shas."""
+        from console import app
+        task, older, newer = two_runs
+        sh(repo, "git", "checkout", "-q", "fleet/task-1")
+        (repo / "thing.py").write_text("value = 4\n")
+        sh(repo, "git", "commit", "-qam", "appended after the checks")
+        sh(repo, "git", "checkout", "-q", "main")
+        row = console.execute("SELECT * FROM tasks WHERE id=%s", (task,)).fetchone()
+        run_id, patch, tip = app._patch_for_branch(row)
+        assert run_id is None and patch == {}
+        assert tip == head_sha(repo), "the tip resolved; it is the RUN that is missing"
+
+    def test_a_branch_git_cannot_resolve_is_a_different_nothing(
+            self, dsns, console, runner, verifier_conn, two_runs, repo, settings):
+        """No checkout, no ref, no git -- preflight's sentence, not this one.
+        Reporting 'nothing verified this branch' for a branch that does not
+        exist is the same substitution pointed the other way."""
+        from console import app
+        task, _older, _newer = two_runs
+        console.execute("UPDATE tasks SET branch_name='fleet/task-nope'"
+                        " WHERE id=%s", (task,))
+        console.commit()
+        row = console.execute("SELECT * FROM tasks WHERE id=%s", (task,)).fetchone()
+        run_id, patch, tip = app._patch_for_branch(row)
+        assert run_id is None and tip == ""
+
+
 # ---- the reimplementation is pinned to the original -------------------------
 
 class TestGreenMeansWhatRunnerVerifyMeansByIt:

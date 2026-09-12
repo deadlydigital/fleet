@@ -132,6 +132,38 @@ the figure that shapes the test is guidance in the prompt that nothing enforces.
 **Before adding a gate, ask which of the ones already there would have caught
 it**; before keeping one, ask what it has caught that they did not.
 
+**A property that holds by construction stops holding when something new stops
+constructing it — and nothing tells you.** Every console reader identified "the
+task's run" as the newest run of that task, and compared `branch_name` against
+its recorded patch commit. That was correct for as long as the runner was the
+only thing writing `branch_name`, because it writes it from the run it has just
+finished: recency and identity were the same row, guaranteed by the one writer.
+038's adoption is the first operation that points `branch_name` at an *older*
+run's branch, and on the first adoption the accept page compared
+`fleet/task-69.3` against the patch sha of the run that had verified
+`fleet/task-69.4`, reporting a verified branch as though it had been tampered
+with. The readers were never checked against the new writer. **When you add a
+writer, list the readers that depended on there being only one** — the fix here
+was to ask for identity directly (the run that recorded *this* commit) instead
+of accepting recency as its proxy.
+
+This is the third of its shape. The frozen contract: `max_test_diff_lines` in
+the yaml was the value the gate used, until tasks started carrying a frozen
+copy and the yaml stopped reaching a queued task. The stale console: the
+process enforced the rules of whenever it was last restarted, which was the
+same thing as the rules in the tree until a deploy lagged. Each was a
+coincidence doing load-bearing work, and each was found by the work rather than
+by review. **The coincidence is worth naming in the comment at the point it is
+relied on**, because that is the only place the next person can see that it is
+one.
+
+It failed closed, and that is the only reason this is a paragraph rather than
+an incident: `merge.preflight` refuses on a tip mismatch, so nothing merged,
+the sweep logged `left for review`, and Accept could not proceed. Task 69 was
+stuck, not at risk. **A guard that refuses on a state it does not understand is
+doing its job even when the state is the guard's own fault** — the cost was a
+confusing sentence and an afternoon, not a bad merge.
+
 **A retry is a re-roll, not a retry.** `max_attempts` reads as "try again" and
 means "draw again". Task 69 ran four times from one spec and one base commit,
 nothing about its inputs changing between them, and produced tests of 377, 606,
