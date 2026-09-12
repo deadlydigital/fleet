@@ -132,6 +132,20 @@ the figure that shapes the test is guidance in the prompt that nothing enforces.
 **Before adding a gate, ask which of the ones already there would have caught
 it**; before keeping one, ask what it has caught that they did not.
 
+**A retry is a re-roll, not a retry.** `max_attempts` reads as "try again" and
+means "draw again". Task 69 ran four times from one spec and one base commit,
+nothing about its inputs changing between them, and produced tests of 377, 606,
+439 and 385 lines — four different pieces of work, not four attempts at one.
+The third passed every check its contract has. The fourth, queued only to
+regenerate the third because there was no way to keep it, cleared the gate and
+failed on a single new import-sort finding. £3.32 to replace a verified branch
+with a broken one. So a second draw is as likely to be worse as better, and
+re-queueing a task that produced something good is a decision to throw that
+away — which is worth saying out loud, because the word on the column does not
+say it. **Keep what verified.** 038 exists so that a branch whose recorded
+checks were green can be adopted rather than redrawn, and the only reason it
+was ever redrawn is that nothing could reach it.
+
 ---
 
 ## What we will not do
