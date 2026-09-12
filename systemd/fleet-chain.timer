@@ -15,7 +15,7 @@ Unit=fleet-chain.service
 #
 # 02:00, which is where the runner's window opened. Not 01:30: the loop drains
 # before it adds, so approval happens inside the run rather than ahead of it.
-OnCalendar=*-*-* 02:00:00
+OnCalendar=*-*-* 08,12,16,20:00:00
 AccuracySec=1m
 # NOT Persistent, on the same argument the three timers it replaces all made: a
 # missed slot is a night nobody ran, which is the safe direction, and the next
