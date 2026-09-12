@@ -283,6 +283,50 @@ The runner derives the real diff from git and judges that.
 """
 
 
+#: What fraction of the enforced test ceiling the agent is actually TOLD.
+#:
+#: THE NUMBER IN THE PROMPT IS AN ANCHOR, NOT A CONSTRAINT, and that is
+#: measured. Task 69 ran the same spec off the same base twice with nothing
+#: different but this sentence:
+#:
+#:     told 300   ->  wrote 377   (126%)   refused
+#:     told 600   ->  wrote 606   (101%)   refused
+#:
+#: and task 67 landed at 298 against 300 (99%). An agent with no meter, keeping
+#: a rough hand tally, writes to the figure it is given and lands on it or just
+#: past it. When the figure it is given IS the figure the gate enforces, that
+#: overshoot is a refusal every time, and a refusal costs a whole run.
+#:
+#: So the two stop being the same number. The contract's max_test_diff_lines
+#: stays what it always was -- the most test a reviewer will take, and the
+#: thing boundary.enforce refuses against. The prompt gets a target below it,
+#: and the gap absorbs the overshoot instead of the gate turning it into a
+#: dead run.
+#:
+#: 0.75, sized on the one overshoot there is to size it on. The worst measured
+#: is +26% (377 written against a 300 target), and 0.75 * 1.26 = 0.945, so that
+#: same overshoot lands at 94.5% of the ceiling instead of through it. 0.8
+#: fails this arithmetic -- 0.8 * 1.26 = 1.008 -- which is not a rounding
+#: quibble but the difference between a branch and a dead run.
+#:
+#: Concretely, and this is the check that matters: dd_api's 400 ceiling now
+#: tells the agent 300. 300 is exactly the target task 69 was working to when
+#: it wrote 377, and 377 is 23 lines INSIDE 400. The arrangement admits the
+#: run that started all of this, on that run's own measured behaviour.
+#:
+#: NOT APPLIED TO max_diff_lines. No production overshoot has ever been
+#: measured -- task 62 landed on 300 of 400, task 69 on 318 -- so a gap there
+#: would be the unmeasured headroom this system has now been wrong about three
+#: times. When a production diff is refused for overshooting its target, that
+#: is the measurement, and it costs one run to get.
+TEST_TARGET_FRACTION = 0.75
+
+
+def test_target(test_limit: int) -> int:
+    """The test figure the PROMPT carries, under the ceiling the gate keeps."""
+    return int(test_limit * TEST_TARGET_FRACTION)
+
+
 def _size_note(contract: dict) -> str:
     """The size budget, in the units the runner actually counts.
 
@@ -292,6 +336,13 @@ def _size_note(contract: dict) -> str:
     pushed the total over a limit set before tests were mandated. An agent
     rationing one budget across both thins the test, and the test is the one
     artefact new_test_bites.sh exists to make mean something.
+
+    THE TEST FIGURE HERE IS A TARGET, NOT THE CEILING. See
+    TEST_TARGET_FRACTION: the ceiling is in the contract, the target is 80% of
+    it, and the prompt names only the target. The agent is not told the
+    ceiling, deliberately -- telling it both numbers would just move the anchor
+    back to the larger one, which is the whole finding this arrangement rests
+    on.
 
     SAYING "ADDED AND DELETED" IS THE POINT. The runner counts
     `git diff --numstat` added PLUS deleted, so rewriting 200 lines scores 400.
@@ -309,14 +360,18 @@ def _size_note(contract: dict) -> str:
                "go rather than checking.")
     if not test_limit:
         return (f"Keep the whole change under {limit} changed lines. {counted}")
+    target = test_target(test_limit)
     return f"""## Two size budgets, and they do not share
 
 Keep the change under {limit} changed lines, NOT counting the test file you
 add. {counted}
 
-The test file has its own budget of {test_limit} lines and does not come out of
-the {limit}. Write the test the change deserves: a thorough test is the point of
-being allowed to add one, and thinning it to save room buys you nothing here."""
+The test file has its own budget of about {target} lines and does not come out
+of the {limit}. Write the test the change deserves: a thorough test is the point
+of being allowed to add one, and thinning it to save room buys you nothing
+here. {target} is a target rather than a hard edge -- going a little over it is
+better than cutting a case that earns its place, and much better than padding
+one that does not."""
 
 
 def parse_report(text: str) -> list[str] | None:

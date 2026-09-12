@@ -377,27 +377,160 @@ max_requirements: 10
 # refused here, THAT is the measurement, and it costs one run to get.
 max_diff_lines: 400
 
-# 300 lines for the one test the contract requires. PROVISIONAL, on four
-# observations, and it has never refused anything -- so unlike the number above
-# it has not been tested against reality even once.
+# 400 lines for the one test the contract requires. 12 Sep 2026. It was 300,
+# it was raised to 600 that morning, and the run that raise paid for refuted
+# the reasoning behind it within the hour. BOTH NUMBERS AND THE ARGUMENT FOR
+# THE RAISE ARE BELOW, because the refutation is the most useful thing this
+# field has ever produced and deleting the wrong version would hide it.
 #
-# Every added test measured to date, all of them under new_test_bites.sh:
+# WHAT THE RAISE PREDICTED, AND WHAT HAPPENED
 #
-#   task 58   115   dd_api, failed on ruff, not on size
-#   task 67   187   dd_api, refused on size under the single budget
-#   task 53   190   dd_frontend, MERGED -- the only one that shipped
-#   task 62   194   dd_api, refused on size under the single budget
+# The raise said: the tests are long because the work needs them to be, 298 of
+# 300 is a censored observation rather than a snug fit, and at 600 tests will
+# land somewhere below it and finally show their natural size. Task 69 was
+# requeued with 600 to test exactly that. It is a clean comparison -- same
+# task, same spec, same base commit, no prior-attempt feedback anywhere in
+# build_prompt, the only difference being the two numbers in the size note:
 #
-# Max 194, mean 171, sd 38, mean+3sd 285. 300 is that rounded, and 1.5x the
-# largest test yet written. Deliberately generous: new_test_bites.sh exists to
-# make the test bite, and a budget that makes an agent ration it is working
-# against the check it sits beside. This is a per-TEST figure, not per-suite --
-# new_test_bites.sh refuses a change that adds more than one test file.
+#   told 300 (attempt 1)    377 lines, 20 cases    126% of budget, REFUSED
+#   told 600 (attempt 2)    606 lines, 30 cases    101% of budget, REFUSED
 #
-# TO WHOEVER RE-MEASURES: three of the four samples come from runs that failed,
-# so this is calibrated largely on tests nobody accepted. Once several dd_api
-# tasks have MERGED carrying a test, replace this with their spread.
-max_test_diff_lines: 300
+# The test did not land below 600. It landed ON it, the way task 67 landed on
+# 300 at 298. THE NUMBER IS AN ANCHOR THE OUTPUT FILLS, and the raise was an
+# argument that a bigger anchor would reveal something. It revealed the anchor.
+#
+# AND "THOROUGH, NOT PADDED" SURVIVES AND STOPS MEANING WHAT IT MEANT. The
+# extra 229 lines are 10 more test cases, not bulk: 20.2 lines per case against
+# attempt 1's 18.9. That was the discriminator the raise leaned on, and it
+# cannot tell "the test this change needs" from "as much test as the budget
+# allows", because for a reconciliation feature there is always another case
+# worth writing. Thoroughness here is elastic, so no observation of the agent
+# can locate a ceiling -- the agent will meet whichever one it is given.
+#
+# 400: the largest test produced under maximum PRESSURE, rounded up. Attempt 1
+# was told 300, tried to fit it, and could not get below 377 -- that is the
+# closest thing in this dataset to the size the work actually demands, because
+# it is the only figure produced by an agent trying to make it smaller. 400
+# clears it by 23 lines. Nothing here supports 600: there is no evidence the
+# 30-case version is better than the 20-case one, because NEITHER HAS EVER BEEN
+# EXECUTED (see below), and a generosity argument with no evidence that the
+# generosity buys anything is just a larger diff to review.
+#
+# WHAT THIS COST, PLAINLY, BECAUSE THE NEXT PERSON TEMPTED TO RE-MEASURE A
+# CEILING SHOULD SEE IT BEFORE THEY START.
+#
+# A full day. 11 Sep evening through 12 Sep midday. Task 69 -- "reconcile each
+# order's header total against the sum of its line items, and report the
+# residual" -- was queued on 11 Sep and IS STILL NOT BUILT. What it has
+# produced, in total:
+#
+#   run 41   £3.56   377 test lines of 300     refused, never executed
+#   run 43   £4.41   606 test lines of 600     refused, never executed
+#            -----
+#            £7.97   two line counts. No code. No verification. No branch
+#                    anybody can merge, and the feature the spec describes is
+#                    exactly as absent as it was before either run started.
+#
+# Add the human time: an evening deriving 300 from six samples, a morning
+# deriving 600 from the wrong reading of two of them, and an afternoon
+# establishing that the second derivation was refuted by the run that tested
+# it. Three ceilings, one feature, nothing shipped.
+#
+# THE CEILING WAS THE MEASUREMENT. Every number in that table is the agent
+# meeting a figure it was handed, so each run measured the ceiling and not the
+# work. A day went into calibrating a bound against an instrument that reports
+# the bound back. That is the thing to notice before spending another run on
+# it: if the quantity you are measuring moves when you change the limit, you
+# are not measuring the quantity.
+#
+# WHAT WAS BUILT INSTEAD OF A THIRD NUMBER, 12 Sep 2026, both in the tree:
+#
+#   Boundary.size_only + runner/cycle.tick -- a size-only violation now RUNS
+#   the verification and refuses afterwards. Nothing about the refusal changes;
+#   the checks are collected before the run dies. Had this existed on 11 Sep,
+#   run 41 would have said whether the 377-line test passes and whether it
+#   bites, for the price of one pytest pass, and neither ceiling would have
+#   been argued in the dark.
+#
+#   agent.TEST_TARGET_FRACTION -- the stated target and the enforced ceiling
+#   stop being the same number. The prompt carries 75% of the ceiling; the gate
+#   keeps the rest as room for the overshoot that is now measured rather than
+#   assumed. An elastic producer told N lands at or just over N, so N == the
+#   gate made near-misses into dead runs structurally: 126% at 300, 101% at
+#   600. At this contract's 400 the agent is told 300 -- the figure task 69 was
+#   working to when it wrote 377, which is 23 lines inside the ceiling.
+#
+# ---------------------------------------------------------------------------
+# THE SUPERSEDED ARGUMENT FOR 600, kept because its first half still stands.
+#
+# WHY 300 WAS WRONG, AND IT IS NOT THAT THE SAMPLE WAS SMALL. Every sample it
+# rested on was measured under a regime that RATIONED the test: before 11 Sep
+# 20:13 the test came out of max_diff_lines, so its length was chosen against
+# the production code's need for room. Deriving the new, uncontested allowance
+# from tests written under the contest carries the contest forward. That is the
+# committed_gbp censoring argument f5c06f6 makes for money, applied to lines,
+# and it was not applied here at the time.
+#
+# The size of the effect is measured, not argued. Task 67 wrote the same test
+# for the same feature twice, on either side of the split:
+#
+#   run 38, shared budget      187 lines,  7 cases   refused on size
+#   run 39, its own budget     298 lines, 18 cases   MERGED
+#
+# The old note also under-counted its own sample: it says "every added test
+# measured to date" and lists four, and there were six -- task 49 (175) and
+# task 55 (177), both dd_frontend, both mandated, are missing. With all six its
+# own method gives mean 173, sd 29, mean+3sd 261, so 300 was generous against
+# the censored spread and still too small for the first real test that met it.
+#
+# EVERY OBSERVATION, re-derived 12 Sep 2026 from the base and patch shas each
+# run recorded, through boundary.derive's own predicate (ADDED, matching a
+# creatable glob, added PLUS deleted):
+#
+#   SHARED BUDGET -- the test competed with the change. All lower bounds.
+#     task 58   115    3 cases   dd_api        failed on ruff
+#     task 49   175    3 cases   dd_frontend   failed on paired paths
+#     task 55   177    5 cases   dd_frontend   failed on paired paths
+#     task 67   187    7 cases   dd_api        refused on size (run 38)
+#     task 53   190    6 cases   dd_frontend   MERGED
+#     task 62   194    9 cases   dd_api        refused on size
+#
+#   OWN BUDGET -- the only regime this number governs, and all of it. The
+#   budget each was TOLD is in brackets, because it turns out to be the
+#   variable that predicts the number beside it.
+#     task 67   298   18 cases   (300)   99%   dd_api  MERGED (run 39)
+#     task 69   377   20 cases   (300)  126%   dd_api  REFUSED (run 41), at
+#                                              218 of 400 production
+#     task 69   606   30 cases   (600)  101%   dd_api  REFUSED (run 43), at
+#                                              318 of 400 production
+#
+# NOT ONE OF THESE THREE HAS EVER BEEN EXECUTED. The boundary is checked
+# BEFORE verification, so both task 69 runs record `verification_skipped:
+# boundary violation` and their 21 checks never opened: no pytest, no ruff, no
+# new_test_bites.sh. Every figure above is SIZE and SHAPE. Nothing says those
+# tests pass and nothing says they BITE -- and a test that does not bite is
+# precisely what a test allowance must not be calibrated on, because length
+# bought by a test that proves nothing is the padding this note keeps arguing
+# is absent. Two runs, ~£8, and the only thing either produced is a line count.
+# Task 67's 298 is the sole own-budget figure with a passing verification
+# behind it.
+#
+# It is the old note's own complaint, one regime on: it warned that three of
+# its four samples came from runs that failed, and both samples that moved
+# this field -- first to 600, then back to 400 -- come from runs refused
+# before anything could check them.
+#
+# THAT ORDERING IS WHY THIS KEEPS HAPPENING, and it is worth naming: a
+# size-only violation kills the run before the cheap evidence is collected, so
+# the artefact a re-measurement most needs -- does the long test pass, does it
+# bite -- is the one thing a size refusal guarantees nobody gets. Running the
+# checks anyway on a size-only violation, and refusing after, would cost one
+# pytest pass and would have answered this in the first run instead of the
+# third. Proposed, not built.
+#
+# Per-TEST, not per-suite -- new_test_bites.sh refuses a change that adds more
+# than one test file.
+max_test_diff_lines: 400
 # 6.00, measured 11 Sep 2026, was 3.00. PROVISIONAL: it rests on three
 # observations, and should be replaced by measurement rather than by argument.
 #

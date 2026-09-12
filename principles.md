@@ -105,6 +105,18 @@ that has never refused anything. **Write the derivation beside the number, and
 if there is nothing to derive it from, say so there in those words.** A ceiling
 marked provisional invites the re-measurement; a bare integer gets believed.
 
+**And before re-measuring one, check that the thing you are measuring does not
+move when the ceiling does.** `max_test_diff_lines` was raised from 300 to 600
+on 12 September on the reading that the tests were long because the work needed
+them long. Task 69 was rerun to test it — same spec, same base commit, nothing
+different but the figure in the prompt — and wrote 606 lines against 600 having
+written 377 against 300. The number in the prompt is an anchor the agent fills,
+so every observation measured the ceiling and not the work. That day cost £7.97
+across two runs, produced two line counts and no code, and task 69's feature is
+still not built. The fix was not a third number: a size-only refusal now runs
+the verification before it refuses, so the evidence survives the gate, and the
+figure the agent is told is no longer the figure the gate enforces.
+
 ---
 
 ## What we will not do

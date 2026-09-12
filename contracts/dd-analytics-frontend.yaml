@@ -466,17 +466,32 @@ max_requirements: 12
 
 max_diff_lines: 600
 
-# 300, added 11 Sep 2026, same basis and the same provisionality as
-# contracts/deadly-digital-platform-api.yaml -- see the note there, which
-# carries the measurements. This contract has exactly one observation of its
-# own: task 53's test_fleet_order_filters.test.tsx at 190 lines, which merged.
+# 400, 12 Sep 2026, was 300 and was briefly 600 that same morning. Same basis
+# and the same provisionality as contracts/deadly-digital-platform-api.yaml --
+# see the note there, which carries every measurement and the argument that
+# was tried, refuted and replaced between those two values.
 #
-# max_diff_lines above is unchanged and now counts production lines only, so
-# it loosened by whatever the test costs without the number moving. Task 53's
+# IT MOVES BECAUSE ITS BASIS MOVES, NOT BECAUSE THIS CONTRACT LEARNS ANYTHING.
+# It has never had an observation of its own under an uncontested budget, and
+# it still does not. All three frontend tests were written while the test came
+# out of max_diff_lines:
+#
+#   task 49   175    3 cases   failed on paired paths
+#   task 55   177    5 cases   failed on paired paths
+#   task 53   190    6 cases   MERGED
+#
+# What the dd_api runs established is that an agent writes to the budget it is
+# told -- 298 against 300, 377 against 300, 606 against 600 -- so none of the
+# three numbers above measures what a vitest file needs either. They measure
+# what the old shared limit left over. This field follows dd_api's number for
+# the same reason it did before: it has nothing of its own to set one with.
+#
+# max_diff_lines above is unchanged and counts production lines only, so it
+# loosened by whatever the test costs without the number moving. Task 53's
 # production half was 112 of its 302, which is the only evidence this contract
 # has about its own production sizes -- too little to re-derive 600, so it
 # stands.
-max_test_diff_lines: 300
+max_test_diff_lines: 400
 # 6.00, measured 11 Sep 2026, was 3.00. PROVISIONAL -- it rests on two
 # observations. The reasoning, the two runs it rests on, and what a
 # re-measurement needs to replace are recorded once in

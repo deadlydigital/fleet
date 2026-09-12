@@ -256,6 +256,103 @@ def test_verification_never_runs_on_a_dirty_boundary(dsns, settings, console,
     assert payload["checks"] == []
 
 
+class TestASizeRefusalStillCollectsTheEvidence:
+    """12 Sep 2026, and task 69 is the whole of the argument.
+
+    Verification is skipped on a boundary violation because a diff that
+    touched a PROTECTED path may have touched the suite, and a suite the
+    change rewrote cannot judge the change. That reason does not reach a diff
+    whose only fault is length: every path in it was admitted by the contract.
+
+    Task 69 paid for the distinction. Two runs, £7.97, refused at 377 test
+    lines of 300 and then at 606 of 600 -- and because a size refusal returns
+    before the checks, neither test was ever executed. The number those runs
+    were re-measuring needed to know whether a long test passes and whether it
+    BITES, and that is exactly what was thrown away twice.
+    """
+
+    #: One file, over the line, and nothing else wrong with it.
+    OVERSIZED = {"api/analytics/services/analytics_engine.py":
+                 "def app():\n" + "".join(f"    x{n} = {n}\n" for n in range(260))
+                 + "    return 1\n"}
+
+    def test_the_checks_run_and_the_branch_is_still_refused(
+            self, dsns, settings, console, monkeypatch):
+        tid = queue_task(console, contract=contract(verification=["true"]))
+        result = run_tick(monkeypatch, fake_agent(self.OVERSIZED))
+
+        assert result.outcome == "FAILED"
+        assert result.reason == "boundary violation"
+        assert result.verdict.over_diff_limit and result.verdict.size_only
+        # The evidence the old path destroyed.
+        assert result.verification.ran
+        assert result.verification.skipped_reason is None
+        assert [c.command for c in result.verification.checks] == ["true"]
+        assert not result.pushed
+
+        payload = console.execute(
+            "SELECT payload FROM run_steps WHERE run_id=%s AND sequence=2",
+            (result.run_id,)).fetchone()["payload"]
+        # FAIL, with the checks beside it. A green suite on an oversized
+        # branch is evidence, never an acceptance.
+        assert payload["result"] == "FAIL"
+        assert payload["boundary_clean"] is False
+        assert payload["verification_skipped"] is None
+        assert len(payload["checks"]) == 1
+        assert payload["checks"][0]["exit_code"] == 0
+
+        assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                               (tid,)).fetchone()["status"] == "FAILED"
+
+    def test_a_green_suite_cannot_turn_a_refusal_into_a_pass(
+            self, dsns, settings, console, monkeypatch):
+        """The one thing this must never do."""
+        queue_task(console, contract=contract(verification=["true"]))
+        result = run_tick(monkeypatch, fake_agent(self.OVERSIZED))
+        assert result.verification.passed          # the checks were happy
+        assert result.outcome != "READY_FOR_REVIEW"
+        assert result.outcome == "FAILED"
+
+    def test_the_boundary_is_the_reason_even_when_the_checks_also_fail(
+            self, dsns, settings, console, monkeypatch):
+        """Two faults, one sentence, and it names the one that decided."""
+        queue_task(console, contract=contract(verification=["false"]))
+        result = run_tick(monkeypatch, fake_agent(self.OVERSIZED))
+        assert result.outcome == "FAILED"
+        assert result.reason == "boundary violation"
+        assert not result.verification.passed
+        assert result.verification.ran
+
+    def test_the_test_allowance_collects_evidence_the_same_way(
+            self, dsns, settings, console, monkeypatch):
+        """The refusal task 69 actually hit, not the production one."""
+        queue_task(console, contract=contract(
+            creatable_paths=["api/tests/test_fleet_*.py"],
+            max_test_diff_lines=50, verification=["true"]))
+        result = run_tick(monkeypatch, fake_agent(
+            {"api/analytics/services/analytics_engine.py":
+                "def app():\n    '''new'''\n    return 1\n",
+             "api/tests/test_fleet_thing.py":
+                "".join(f"def test_{n}():\n    assert {n} == {n}\n"
+                        for n in range(40))}))
+        assert result.outcome == "FAILED"
+        assert result.verdict.over_test_limit and result.verdict.size_only
+        assert result.verification.ran
+
+    def test_a_protected_path_still_skips_them(
+            self, dsns, settings, console, monkeypatch):
+        """The original reason, unchanged: too big AND into the suite is not
+        size-only, and a suite the change may have rewritten cannot be run."""
+        queue_task(console, contract=contract(verification=["true"]))
+        edits = dict(self.OVERSIZED)
+        edits["api/pytest.ini"] = "[pytest]\naddopts = --ignore=api/tests\n"
+        result = run_tick(monkeypatch, fake_agent(edits))
+        assert result.outcome == "FAILED"
+        assert not result.verdict.size_only
+        assert result.verification.skipped_reason == "boundary violation"
+        assert result.verification.checks == []
+
+
 def test_deleting_a_test_is_refused(dsns, settings, console, monkeypatch):
     queue_task(console)
     result = run_tick(monkeypatch, fake_agent(
