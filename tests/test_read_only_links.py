@@ -29,15 +29,25 @@ from runner import config, verify, worktree
 
 @pytest.fixture
 def tree(tmp_path):
-    """A worktree with two links: one written through, one read."""
+    """A worktree with the two link shapes that actually exist.
+
+    Built by link_dependencies itself rather than by hand, because the whole
+    distinction is in HOW each one is made: node_modules is FARMED into a real
+    directory of symlinks inside the worktree, and a reference checkout is one
+    plain symlink pointing out of it. A fixture that made both the same way
+    would have modelled the thing the rule turns on out of existence -- which
+    the first version of this file did.
+    """
     wt = tmp_path / "wt"
-    (wt / "reference").mkdir(parents=True)
-    (wt / "platform").mkdir()
+    wt.mkdir()
     source = tmp_path / "checkout"
     (source / ".git").mkdir(parents=True)
-    (source / "node_modules").mkdir()
-    (wt / "reference" / "deadly-digital-platform").symlink_to(source)
-    (wt / "platform" / "node_modules").symlink_to(source / "node_modules")
+    (source / "platform" / "node_modules" / "typescript").mkdir(parents=True)
+    (source / "platform" / "node_modules" / ".vite").mkdir()
+    worktree.link_dependencies(wt, {
+        "reference/deadly-digital-platform": str(source),
+        "platform/node_modules": str(source / "platform" / "node_modules"),
+    })
     return wt, source
 
 
@@ -50,27 +60,104 @@ CONTRACT = {
 }
 
 
-class TestWhichLinksAreProbed:
+class TestTheStructuralRule:
+    """A link that resolves OUTSIDE the worktree is never probed.
 
-    def test_a_declared_reference_is_left_out(self, tree):
+    Not a heuristic. Verification writes only inside the tree that gets thrown
+    away, so a check needing to write through a link that points out of it is
+    writing into a tree nobody deletes -- and the answer is to farm it, as
+    node_modules was, not to make a production checkout writable.
+    """
+
+    def test_a_farmed_tree_is_inside_and_is_probed(self, tree):
         wt, _ = tree
-        probed = worktree.writable_links(wt, CONTRACT)
-        assert (wt / "platform/node_modules").resolve() in probed
-        assert (wt / "reference/deadly-digital-platform").resolve() not in probed
+        probed = worktree.writable_links(wt, {
+            "worktree_links": {"platform/node_modules": "x"}})
+        assert probed == [wt / "platform/node_modules"]
+        assert worktree.inside(wt, wt / "platform/node_modules")
 
-    def test_the_default_is_to_probe(self, tree):
-        """The direction of the error is chosen. A link a contract forgot to
-        declare gives a loud could_not_run naming the path; a link wrongly
-        assumed unwritten gives a tool dying on EROFS reported as the branch
-        failing, which is the defect the probe was built after."""
+    def test_a_reference_symlink_is_outside_and_is_not(self, tree):
+        wt, _ = tree
+        assert worktree.writable_links(wt, {
+            "worktree_links": {"reference/deadly-digital-platform": "x"}}) == []
+        assert not worktree.inside(wt, wt / "reference/deadly-digital-platform")
+
+    def test_it_needs_no_declaration_to_work(self, tree):
+        """The point of making it structural. Task 71's frozen contract has
+        worktree_links and read_only_links: null and always will -- the console
+        freezes from the task row, and guard_task_immutability allows a change
+        only while QUEUED. A rule derived from the filesystem reaches it."""
         wt, _ = tree
         undeclared = {"worktree_links": CONTRACT["worktree_links"]}
-        probed = worktree.writable_links(wt, undeclared)
-        assert len(probed) == 2
+        assert worktree.writable_links(wt, undeclared) == [
+            wt / "platform/node_modules"]
+
+    def test_the_declaration_can_only_remove(self, tree):
+        """read_only_links stays as documentation of intent. Both tests must
+        pass, so declaring one wrongly loses a probe rather than gaining one."""
+        wt, _ = tree
+        both = dict(CONTRACT)
+        both["read_only_links"] = list(CONTRACT["worktree_links"])
+        assert worktree.writable_links(wt, both) == []
 
     def test_a_contract_with_no_links_probes_nothing(self, tree):
         wt, _ = tree
         assert worktree.writable_links(wt, {}) == []
+
+
+class TestTheLinkPathDoesNotDependOnWhenItIsAsked:
+    """The timing bug. `(worktree / target).resolve()` reads the filesystem, so
+    it answers differently before and after the link is made -- which is why a
+    refusal naming <trial>/reference/... all morning named
+    /home/ubuntu/deadly-digital-platform in the afternoon, for the same probe
+    writing to the same place."""
+
+    def test_it_is_the_same_before_and_after_the_link_exists(self, tmp_path):
+        wt = tmp_path / "wt"
+        (wt / "reference").mkdir(parents=True)
+        src = tmp_path / "src"
+        src.mkdir()
+        target = "reference/deadly-digital-platform"
+
+        before = worktree.link_path(wt, target)
+        (wt / target).symlink_to(src)
+        after = worktree.link_path(wt, target)
+
+        assert before == after == wt / target
+        # And the expression it replaces does NOT have that property, so this
+        # test would pass vacuously if link_path ever went back to resolve().
+        assert (wt / target).resolve() == src.resolve() != before
+
+    def test_it_names_where_the_link_lives_not_where_it_points(self, tree):
+        wt, source = tree
+        p = worktree.link_path(wt, "reference/deadly-digital-platform")
+        assert p == wt / "reference/deadly-digital-platform"
+        assert p != source
+
+    def test_containment_still_follows_symlinks(self, tmp_path):
+        """`inside` makes the opposite choice from link_path, deliberately. The
+        agent runs BEFORE the links are made and could leave `reference` as a
+        symlink to /etc; a lexical containment check would see a path under the
+        worktree and mkdir(parents=True) would build the rest of it there."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        elsewhere = tmp_path / "etc"
+        elsewhere.mkdir()
+        (wt / "reference").symlink_to(elsewhere)
+        assert not worktree.inside(wt, worktree.link_path(wt, "reference/sub/x"))
+
+    def test_a_planted_symlink_is_refused_rather_than_followed(self, tmp_path):
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        elsewhere = tmp_path / "etc"
+        (elsewhere / "sub").mkdir(parents=True)
+        (wt / "reference").symlink_to(elsewhere)
+        src = tmp_path / "src"
+        src.mkdir()
+        with pytest.raises(worktree.GitError, match="outside the worktree"):
+            worktree.link_dependencies(wt, {"reference/sub/x": str(src)})
+        assert not (elsewhere / "sub" / "x").exists(), \
+            "mkdir(parents=True) built into the planted tree"
 
 
 class TestTheProbeItself:

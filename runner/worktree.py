@@ -322,6 +322,49 @@ FARMED = ("node_modules",)
 WRITABLE_INSIDE = (".vite", ".cache", ".turbo")
 
 
+def link_path(worktree: Path, target: str) -> Path:
+    """Where a `worktree_links` target LIVES. Never where it points.
+
+    LEXICAL, AND THAT IS THE WHOLE POINT. `(worktree / target).resolve()` reads
+    the filesystem, so it answers differently depending on whether the link has
+    been made yet: before `symlink_to` it returns the path inside the worktree,
+    after it returns the source. Two functions computed exactly that expression
+    for exactly this value -- link_dependencies before creating, writable_links
+    after -- and got different answers, which is why a refusal that had named
+
+        <trial>/reference/deadly-digital-platform
+
+    all morning started naming /home/ubuntu/deadly-digital-platform in the
+    afternoon, for the same probe writing to the same place. The write never
+    moved; only the name did, because the link had come into existence between
+    the two readings.
+
+    normpath is purely textual: no stat, no symlink, no dependence on when it
+    is called. Anything that wants to know where a link POINTS asks for that
+    separately and says so -- see `inside`.
+    """
+    return Path(os.path.normpath(worktree / target))
+
+
+def inside(worktree: Path, path: Path) -> bool:
+    """Does `path` land inside the worktree once every symlink is followed?
+
+    THIS ONE FOLLOWS DELIBERATELY, and it is the opposite decision from
+    link_path for the opposite reason. A containment check that did not follow
+    could be walked past: the agent runs before the links are made and could
+    leave `reference` as a symlink to /etc, after which a lexical check on
+    `reference/sub/link` sees a path under the worktree and `mkdir(parents=True)`
+    builds the rest of it in /etc.
+
+    realpath rather than resolve so a path that does not exist yet still
+    answers -- it resolves the existing prefix and appends the rest, which is
+    exactly the question being asked BEFORE anything is created.
+    """
+    root = os.path.realpath(worktree)
+    real = os.path.realpath(path)
+    return real == root or real.startswith(root + os.sep)
+
+
 def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
     """Symlink installed dependencies into the worktree, for verification only.
 
@@ -365,10 +408,9 @@ def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
     into the real checkout. Now it writes into the throwaway tree.
     """
     created: list[Path] = []
-    root = worktree.resolve()
     for target, source in (links or {}).items():
-        dest = (worktree / target).resolve()
-        if not str(dest).startswith(str(root) + "/"):
+        dest = link_path(worktree, target)
+        if not inside(worktree, dest):
             raise GitError(f"worktree link {target!r} resolves outside the worktree")
         src = Path(source)
         if not src.exists():
@@ -419,16 +461,50 @@ def writable_links(worktree: Path, contract: dict) -> list[Path]:
     and exited 1, indistinguishable from a failing test. Here there is no write
     to predict, and the check that predicts writes was making the only one.
 
-    THE DEFAULT IS TO PROBE, and the direction of that error is chosen. A link
-    a contract forgot to declare read-only produces a loud `could_not_run` that
-    names the path; a link wrongly assumed unwritten produces a tool dying on
-    EROFS and being reported as the branch failing, which is the defect the
-    probe was built after. Noisy beats silent, so opting OUT is the declaration.
+    THE OPERATIVE TEST IS STRUCTURAL: A LINK THAT RESOLVES OUTSIDE THE WORKTREE
+    IS NEVER PROBED.
+
+    That is not a heuristic, it is the invariant the whole design rests on.
+    Verification writes only inside the tree that gets thrown away. A farmed
+    `node_modules` is a real directory of symlinks INSIDE the worktree and
+    resolves inside it; a plain symlink to a checkout resolves outside. A check
+    that genuinely needs to write through a link resolving outside is writing
+    into a tree nobody deletes -- which is the thing the boundary forbids, and
+    the answer there is to farm it, as node_modules was, not to make a
+    production checkout writable.
+
+    IT IS STRUCTURAL BECAUSE A DECLARATION COULD NOT REACH THE TASK THAT FOUND
+    IT. `read_only_links` was the first fix and it was correct and useless
+    here: the console freezes its contract from the task row, task 71 was
+    queued at 12:38 and the key landed at about 14:15, so the contract
+    governing that task has `worktree_links` and `read_only_links: null` and
+    always will. guard_task_immutability permits an acceptance_contract change
+    only while a task is QUEUED, and task 71 is READY_FOR_REVIEW -- so applying
+    the declaration to it means REWORK -> QUEUED, which means the agent writes
+    the spec again, which discards a finished branch to stop a probe that
+    should not have run. A rule derived from the filesystem at probe time needs
+    no declaration and reaches every task already frozen.
+
+    `read_only_links` STAYS as documentation of intent, and can only REMOVE.
+    Both tests must pass for a link to be probed, so the declaration says in
+    the contract what the structure works out on disk, and a contract that
+    declares one wrongly loses a probe rather than gaining one.
+
+    THE DEFAULT FOR A LINK INSIDE THE WORKTREE IS STILL TO PROBE, and the
+    direction of that error is chosen. A link wrongly assumed unwritten
+    produces a tool dying on EROFS and being reported as the branch failing,
+    which is the defect the probe was built after; a link probed unnecessarily
+    produces a loud `could_not_run` naming the path. Noisy beats silent.
     """
     read_only = set(contract.get("read_only_links") or [])
-    return [(worktree / target).resolve()
-            for target in (contract.get("worktree_links") or {})
-            if target not in read_only]
+    out: list[Path] = []
+    for target in (contract.get("worktree_links") or {}):
+        if target in read_only:
+            continue
+        dest = link_path(worktree, target)
+        if inside(worktree, dest):
+            out.append(dest)
+    return out
 
 
 def unlink_dependencies(created: list[Path]) -> None:
