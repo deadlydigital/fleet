@@ -472,22 +472,44 @@ test_diff_target: 300
 # WHAT THIS COST, PLAINLY, BECAUSE THE NEXT PERSON TEMPTED TO RE-MEASURE A
 # CEILING SHOULD SEE IT BEFORE THEY START.
 #
-# A full day. 11 Sep evening through 12 Sep midday. Task 69 -- "reconcile each
+# A full day. 11 Sep evening through 12 Sep evening. Task 69 -- "reconcile each
 # order's header total against the sum of its line items, and report the
-# residual" -- was queued on 11 Sep and IS STILL NOT BUILT. What it has
-# produced, in total:
+# residual" -- was queued on 11 Sep and IS STILL NOT BUILT. Four runs, four
+# branches on disk, and nothing merged:
 #
-#   run 41   £3.56   377 test lines of 300     refused, never executed
-#   run 43   £4.41   606 test lines of 600     refused, never executed
-#            -----
-#            £7.97   two line counts. No code. No verification. No branch
-#                    anybody can merge, and the feature the spec describes is
-#                    exactly as absent as it was before either run started.
+#   run 41   £3.56   377 test of 300      refused, never executed
+#   run 43   £4.41   606 test of 600      refused, never executed
+#   run 44   £3.77   439 test of 400      refused -- ALL SIX CHECKS GREEN
+#   run 45   £3.32   385 test of 1200     boundary CLEAN, and then failed
+#                                         verification on one new I001 in the
+#                                         test file. One import sort.
+#            ------
+#            £15.06  four attempts at one feature. The best branch anybody has
+#                    is fleet/task-69.3 from run 44: verified, biting, and
+#                    refused by a ceiling that no longer exists at that value.
 #
 # Add the human time: an evening deriving 300 from six samples, a morning
-# deriving 600 from the wrong reading of two of them, and an afternoon
-# establishing that the second derivation was refuted by the run that tested
-# it. Three ceilings, one feature, nothing shipped.
+# deriving 600 from the wrong reading of two of them, an afternoon establishing
+# that the second derivation was refuted by the run that tested it, and an
+# evening watching the fix work and the work fail for an unrelated reason.
+# Three ceilings, one feature, nothing shipped.
+#
+# AND THE LAST £3.32 BOUGHT A WORSE BRANCH THAN THE ONE ALREADY ON DISK. Run 45
+# was queued only because run 44's branch could not be adopted: task_transitions
+# has no FAILED -> READY_FOR_REVIEW edge, so a task that has failed can re-enter
+# only through QUEUED, and QUEUED means the agent writes it again. It did not
+# write the same thing -- 377, 606, 439, 385 from identical inputs -- and the
+# one it wrote this time does not pass. A verified branch that the gate refused
+# for a reason since retired is unreachable, and the only recovery the system
+# has is to rebuild it and hope.
+#
+# THAT EDGE IS THE OBVIOUS NEXT THING AND IS NOT BUILT HERE. The machinery
+# around it already exists: console/merge.py refuses anything not
+# READY_FOR_REVIEW, and accept() re-runs this contract's verification against
+# the base as it stands before merging, so an adopted branch would be checked
+# exactly as any other is. What is missing is one transition, gated on a run
+# whose patch_commit_sha is the branch tip and whose checks were green. That is
+# a state-machine change and wants reviewing, not slipping in beside a rerun.
 #
 # THE CEILING WAS THE MEASUREMENT. Every number in that table is the agent
 # meeting a figure it was handed, so each run measured the ceiling and not the
