@@ -131,6 +131,21 @@ def load_contract(repo: str, path: Path | None = None) -> dict[str, Any]:
     # exists to have stopped happening. Same shape as the rule above, for the
     # same reason: the combination IS the defect, so it is refused here rather
     # than found in a run that has already been paid for.
+    # A LINK DECLARED READ-ONLY MUST BE A LINK.
+    #
+    # `read_only_links` opts a worktree_link out of the write probe by naming
+    # its target. A typo names nothing, the opt-out silently does not apply, and
+    # the contract is back to refusing an accept for a write nobody makes --
+    # with a file that says it should not. Refused here, where the message can
+    # name both lists, rather than found in a run that has been paid for.
+    unknown = (set(contract.get("read_only_links") or [])
+               - set(contract.get("worktree_links") or {}))
+    if unknown:
+        raise RuntimeError(
+            f"{path} declares read_only_links {sorted(unknown)} which are not "
+            f"worktree_links. The names must match exactly: an entry that "
+            f"matches nothing is an opt-out that does not apply.")
+
     if contract.get("creatable_paths") and not contract.get("test_diff_target"):
         raise RuntimeError(
             f"{path} declares creatable_paths but no test_diff_target. "

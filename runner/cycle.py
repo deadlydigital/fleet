@@ -187,6 +187,21 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
     # The sources, not the targets: the targets live inside the worktree, which
     # is not watched. See worktree.Untouched for the full argument, and note
     # that the exclusions are named in the error if the guard ever does fire.
+    #
+    # WHAT ELSE THIS EXCLUSION HAS BEEN COVERING, found 12 Sep 2026. For the
+    # frontend contracts it excludes `platform/node_modules`. For draft-spec it
+    # excludes the ENTIRE platform checkout, because that is what the contract
+    # links -- so during a draft-spec verification this guard is blind to every
+    # change in it.
+    #
+    # And there has been one. runner/verify.unwritable probes each linked tree
+    # by writing to it, the runner has ReadWritePaths on that checkout, so every
+    # draft-spec verification created and deleted `.fleet-write-probe` inside
+    # the live production tree. The check that exists to predict writes was
+    # making the only write there was, in the one tree this line had told the
+    # guard not to look at. The probe no longer runs against a link the contract
+    # declares read-only; the blindness is unchanged and is recorded here
+    # because it is what made the write invisible rather than harmless.
     link_sources = list((contract.get("worktree_links") or {}).values())
     for name, path in watch_paths.items():
         watched[name] = worktree.Untouched.of(path, exclude=link_sources)
@@ -428,7 +443,11 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 # read-only case -- which is exactly why the two paths
                 # disagreed about task 53, and why both ask now rather than
                 # one of them being the place where it is noticed.
-                links=links,
+                # Only the links something writes THROUGH. A reference checkout is
+                # linked to be read, and asserting it is writable refused an
+                # accept for a write nobody makes -- see worktree.writable_links.
+
+                links=worktree.writable_links(wt_path, contract),
                 # FLEET_CONTRACT is the FROZEN contract from the row, not the
                 # yaml on disk. A check that read contracts/*.yaml would be
                 # judging this task against whatever that file says now, which

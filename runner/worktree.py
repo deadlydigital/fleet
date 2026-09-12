@@ -393,6 +393,44 @@ def link_dependencies(worktree: Path, links: dict[str, str]) -> list[Path]:
     return created
 
 
+def writable_links(worktree: Path, contract: dict) -> list[Path]:
+    """The linked trees verification is expected to WRITE through.
+
+    THE WRITE PROBE MUST NOT ASSERT A REFERENCE IS WRITABLE, and until 12 Sep
+    2026 it asserted it of every link. Accepting task 71 refused with
+
+        /tmp/.../fleet-accept-trial-71/reference/deadly-digital-platform is
+        not writable (Read-only file system)
+
+    and the refusal was honest: the console has `ProtectHome=read-only` and no
+    `ReadWritePaths`, which is correct and was made so on 11 Sep when the merge
+    moved into a clone. What was wrong is that anything asked.
+
+    NOTHING WRITES THROUGH A `reference/` LINK, and the tree says so three ways.
+    The agent never sees it -- `link_dependencies` runs after the diff is
+    derived, and packs.py records that "for a draft-spec task the linked
+    checkout DOES NOT EXIST while the agent runs". The paths pack reads the
+    link's TARGET, never the link. And draft_spec_shape.py, the only command
+    that contract verifies with, resolves `REPO_ROOT / repo` directly and never
+    mentions `reference/` at all.
+
+    So the probe was the only writer. That is the mirror image of the failure
+    the probe exists for: vitest made a real write into a real dependency tree
+    and exited 1, indistinguishable from a failing test. Here there is no write
+    to predict, and the check that predicts writes was making the only one.
+
+    THE DEFAULT IS TO PROBE, and the direction of that error is chosen. A link
+    a contract forgot to declare read-only produces a loud `could_not_run` that
+    names the path; a link wrongly assumed unwritten produces a tool dying on
+    EROFS and being reported as the branch failing, which is the defect the
+    probe was built after. Noisy beats silent, so opting OUT is the declaration.
+    """
+    read_only = set(contract.get("read_only_links") or [])
+    return [(worktree / target).resolve()
+            for target in (contract.get("worktree_links") or {})
+            if target not in read_only]
+
+
 def unlink_dependencies(created: list[Path]) -> None:
     """Remove what link_dependencies made, and only that.
 

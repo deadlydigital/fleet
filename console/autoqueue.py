@@ -430,6 +430,10 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
         # figure, falling back to a fraction of a bound that is deliberately
         # nowhere near what the test should be.
         for opt in ("creatable_paths", "max_test_diff_lines", "test_diff_target",
+                    # With worktree_links, never apart from it: a frozen
+                    # contract holding the link and not the opt-out is the
+                    # write probe refusing an accept for a write nobody makes.
+                    "read_only_links",
                     "paired_paths",
                     "worktree_links", "readable_repos", "agent_tools",
                     "auto_merge", "contract_version"):

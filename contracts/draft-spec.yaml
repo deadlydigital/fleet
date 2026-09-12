@@ -102,6 +102,34 @@ protected_paths:
 worktree_links:
   reference/deadly-digital-platform: /home/ubuntu/deadly-digital-platform
 
+# READ, NEVER WRITTEN, AND NOW DECLARED RATHER THAN INFERRED FROM THE NAME.
+#
+# runner/verify.unwritable probes every linked tree by writing to it, because a
+# tool dying on a read-only mount exits normally and cannot be told from a
+# failing test -- vitest's EROFS on node_modules/.vite was reported as task 53's
+# branch failing to verify. That probe is right for a dependency tree tools
+# write caches into. It is wrong here, and asserting it refused the accept of
+# task 71 on 12 Sep 2026:
+#
+#     .../fleet-accept-trial-71/reference/deadly-digital-platform is not
+#     writable (Read-only file system)
+#
+# The console has ProtectHome=read-only and no ReadWritePaths -- correct, and
+# made so on 11 Sep when the merge moved into a throwaway clone. Nothing was
+# wrong with the confinement; the question should not have been asked.
+#
+# NOTHING WRITES THROUGH THIS LINK. The agent never sees it -- the runner
+# creates it after the diff is derived, deliberately, and three specs died
+# believing otherwise. The paths pack reads the link's TARGET rather than the
+# link. And draft_spec_shape.py, the only command below, resolves
+# `REPO_ROOT / repo` directly and does not mention `reference/`.
+#
+# The link STAYS, unused at verification time, because it is the shape any
+# future check that wants to read the tree would ask for. Declaring it read-only
+# is cheaper than removing it and rebuilding it later.
+read_only_links:
+  - reference/deadly-digital-platform
+
 # THE TREE, LISTED BY THE RUNNER, BEFORE THE AGENT WRITES A LINE.
 #
 # Three specs failed on paths and every failing one had a real sibling in the

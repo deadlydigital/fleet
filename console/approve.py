@@ -76,7 +76,11 @@ def _draft_spec_contract() -> tuple[Dict[str, Any], float, int, str]:
     }
     # draft-spec.yaml declares neither today. Carried anyway so that adding a
     # test mandate to it later cannot silently drop the allowance here.
-    for opt in ("creatable_paths", "max_test_diff_lines", "test_diff_target"):
+    # read_only_links travels with worktree_links or the frozen contract keeps
+    # the link and loses the opt-out, which is the write probe refusing an
+    # accept again -- the same route 9.4's flattened objective_ref took.
+    for opt in ("creatable_paths", "max_test_diff_lines", "test_diff_target",
+                "read_only_links"):
         if data.get(opt) is not None:
             contract[opt] = data[opt]
     return (contract, float(data["max_cost_gbp"]),

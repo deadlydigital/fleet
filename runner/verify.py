@@ -180,10 +180,36 @@ def unwritable(worktree: Path, links: Sequence[Path] = ()) -> list[str]:
     unwritable because the mount is read-only, and `os.access` believes the
     mode.
 
-    WHAT IS CHECKED: the worktree root, and every path `link_dependencies`
-    created. The second is the one that bit -- the link is the boundary
-    between a tree that is thrown away and one that must not be written to,
-    and a farmed link is writable only if it was farmed.
+    WHAT IS CHECKED: the worktree root, and every link the contract does NOT
+    declare read-only. The link is the boundary between a tree that is thrown
+    away and one that must not be written to, and a farmed link is writable
+    only if it was farmed.
+
+    NOT EVERY LINK, SINCE 12 SEP 2026, and the reason is a finding about this
+    function rather than about a contract. It probed every link, including the
+    `reference/` checkout draft-spec links to be READ -- and refused the accept
+    of task 71 because the console cannot write to /home, which is correct and
+    deliberate. Nothing writes through that link; the probe was the only writer.
+    See worktree.writable_links for the three ways the tree says so.
+
+    THE RUNNER HAS BEEN MAKING THAT WRITE ALL ALONG, and it succeeded, which is
+    why nobody saw it. `fleet-runner.service` carries
+    `ReadWritePaths=/home/ubuntu/deadly-digital-platform`, so on every
+    draft-spec verification this function created and deleted
+    `.fleet-write-probe` inside the live production checkout.
+
+    It went unnoticed because cycle.py excludes link SOURCES from the drift
+    guard -- `link_sources = list(contract["worktree_links"].values())` -- which
+    for the frontend contracts is `platform/node_modules` and for draft-spec is
+    the entire platform checkout. That exclusion was added for task 49, where
+    vitest's 131 bytes into a watched tree failed a task that had passed every
+    check and already pushed its branch. It has been covering this probe too.
+
+    So: a check whose job is to predict writes was making the only write there
+    was, in the one tree the guard had been told not to look at. Harmless in
+    effect -- the file is created and removed in the same call -- and worth
+    writing down, because the reason it was invisible is a guard doing exactly
+    what it was asked.
 
     Returns a list of sentences rather than raising, because the caller turns
     them into `could_not_run` and the point is to name every path at once

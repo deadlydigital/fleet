@@ -239,7 +239,10 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
             # The trial tree itself is writable by construction -- it is a
             # clone this function just made -- and the LINK is the boundary
             # where that stops being true. That is the one that bit.
-            links=links,
+            # See worktree.writable_links: a reference link is read, never
+            # written, and probing it refused task 71 for a write nobody makes.
+
+            links=worktree.writable_links(trial, contract),
             facts={"FLEET_BASE_SHA": base_sha, "FLEET_HEAD_SHA": head,
                    "FLEET_TASK_ID": str(task["id"]),
                    "FLEET_CONTRACT": json.dumps(contract),
