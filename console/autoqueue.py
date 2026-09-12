@@ -281,7 +281,8 @@ def _named_contract(named: str, work_type: str, repo: str,
 
 
 def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
-                        merged_sha: str) -> Queued:
+                        merged_sha: str, *, markdown: str | None = None,
+                        trial_path: str | None = None) -> Queued:
     """Queue the code task a just-merged draft spec describes.
 
     `merged_sha` is the base branch AFTER the merge -- the spec is read from
@@ -290,6 +291,62 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
     repo_path = config.repo_root() / task["repo"]
     rel = draft_path(patch_payload)
 
+    # READ IT WHERE IT ALREADY IS, IF THE CALLER STILL HAS IT.
+    #
+    # The merge was made in a throwaway clone and pushed from there, so at the
+    # moment of the push that clone holds the merge commit and the merged tree.
+    # A caller that reads the spec out of it before discarding it has the
+    # content in hand and needs nothing from this checkout.
+    #
+    # That is the same discipline reverify's `keep_on_success` states about the
+    # commit: "PUBLISH THE COMMIT THAT WAS TESTED rather than construct an
+    # equal-looking one somewhere else". Fetching the merge into a different
+    # repository and reading the spec from there is that substitution wearing
+    # another hat -- it queues work from an equal-looking copy rather than from
+    # the tree that was verified and pushed.
+    #
+    # WHAT IT COST TO LEARN. 12 Sep 2026, task 71: the draft merged and pushed,
+    # and the code task was not queued, because the fetch below cannot run
+    # under the console's confinement --
+    #
+    #     cannot open '.git/FETCH_HEAD': Read-only file system
+    #
+    # ProtectHome=read-only and no ReadWritePaths, which is correct and is the
+    # property 702bce0 exists to state. The fourth refusal of the day from that
+    # sandbox, and the fourth place the console reached for a checkout it does
+    # not own.
+    if markdown is None and trial_path:
+        markdown = spec_from_trial(Path(trial_path), merged_sha, rel)
+    if markdown is None:
+        markdown = _fetch_and_show(repo_path, merged_sha, rel)
+    blocks = spec_blocks(markdown)
+    return _queue_blocks(task, blocks, rel, markdown)
+
+
+def spec_from_trial(trial: Path, merged_sha: str, rel: str) -> str | None:
+    """The spec out of the clone that made the merge, or None to fall back.
+
+    None rather than an exception on every failure path. The trial is an
+    optimisation over the fetch and must not become a new way for a merged
+    draft to strand its code task: a clone already deleted, a sha it somehow
+    lacks, a path that is not there -- all of them mean "ask the checkout",
+    which is the behaviour that was there before this.
+    """
+    if not (trial / ".git").exists():
+        return None
+    r = subprocess.run(
+        ("git", "-C", str(trial), "show", f"{merged_sha}:{rel}"),
+        capture_output=True, text=True, timeout=30)
+    return r.stdout if r.returncode == 0 else None
+
+
+def _fetch_and_show(repo_path: Path, merged_sha: str, rel: str) -> str:
+    """The fallback: get the merge into this checkout and read it from there.
+
+    Kept for the caller that has no clone to offer -- and for a checkout that
+    genuinely is the place the merge landed, which is every test fixture and a
+    repository somebody is working in locally.
+    """
     # FETCH FIRST, because the merge did not happen here.
     #
     # console/reverify.py merges in a throwaway clone and merge_and_push
@@ -319,9 +376,13 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
                 f"the merge {merged_sha[:12]} is not in this checkout and it "
                 f"could not be fetched, so the spec that landed cannot be "
                 f"read: {exc}")
-    markdown = _git(repo_path, "show", f"{merged_sha}:{rel}")
-    blocks = spec_blocks(markdown)
+    return _git(repo_path, "show", f"{merged_sha}:{rel}")
 
+
+def _queue_blocks(task: dict[str, Any], blocks: list, rel: str,
+                  markdown: str) -> Queued:
+    """The half that writes. Split from the read on 12 Sep 2026 so the spec can
+    come from the clone that made the merge instead of from a fetch."""
     # EVERY BLOCK RESOLVES BEFORE ANY TASK IS CREATED. A chain half-queued is
     # the thing this feature exists to prevent, arriving in the queueing of it:
     # if block 2 names paths no contract covers, block 1 must not already be a

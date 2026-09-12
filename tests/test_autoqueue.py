@@ -366,3 +366,65 @@ class TestWhatItQueues:
 
         q = autoqueue.from_accepted_draft(task, patch, merged_before)
         assert "LATER" not in q.title
+
+
+    # ---- where the spec is read from -----------------------------------
+    #
+    # 12 Sep 2026, task 71: the draft merged and pushed and the code task was
+    # not queued --
+    #
+    #     cannot open '.git/FETCH_HEAD': Read-only file system
+    #
+    # The merge is made in a throwaway clone and pushed from there, so it is
+    # not in the console's checkout; the fetch that fixes that needs a write
+    # the console's sandbox correctly refuses. The clone that made the merge is
+    # still on disk at that moment and already holds it.
+
+    def test_the_trial_clone_is_used_and_no_fetch_happens(
+            self, merged_draft, console, monkeypatch):
+        task, patch, merged = merged_draft
+        repo = autoqueue.config.repo_root() / "fleet"
+        trial = repo.parent / "trial-clone"
+        sh(repo.parent, "git", "clone", "--quiet", str(repo), str(trial))
+
+        def no_fetch(*a, **k):
+            raise AssertionError("fetched when the trial clone had the spec")
+
+        monkeypatch.setattr(autoqueue, "_fetch_and_show", no_fetch)
+        q = autoqueue.from_accepted_draft(task, patch, merged,
+                                          trial_path=str(trial))
+        assert q.task_id and q.spec_path.endswith(".md")
+
+    def test_it_falls_back_when_the_trial_is_already_gone(
+            self, merged_draft, console):
+        """The trial is an optimisation over the fetch and must not become a
+        new way for a merged draft to strand its code task."""
+        task, patch, merged = merged_draft
+        q = autoqueue.from_accepted_draft(
+            task, patch, merged, trial_path="/tmp/there-is-no-such-clone")
+        assert q.task_id
+
+    def test_a_trial_without_the_sha_falls_back_rather_than_refusing(
+            self, merged_draft, console, tmp_path):
+        task, patch, merged = merged_draft
+        empty = tmp_path / "empty"
+        sh(tmp_path, "git", "init", "--quiet", str(empty))
+        assert autoqueue.spec_from_trial(empty, merged, "drafts/x.md") is None
+        assert autoqueue.from_accepted_draft(
+            task, patch, merged, trial_path=str(empty)).task_id
+
+    def test_supplied_markdown_wins_over_both(self, merged_draft, console,
+                                              monkeypatch):
+        """The accept route reads the spec before the finally that discards the
+        trial, then passes the text: by the time it queues, both the clone and
+        the fetch are unavailable to it."""
+        task, patch, merged = merged_draft
+
+        def no_fetch(*a, **k):
+            raise AssertionError("fetched when the caller supplied the spec")
+
+        monkeypatch.setattr(autoqueue, "_fetch_and_show", no_fetch)
+        q = autoqueue.from_accepted_draft(
+            task, patch, merged,
+            markdown=_draft(_block(title="FROM THE CLONE THAT MERGED IT")))
+        assert q.title == "FROM THE CLONE THAT MERGED IT"

@@ -563,6 +563,7 @@ def accept(request: Request, task_id: int,
     check = merge.preflight(repo, task, branch, recorded_base, recorded_patch,
                             (patch or {}).get("branch_point_sha", ""))
     again = None
+    spec_markdown = None
     try:
         if check.ok and not check.already_merged:
             again = reverify.run(
@@ -577,6 +578,27 @@ def accept(request: Request, task_id: int,
             recorded_base=recorded_base, recorded_patch=recorded_patch,
             branch_point=(patch or {}).get("branch_point_sha", ""),
             reverification=again)
+
+        # THE SPEC IS READ HERE AND NOT WHERE IT IS USED, because the finally
+        # below throws away the only copy of the merge this process can reach.
+        #
+        # The queue call is 70 lines further down, after that finally has run,
+        # so by then the merge exists only on origin -- and fetching it needs a
+        # write to a checkout the console may not write. That is what stranded
+        # task 71: merged and pushed, code task not queued,
+        # "cannot open '.git/FETCH_HEAD': Read-only file system".
+        #
+        # Reading it from the clone that made the merge is also the truer
+        # source. reverify's keep_on_success exists so the caller can "PUBLISH
+        # THE COMMIT THAT WAS TESTED rather than construct an equal-looking one
+        # somewhere else"; queueing work from a re-fetched copy is that
+        # substitution with the spec instead of the commit.
+        if (result.ok and not result.already_merged and again is not None
+                and again.trial_path
+                and contract.get("work_type") == "draft_spec"):
+            spec_markdown = autoqueue.spec_from_trial(
+                Path(again.trial_path), result.base_sha_after,
+                autoqueue.draft_path(patch or {}))
     finally:
         if again is not None and again.trial_path:
             worktree.discard_trial_clone(Path(again.trial_path))
@@ -655,7 +677,8 @@ def accept(request: Request, task_id: int,
             and not result.already_merged):
         try:
             queued = autoqueue.from_accepted_draft(
-                task, patch or {}, result.base_sha_after)
+                task, patch or {}, result.base_sha_after,
+                markdown=spec_markdown)
         except autoqueue.QueueRefused as exc:
             _record_outcome(task_id, {
                 "ok": False, "loud": True,

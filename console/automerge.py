@@ -538,7 +538,12 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
                     and not result.already_merged):
                 try:
                     queued = autoqueue.from_accepted_draft(
-                        task, patch, result.base_sha_after)
+                        task, patch, result.base_sha_after,
+                        # The clone that made the merge is still on disk --
+                        # the finally below is what discards it -- so the spec
+                        # is read from the tree that was verified and pushed,
+                        # not fetched into a checkout the console cannot write.
+                        trial_path=again.trial_path if again else None)
                     log(f"task {tid}: queued task {queued.task_id} from its "
                         f"spec, under {queued.contract_file}")
                 except Exception as exc:                          # noqa: BLE001
