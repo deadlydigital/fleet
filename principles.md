@@ -117,6 +117,21 @@ still not built. The fix was not a third number: a size-only refusal now runs
 the verification before it refuses, so the evidence survives the gate, and the
 figure the agent is told is no longer the figure the gate enforces.
 
+**A gate that cannot see the property it is named for is a proxy, and a proxy
+costs runs.** `max_test_diff_lines` was a line count standing in for "is this
+test bloated", and a line count cannot tell bloat from thoroughness — task 69's
+test went from 20 cases to 30 with its lines-per-case flat. Beside it sat three
+gates that check the thing itself: `new_test_bites.sh` runs the added test
+against the tree before the change and refuses if it passes there,
+`creatable_paths` allows one added file and no modifications, and
+`max_diff_lines` bounds the production diff, which is where scope creep
+actually lives. The proxy refused three runs and never once caught a bad test —
+run 44 was green on all six checks, `new_test_bites.sh` included, and was
+refused for 39 lines. It is now a runaway bound an order of magnitude away, and
+the figure that shapes the test is guidance in the prompt that nothing enforces.
+**Before adding a gate, ask which of the ones already there would have caught
+it**; before keeping one, ask what it has caught that they did not.
+
 ---
 
 ## What we will not do

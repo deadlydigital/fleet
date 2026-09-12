@@ -283,48 +283,44 @@ The runner derives the real diff from git and judges that.
 """
 
 
-#: What fraction of the enforced test ceiling the agent is actually TOLD.
+#: Legacy only: the target as a fraction of the ceiling.
 #:
-#: THE NUMBER IN THE PROMPT IS AN ANCHOR, NOT A CONSTRAINT, and that is
-#: measured. Task 69 ran the same spec off the same base twice with nothing
-#: different but this sentence:
+#: `test_diff_target` is a contract field now, and this is what a contract
+#: FROZEN BEFORE 12 Sep 2026 falls back to. Task 69's own row was frozen
+#: without the field while all of this was being worked out, so the fallback
+#: is not hypothetical -- it is the path that row takes.
 #:
-#:     told 300   ->  wrote 377   (126%)   refused
-#:     told 600   ->  wrote 606   (101%)   refused
-#:
-#: and task 67 landed at 298 against 300 (99%). An agent with no meter, keeping
-#: a rough hand tally, writes to the figure it is given and lands on it or just
-#: past it. When the figure it is given IS the figure the gate enforces, that
-#: overshoot is a refusal every time, and a refusal costs a whole run.
-#:
-#: So the two stop being the same number. The contract's max_test_diff_lines
-#: stays what it always was -- the most test a reviewer will take, and the
-#: thing boundary.enforce refuses against. The prompt gets a target below it,
-#: and the gap absorbs the overshoot instead of the gate turning it into a
-#: dead run.
-#:
-#: 0.75, sized on the one overshoot there is to size it on. The worst measured
-#: is +26% (377 written against a 300 target), and 0.75 * 1.26 = 0.945, so that
-#: same overshoot lands at 94.5% of the ceiling instead of through it. 0.8
-#: fails this arithmetic -- 0.8 * 1.26 = 1.008 -- which is not a rounding
-#: quibble but the difference between a branch and a dead run.
-#:
-#: Concretely, and this is the check that matters: dd_api's 400 ceiling now
-#: tells the agent 300. 300 is exactly the target task 69 was working to when
-#: it wrote 377, and 377 is 23 lines INSIDE 400. The arrangement admits the
-#: run that started all of this, on that run's own measured behaviour.
-#:
-#: NOT APPLIED TO max_diff_lines. No production overshoot has ever been
-#: measured -- task 62 landed on 300 of 400, task 69 on 318 -- so a gap there
-#: would be the unmeasured headroom this system has now been wrong about three
-#: times. When a production diff is refused for overshooting its target, that
-#: is the measurement, and it costs one run to get.
+#: It cannot be the main route any more, and the reason is the same change
+#: that made it legacy: max_test_diff_lines is no longer a calibrated ceiling
+#: but a runaway bound sitting far above any plausible test, so a fraction of
+#: it is a fraction of a number chosen not to bind. 0.75 of 1200 is 900, which
+#: would anchor the agent at three times the figure anyone wants.
 TEST_TARGET_FRACTION = 0.75
 
 
-def test_target(test_limit: int) -> int:
-    """The test figure the PROMPT carries, under the ceiling the gate keeps."""
-    return int(test_limit * TEST_TARGET_FRACTION)
+def test_target(contract: dict) -> int:
+    """The test figure the PROMPT carries. Not the figure the gate enforces.
+
+    THE NUMBER IN THE PROMPT IS AN ANCHOR, NOT A CONSTRAINT, and that is
+    measured rather than supposed. Task 69 ran the same spec off the same base
+    three times, with nothing different between them but this sentence:
+
+        told 300  ->  wrote 377   ceiling 300, refused
+        told 600  ->  wrote 606   ceiling 600, refused
+        told 300  ->  wrote 439   ceiling 400, refused -- ALL CHECKS PASSED
+
+    and task 67 landed at 298 against 300. An agent with no meter, keeping a
+    rough hand tally, writes toward the figure it is given; it does not hit it
+    precisely, and the same target produced 377 and 439 on two runs. So the
+    target SHAPES the test and cannot BOUND it, and the two jobs belong to two
+    numbers: this one is told and exceedable, max_test_diff_lines is enforced,
+    never told, and set far enough away that overshoot is not a dead run.
+    """
+    target = contract.get("test_diff_target")
+    if target:
+        return int(target)
+    return int(int(contract.get("max_test_diff_lines") or 0)
+               * TEST_TARGET_FRACTION)
 
 
 def _size_note(contract: dict) -> str:
@@ -337,12 +333,12 @@ def _size_note(contract: dict) -> str:
     rationing one budget across both thins the test, and the test is the one
     artefact new_test_bites.sh exists to make mean something.
 
-    THE TEST FIGURE HERE IS A TARGET, NOT THE CEILING. See
-    TEST_TARGET_FRACTION: the ceiling is in the contract, the target is 80% of
-    it, and the prompt names only the target. The agent is not told the
-    ceiling, deliberately -- telling it both numbers would just move the anchor
-    back to the larger one, which is the whole finding this arrangement rests
-    on.
+    THE TEST FIGURE HERE IS A TARGET AND NOT A CEILING, and there no longer is
+    a ceiling worth naming: max_test_diff_lines is a runaway bound an order of
+    magnitude away, and the contract's `test_diff_target` is what this prints.
+    See test_target() for the three runs that established the difference. The
+    agent is told the target and not the bound, deliberately -- naming both
+    would put the anchor back on the larger number.
 
     SAYING "ADDED AND DELETED" IS THE POINT. The runner counts
     `git diff --numstat` added PLUS deleted, so rewriting 200 lines scores 400.
@@ -360,7 +356,7 @@ def _size_note(contract: dict) -> str:
                "go rather than checking.")
     if not test_limit:
         return (f"Keep the whole change under {limit} changed lines. {counted}")
-    target = test_target(test_limit)
+    target = test_target(contract)
     return f"""## Two size budgets, and they do not share
 
 Keep the change under {limit} changed lines, NOT counting the test file you

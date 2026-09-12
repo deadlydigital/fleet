@@ -121,6 +121,23 @@ def load_contract(repo: str, path: Path | None = None) -> dict[str, Any]:
             f"budget, or the test competes with the change it is testing for "
             f"room under max_diff_lines.")
 
+    # AND THE FIGURE THE AGENT IS ACTUALLY TOLD.
+    #
+    # 12 Sep 2026: max_test_diff_lines stopped being the number in the prompt
+    # and became a runaway bound sitting far above any plausible test. What
+    # shapes the test now is test_diff_target, and a contract that mandates a
+    # test without one sends the agent at that bound -- an anchor three times
+    # the figure anyone wants, which is the failure this whole pair of fields
+    # exists to have stopped happening. Same shape as the rule above, for the
+    # same reason: the combination IS the defect, so it is refused here rather
+    # than found in a run that has already been paid for.
+    if contract.get("creatable_paths") and not contract.get("test_diff_target"):
+        raise RuntimeError(
+            f"{path} declares creatable_paths but no test_diff_target. "
+            f"max_test_diff_lines is a runaway bound and is never shown to the "
+            f"agent; test_diff_target is the figure the prompt carries, and "
+            f"without it the prompt would anchor on the bound.")
+
     # The database refuses this too. Catching it here means the message names
     # the file rather than the trigger.
     clashes = [

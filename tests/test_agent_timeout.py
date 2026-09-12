@@ -142,32 +142,36 @@ def test_the_prompt_states_the_one_file_the_agent_must_add():
     assert "fails without your change" in prompt
 
 
-class TestThePromptCarriesATargetNotTheCeiling:
+class TestThePromptCarriesATargetNotTheBound:
     """12 Sep 2026. The figure in the prompt is an anchor the output lands on.
 
-    Task 69, same spec and same base, twice: told 300 it wrote 377, told 600 it
-    wrote 606. Task 67 landed at 298 of 300. When the told figure IS the
-    enforced one, that overshoot is a refused run every time -- so the prompt
-    now names 80% of the ceiling and the gate keeps the ceiling to itself. See
-    agent.TEST_TARGET_FRACTION.
+    Task 69, same spec and same base, three times: told 300 it wrote 377, told
+    600 it wrote 606, told 300 again it wrote 439 -- and that last one passed
+    every check including new_test_bites.sh. Task 67 landed at 298 of 300. The
+    told figure shapes the test and cannot bound it, so `test_diff_target` is
+    the number the prompt carries and `max_test_diff_lines` became a runaway
+    bound the agent is never shown.
     """
 
-    #: max_diff_lines is deliberately NOT 400 here, so that a 400 appearing
-    #: anywhere in the prompt can only have come from the test ceiling.
+    #: The real shape: a target three times under the bound. max_diff_lines is
+    #: deliberately neither, so any 1200 in the prompt could only be the bound.
     CONTRACT = {
         "writable_paths": ["api/analytics/routes/orders.py"],
         "protected_paths": ["api/tests/**"],
         "creatable_paths": ["api/tests/analytics/test_fleet_*.py"],
         "max_diff_lines": 500,
-        "max_test_diff_lines": 400,
+        "test_diff_target": 300,
+        "max_test_diff_lines": 1200,
     }
 
-    def test_the_target_is_named_and_the_ceiling_is_not(self):
+    def test_the_target_is_named_and_the_bound_is_not(self):
         prompt = agent.build_prompt({"spec_md": "# do it"}, self.CONTRACT)
         assert "own budget of about 300 lines" in prompt
         # NAMING BOTH WOULD PUT THE ANCHOR BACK ON THE LARGER NUMBER, which is
-        # the finding the whole arrangement rests on.
-        assert "400" not in prompt
+        # the finding the whole arrangement rests on -- and the larger number
+        # is now four times the target, so it would be a disaster rather than
+        # a drift.
+        assert "1200" not in prompt
 
     def test_it_says_the_target_is_not_a_hard_edge(self):
         """An agent that reads a target as a gate rations the test, which is
@@ -176,16 +180,22 @@ class TestThePromptCarriesATargetNotTheCeiling:
         assert "target rather than a hard edge" in prompt
         assert "padding" in prompt
 
-    def test_the_target_leaves_room_for_the_overshoot_that_was_measured(self):
-        """0.75 is sized on task 69's 26% overshoot, so the arithmetic that
-        justifies it is asserted here rather than left in a comment to rot."""
-        for ceiling in (300, 400, 600):
-            assert agent.test_target(ceiling) * 1.26 <= ceiling
+    def test_the_target_is_the_contracts_and_not_a_fraction_of_the_bound(self):
+        """The bound is chosen NOT to bind, so a fraction of it means nothing.
+        0.75 * 1200 would anchor the agent at 900."""
+        assert agent.test_target(self.CONTRACT) == 300
 
-    def test_it_admits_the_run_that_caused_it(self):
-        """dd_api's real ceiling, and task 69's real measured behaviour: told
-        300 it wrote 377, and 377 is inside 400."""
-        assert agent.test_target(400) == 300
+    def test_a_row_frozen_before_the_field_existed_still_gets_a_figure(self):
+        """Task 69's own task row is one of these, so the fallback is a live
+        path rather than a courtesy."""
+        legacy = {k: v for k, v in self.CONTRACT.items()
+                  if k != "test_diff_target"} | {"max_test_diff_lines": 400}
+        assert agent.test_target(legacy) == 300
+        prompt = agent.build_prompt({"spec_md": "# do it"}, legacy)
+        assert "own budget of about 300 lines" in prompt
+
+    def test_a_contract_with_neither_says_nothing_about_a_test_budget(self):
+        assert agent.test_target({"max_diff_lines": 400}) == 0
 
     def test_a_contract_without_a_test_budget_is_untouched(self):
         prompt = agent.build_prompt(

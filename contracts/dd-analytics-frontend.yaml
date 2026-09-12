@@ -466,32 +466,41 @@ max_requirements: 12
 
 max_diff_lines: 600
 
-# 400, 12 Sep 2026, was 300 and was briefly 600 that same morning. Same basis
-# and the same provisionality as contracts/deadly-digital-platform-api.yaml --
-# see the note there, which carries every measurement and the argument that
-# was tried, refuted and replaced between those two values.
+# 300: THE FIGURE THE AGENT IS TOLD. Guidance, exceedable, and nothing
+# refuses against it. See contracts/deadly-digital-platform-api.yaml, which
+# carries every measurement behind the pair of fields and the four days that
+# produced them.
 #
-# IT MOVES BECAUSE ITS BASIS MOVES, NOT BECAUSE THIS CONTRACT LEARNS ANYTHING.
-# It has never had an observation of its own under an uncontested budget, and
-# it still does not. All three frontend tests were written while the test came
-# out of max_diff_lines:
+# THIS CONTRACT STILL HAS NO OBSERVATION OF ITS OWN. All three frontend tests
+# were written while the test came out of max_diff_lines, so all three measure
+# what the old shared limit left over rather than what a vitest file needs:
 #
 #   task 49   175    3 cases   failed on paired paths
 #   task 55   177    5 cases   failed on paired paths
 #   task 53   190    6 cases   MERGED
 #
-# What the dd_api runs established is that an agent writes to the budget it is
-# told -- 298 against 300, 377 against 300, 606 against 600 -- so none of the
-# three numbers above measures what a vitest file needs either. They measure
-# what the old shared limit left over. This field follows dd_api's number for
-# the same reason it did before: it has nothing of its own to set one with.
+# It follows dd_api's figure for the reason it always has -- nothing of its own
+# to set one with -- and that matters less now than it did this morning,
+# because the figure is no longer a gate.
+test_diff_target: 300
+
+# 1200: A RUNAWAY BOUND, and the same one dd_api carries. Its job is to stop a
+# pathological run, not to judge a test. The agent is never told it, and if it
+# ever fires the question is what the agent did, not whether the number is
+# right.
+#
+# The argument is entirely in the api contract and is not repeated: a line
+# count cannot tell a thorough test from a bloated one, and the three gates
+# that can -- new_test_bites.sh, creatable_paths, max_diff_lines -- are all in
+# this file already. For this contract the demotion also retires a ceiling
+# that had never refused anything and never had a sample worth trusting.
 #
 # max_diff_lines above is unchanged and counts production lines only, so it
 # loosened by whatever the test costs without the number moving. Task 53's
 # production half was 112 of its 302, which is the only evidence this contract
 # has about its own production sizes -- too little to re-derive 600, so it
 # stands.
-max_test_diff_lines: 400
+max_test_diff_lines: 1200
 # 6.00, measured 11 Sep 2026, was 3.00. PROVISIONAL -- it rests on two
 # observations. The reasoning, the two runs it rests on, and what a
 # re-measurement needs to replace are recorded once in

@@ -425,7 +425,12 @@ def from_accepted_draft(task: dict[str, Any], patch_payload: dict[str, Any],
         # max_test_diff_lines travels with creatable_paths or the task loses
         # its test allowance and the boundary falls back to one budget --
         # §9.4's flattened objective_ref, arriving by the same route.
-        for opt in ("creatable_paths", "max_test_diff_lines", "paired_paths",
+        # test_diff_target travels with it for the same reason and a different
+        # symptom: the boundary would be fine and the PROMPT would lose its
+        # figure, falling back to a fraction of a bound that is deliberately
+        # nowhere near what the test should be.
+        for opt in ("creatable_paths", "max_test_diff_lines", "test_diff_target",
+                    "paired_paths",
                     "worktree_links", "readable_repos", "agent_tools",
                     "auto_merge", "contract_version"):
             if contract.get(opt) is not None:

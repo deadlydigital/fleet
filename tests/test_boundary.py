@@ -572,6 +572,33 @@ def test_a_contract_mandating_a_test_must_budget_for_it(tmp_path):
         config.load_contract(base["repo"], p)
 
 
+def test_a_contract_mandating_a_test_must_state_the_figure_it_tells(tmp_path):
+    """And the target, which is the half the agent actually sees.
+
+    12 Sep 2026: max_test_diff_lines became a runaway bound at 1200 and stopped
+    being the number in the prompt. A contract that mandates a test without a
+    test_diff_target sends the agent at 75% of the bound -- 900 lines, three
+    times the figure anyone wants -- which is the same class of silent defect
+    as the rule above and is refused in the same place.
+    """
+    import yaml
+
+    from runner import config
+
+    base = yaml.safe_load(
+        Path("contracts/deadly-digital-platform-api.yaml").read_text())
+    assert base["creatable_paths"] and base["test_diff_target"], \
+        "the fixture is only meaningful if the real contract declares both"
+    assert base["test_diff_target"] < base["max_test_diff_lines"], \
+        "the told figure has to sit under the bound or there is no gap at all"
+
+    del base["test_diff_target"]
+    p = tmp_path / "no-target.yaml"
+    p.write_text(yaml.safe_dump(base))
+    with pytest.raises(RuntimeError, match="test_diff_target"):
+        config.load_contract(base["repo"], p)
+
+
 def test_every_real_contract_still_loads():
     """A whole-file assertion, because the rule above can refuse one of ours.
 
