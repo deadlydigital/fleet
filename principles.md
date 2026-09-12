@@ -105,6 +105,79 @@ that has never refused anything. **Write the derivation beside the number, and
 if there is nothing to derive it from, say so there in those words.** A ceiling
 marked provisional invites the re-measurement; a bare integer gets believed.
 
+**And before re-measuring one, check that the thing you are measuring does not
+move when the ceiling does.** `max_test_diff_lines` was raised from 300 to 600
+on 12 September on the reading that the tests were long because the work needed
+them long. Task 69 was rerun to test it — same spec, same base commit, nothing
+different but the figure in the prompt — and wrote 606 lines against 600 having
+written 377 against 300. The number in the prompt is an anchor the agent fills,
+so every observation measured the ceiling and not the work. That day cost £7.97
+across two runs, produced two line counts and no code, and task 69's feature is
+still not built. The fix was not a third number: a size-only refusal now runs
+the verification before it refuses, so the evidence survives the gate, and the
+figure the agent is told is no longer the figure the gate enforces.
+
+**A gate that cannot see the property it is named for is a proxy, and a proxy
+costs runs.** `max_test_diff_lines` was a line count standing in for "is this
+test bloated", and a line count cannot tell bloat from thoroughness — task 69's
+test went from 20 cases to 30 with its lines-per-case flat. Beside it sat three
+gates that check the thing itself: `new_test_bites.sh` runs the added test
+against the tree before the change and refuses if it passes there,
+`creatable_paths` allows one added file and no modifications, and
+`max_diff_lines` bounds the production diff, which is where scope creep
+actually lives. The proxy refused three runs and never once caught a bad test —
+run 44 was green on all six checks, `new_test_bites.sh` included, and was
+refused for 39 lines. It is now a runaway bound an order of magnitude away, and
+the figure that shapes the test is guidance in the prompt that nothing enforces.
+**Before adding a gate, ask which of the ones already there would have caught
+it**; before keeping one, ask what it has caught that they did not.
+
+**A property that holds by construction stops holding when something new stops
+constructing it — and nothing tells you.** Every console reader identified "the
+task's run" as the newest run of that task, and compared `branch_name` against
+its recorded patch commit. That was correct for as long as the runner was the
+only thing writing `branch_name`, because it writes it from the run it has just
+finished: recency and identity were the same row, guaranteed by the one writer.
+038's adoption is the first operation that points `branch_name` at an *older*
+run's branch, and on the first adoption the accept page compared
+`fleet/task-69.3` against the patch sha of the run that had verified
+`fleet/task-69.4`, reporting a verified branch as though it had been tampered
+with. The readers were never checked against the new writer. **When you add a
+writer, list the readers that depended on there being only one** — the fix here
+was to ask for identity directly (the run that recorded *this* commit) instead
+of accepting recency as its proxy.
+
+This is the third of its shape. The frozen contract: `max_test_diff_lines` in
+the yaml was the value the gate used, until tasks started carrying a frozen
+copy and the yaml stopped reaching a queued task. The stale console: the
+process enforced the rules of whenever it was last restarted, which was the
+same thing as the rules in the tree until a deploy lagged. Each was a
+coincidence doing load-bearing work, and each was found by the work rather than
+by review. **The coincidence is worth naming in the comment at the point it is
+relied on**, because that is the only place the next person can see that it is
+one.
+
+It failed closed, and that is the only reason this is a paragraph rather than
+an incident: `merge.preflight` refuses on a tip mismatch, so nothing merged,
+the sweep logged `left for review`, and Accept could not proceed. Task 69 was
+stuck, not at risk. **A guard that refuses on a state it does not understand is
+doing its job even when the state is the guard's own fault** — the cost was a
+confusing sentence and an afternoon, not a bad merge.
+
+**A retry is a re-roll, not a retry.** `max_attempts` reads as "try again" and
+means "draw again". Task 69 ran four times from one spec and one base commit,
+nothing about its inputs changing between them, and produced tests of 377, 606,
+439 and 385 lines — four different pieces of work, not four attempts at one.
+The third passed every check its contract has. The fourth, queued only to
+regenerate the third because there was no way to keep it, cleared the gate and
+failed on a single new import-sort finding. £3.32 to replace a verified branch
+with a broken one. So a second draw is as likely to be worse as better, and
+re-queueing a task that produced something good is a decision to throw that
+away — which is worth saying out loud, because the word on the column does not
+say it. **Keep what verified.** 038 exists so that a branch whose recorded
+checks were green can be adopted rather than redrawn, and the only reason it
+was ever redrawn is that nothing could reach it.
+
 ---
 
 ## What we will not do

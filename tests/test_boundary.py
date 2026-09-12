@@ -450,6 +450,67 @@ def test_an_oversized_test_is_refused_on_its_own_budget(repo):
     assert "301 lines of added test exceeds the contract's 300" in verdict.reasons()
 
 
+class TestSizeOnlyIsSeparableFromTheRest:
+    """Which refusals can still have their checks believed.
+
+    Verification is skipped on a boundary violation because a change that
+    touched a protected path may have touched the SUITE. That argument covers
+    exactly the protected and outside-writable cases and nothing else -- a
+    diff that is merely too long was admitted path by path, so its checks mean
+    what they always mean. runner/cycle.tick reads this to decide whether to
+    collect the evidence before refusing; see Boundary.size_only for what task
+    69 paid to establish the difference.
+    """
+
+    def test_too_much_production_is_size_only(self, repo):
+        base = base_sha(repo)
+        _write(repo, "api/analytics/services/analytics_engine.py", 401)
+        verdict = _verdict(repo, base, SPLIT_CONTRACT)
+        assert verdict.over_diff_limit and not verdict.clean
+        assert verdict.size_only
+
+    def test_too_much_test_is_size_only(self, repo):
+        base = base_sha(repo)
+        _write(repo, "api/analytics/services/analytics_engine.py", 10)
+        _write(repo, "api/tests/analytics/test_fleet_huge.py", 301)
+        verdict = _verdict(repo, base, SPLIT_CONTRACT)
+        assert verdict.over_test_limit and not verdict.clean
+        assert verdict.size_only
+
+    def test_a_protected_path_is_not(self, repo):
+        base = base_sha(repo)
+        _write(repo, "api/pytest.ini", 3)
+        verdict = _verdict(repo, base, SPLIT_CONTRACT)
+        assert verdict.protected_hits
+        assert not verdict.size_only
+
+    def test_a_path_outside_the_contract_is_not(self, repo):
+        base = base_sha(repo)
+        _write(repo, "README.md", 3)
+        verdict = _verdict(repo, base, SPLIT_CONTRACT)
+        assert verdict.outside_writable
+        assert not verdict.size_only
+
+    def test_oversized_AND_protected_is_not(self, repo):
+        """The combination is the one that matters: length is forgivable
+        enough to run the checks, and the suite being touched is not, so the
+        pair has to land on the stricter side."""
+        base = base_sha(repo)
+        _write(repo, "api/analytics/services/analytics_engine.py", 401)
+        _write(repo, "api/pytest.ini", 3)
+        verdict = _verdict(repo, base, SPLIT_CONTRACT)
+        assert verdict.over_diff_limit and verdict.protected_hits
+        assert not verdict.size_only
+
+    def test_a_clean_verdict_is_not_size_only_either(self, repo):
+        """Nothing is wrong with it, so there is no refusal to qualify."""
+        base = base_sha(repo)
+        _write(repo, "api/analytics/services/analytics_engine.py", 10)
+        verdict = _verdict(repo, base, SPLIT_CONTRACT)
+        assert verdict.clean
+        assert not verdict.size_only
+
+
 def test_a_modified_test_is_not_an_added_one(repo):
     """creatable_paths is ADD-only, and the split follows it exactly.
 
@@ -508,6 +569,33 @@ def test_a_contract_mandating_a_test_must_budget_for_it(tmp_path):
     p = tmp_path / "broken.yaml"
     p.write_text(yaml.safe_dump(base))
     with pytest.raises(RuntimeError, match="max_test_diff_lines"):
+        config.load_contract(base["repo"], p)
+
+
+def test_a_contract_mandating_a_test_must_state_the_figure_it_tells(tmp_path):
+    """And the target, which is the half the agent actually sees.
+
+    12 Sep 2026: max_test_diff_lines became a runaway bound at 1200 and stopped
+    being the number in the prompt. A contract that mandates a test without a
+    test_diff_target sends the agent at 75% of the bound -- 900 lines, three
+    times the figure anyone wants -- which is the same class of silent defect
+    as the rule above and is refused in the same place.
+    """
+    import yaml
+
+    from runner import config
+
+    base = yaml.safe_load(
+        Path("contracts/deadly-digital-platform-api.yaml").read_text())
+    assert base["creatable_paths"] and base["test_diff_target"], \
+        "the fixture is only meaningful if the real contract declares both"
+    assert base["test_diff_target"] < base["max_test_diff_lines"], \
+        "the told figure has to sit under the bound or there is no gap at all"
+
+    del base["test_diff_target"]
+    p = tmp_path / "no-target.yaml"
+    p.write_text(yaml.safe_dump(base))
+    with pytest.raises(RuntimeError, match="test_diff_target"):
         config.load_contract(base["repo"], p)
 
 

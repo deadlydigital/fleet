@@ -375,22 +375,37 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 f"{verdict.max_diff_lines}, {verdict.test_diff_lines} test "
                 f"lines of {verdict.max_test_diff_lines}")
         keep_branch = True
+        refused_on_size = False
         if not verdict.clean:
-            result.outcome = "FAILED"
-            result.reason = "boundary violation"
-            # Carried on the result, not only written to the database: a
-            # caller that cannot tell "verification failed" from "verification
-            # was never run" cannot report the difference either.
-            result.verification = verify.Verification(
-                skipped_reason="boundary violation")
             for line in verdict.reasons():
                 log(f"  REFUSED  {line}")
-            _record_verification(
-                task, run_id, base_sha, change, wt_path, contract,
-                result.verification, verdict, log)
-            return
-
-        log("  boundary clean")
+            if not verdict.size_only:
+                result.outcome = "FAILED"
+                result.reason = "boundary violation"
+                # Carried on the result, not only written to the database: a
+                # caller that cannot tell "verification failed" from
+                # "verification was never run" cannot report the difference
+                # either.
+                result.verification = verify.Verification(
+                    skipped_reason="boundary violation")
+                _record_verification(
+                    task, run_id, base_sha, change, wt_path, contract,
+                    result.verification, verdict, log)
+                return
+            # TOO BIG IS STILL REFUSED -- AND THE CHECKS RUN ANYWAY.
+            #
+            # The refusal is already decided and nothing below can undo it.
+            # What the checks buy is the evidence the refusal would otherwise
+            # destroy: whether the oversized change passes, and whether the
+            # test it carries BITES. Task 69 spent two runs and £7.97 proving
+            # that a size refusal returns a line count and nothing else, while
+            # the number those runs were re-measuring needed to know whether
+            # the long test was worth its length. See Boundary.size_only.
+            refused_on_size = True
+            log("  the branch is refused; running the checks anyway for the "
+                "evidence, which is not a second chance")
+        else:
+            log("  boundary clean")
 
         # ---- verification, on a tree whose suite is known unmoved ----
         #
@@ -453,6 +468,16 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
 
         _record_verification(task, run_id, base_sha, change, wt_path, contract,
                              verification, verdict, log)
+
+        # THE BOUNDARY DECIDED THIS RUN, WHATEVER THE CHECKS SAID. Returning
+        # here rather than folding the case into the test below is deliberate:
+        # a green suite on an oversized branch must not read as anything but a
+        # refusal, and the one sentence `reason` carries is the reason it was
+        # refused. The checks are in the payload for whoever re-measures.
+        if refused_on_size:
+            result.outcome = "FAILED"
+            result.reason = "boundary violation"
+            return
 
         if not verification.passed:
             result.outcome = "FAILED"

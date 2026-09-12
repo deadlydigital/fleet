@@ -142,6 +142,69 @@ def test_the_prompt_states_the_one_file_the_agent_must_add():
     assert "fails without your change" in prompt
 
 
+class TestThePromptCarriesATargetNotTheBound:
+    """12 Sep 2026. The figure in the prompt is an anchor the output lands on.
+
+    Task 69, same spec and same base, three times: told 300 it wrote 377, told
+    600 it wrote 606, told 300 again it wrote 439 -- and that last one passed
+    every check including new_test_bites.sh. Task 67 landed at 298 of 300. The
+    told figure shapes the test and cannot bound it, so `test_diff_target` is
+    the number the prompt carries and `max_test_diff_lines` became a runaway
+    bound the agent is never shown.
+    """
+
+    #: The real shape: a target three times under the bound. max_diff_lines is
+    #: deliberately neither, so any 1200 in the prompt could only be the bound.
+    CONTRACT = {
+        "writable_paths": ["api/analytics/routes/orders.py"],
+        "protected_paths": ["api/tests/**"],
+        "creatable_paths": ["api/tests/analytics/test_fleet_*.py"],
+        "max_diff_lines": 500,
+        "test_diff_target": 300,
+        "max_test_diff_lines": 1200,
+    }
+
+    def test_the_target_is_named_and_the_bound_is_not(self):
+        prompt = agent.build_prompt({"spec_md": "# do it"}, self.CONTRACT)
+        assert "own budget of about 300 lines" in prompt
+        # NAMING BOTH WOULD PUT THE ANCHOR BACK ON THE LARGER NUMBER, which is
+        # the finding the whole arrangement rests on -- and the larger number
+        # is now four times the target, so it would be a disaster rather than
+        # a drift.
+        assert "1200" not in prompt
+
+    def test_it_says_the_target_is_not_a_hard_edge(self):
+        """An agent that reads a target as a gate rations the test, which is
+        the failure the split budget was built to end."""
+        prompt = agent.build_prompt({"spec_md": "# do it"}, self.CONTRACT)
+        assert "target rather than a hard edge" in prompt
+        assert "padding" in prompt
+
+    def test_the_target_is_the_contracts_and_not_a_fraction_of_the_bound(self):
+        """The bound is chosen NOT to bind, so a fraction of it means nothing.
+        0.75 * 1200 would anchor the agent at 900."""
+        assert agent.test_target(self.CONTRACT) == 300
+
+    def test_a_row_frozen_before_the_field_existed_still_gets_a_figure(self):
+        """Task 69's own task row is one of these, so the fallback is a live
+        path rather than a courtesy."""
+        legacy = {k: v for k, v in self.CONTRACT.items()
+                  if k != "test_diff_target"} | {"max_test_diff_lines": 400}
+        assert agent.test_target(legacy) == 300
+        prompt = agent.build_prompt({"spec_md": "# do it"}, legacy)
+        assert "own budget of about 300 lines" in prompt
+
+    def test_a_contract_with_neither_says_nothing_about_a_test_budget(self):
+        assert agent.test_target({"max_diff_lines": 400}) == 0
+
+    def test_a_contract_without_a_test_budget_is_untouched(self):
+        prompt = agent.build_prompt(
+            {"spec_md": "# do it"},
+            {"writable_paths": ["api/analytics/routes/orders.py"],
+             "protected_paths": ["api/tests/**"], "max_diff_lines": 400})
+        assert "Keep the whole change under 400 changed lines" in prompt
+
+
 def test_a_contract_with_no_creatable_paths_says_nothing_about_adding_a_test():
     """Every other contract in contracts/ is one of these, and telling those
     agents to add a test would send them at a protected tree for no reason."""

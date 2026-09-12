@@ -50,23 +50,49 @@ PROSE = textwrap.dedent("""\
     """)
 
 
+#: A token no file in either repo contains, and no merge will ever add.
+#:
+#: THE SHARED FIXTURE MUST NOT CARRY A LIVE CLAIM ABOUT THE TREE, and until
+#: 12 Sep 2026 it carried one: a grep_count for `text/csv` under
+#: api/analytics/routes/ expecting exactly 1. Task 67 merged the order CSV
+#: export, the count became 2, and TWELVE tests went red at once -- none of
+#: them about text/csv. They are about premises, forbidden fields, required
+#: fields and the ceiling, and every one failed because the row they all build
+#: on asserted something production was free to change.
+#:
+#: The check under test re-executes probes against the real repository, so a
+#: probe here is always run for real. What this makes synthetic is the CLAIM:
+#: a pattern that is absent, and stays absent no matter what merges. The tests
+#: whose subject IS a live claim still make one on purpose -- the two real
+#: stale rows in TestAClaimIsReExecutedNotReRead are the reason this check
+#: exists -- and they are now the only place in this file a merge can reach.
+SENTINEL = "zzzz-absent-from-every-file-candidate-fixture-zzzz"
+
+
 def candidate(**over):
     c = {
-        "title": "CSV export of the order list",
-        "rationale": ("The only text/csv response in the analytics API is the "
-                      "segment export, so orders cannot be got out at all."),
+        "title": "Fixture row for the shape check",
+        "rationale": ("A row that exercises the shape of the block and claims "
+                      "nothing about the repository, so that a test failing "
+                      "here is a test about the shape."),
         "repo": "deadly-digital-platform",
         "objective_ref": "dd-feature-parity",
         "suggested_paths": ["api/analytics/routes/orders.py"],
         "verified_sha": head(),
         "hib_signal": None,
+        # Absent now and absent after any merge: the count is 0 whether the
+        # glob matches every route file or none of them.
         "probes": [{"grep_count": {"glob": "api/analytics/routes/*.py",
-                                   "pattern": "text/csv", "expected": 1}}],
+                                   "pattern": SENTINEL, "expected": 0}}],
         # Required since 10 Sep 2026: the ground, not the gap. See
-        # TestThePremiseIsTheGroundNotTheGap below and §9.9.1.
-        "premise": [{"claim": "the order list is served by a route that exists "
-                              "and can be given a format",
-                     "probe": {"path_exists": "api/analytics/routes/orders.py"}}],
+        # TestThePremiseIsTheGroundNotTheGap below and §9.9.1. The ground this
+        # row stands on is the one thing about the repo that cannot stop being
+        # true while the check still works: that it is a checkout at all,
+        # which is what makes verified_sha a thing git can be asked about.
+        "premise": [{"claim": "the repository this row names is a checkout on "
+                              "this host, which is what makes its verified_sha "
+                              "re-executable",
+                     "probe": {"path_exists": ".git"}}],
         "evidence": [{"document": "specs/metorik-gap.md", "sha": GAP_SHA,
                       "status": "Missing", "agency_use_band": "Daily"}],
     }
@@ -221,8 +247,11 @@ class TestAClaimIsReExecutedNotReRead:
         assert code == 1 and "not in the probe vocabulary" in out
 
     def test_path_exists_holds_for_something_that_does(self, tmp_path):
+        """The subject here is the predicate, not the path, so the path is the
+        one that cannot stop existing while the check still runs: a named repo
+        is a checkout, or `git cat-file` on verified_sha could not answer."""
         code, out = run(tmp_path, block([candidate(
-            probes=[{"path_exists": "api/analytics/routes/orders.py"}])]))
+            probes=[{"path_exists": ".git"}])]))
         assert code == 0, out
 
 

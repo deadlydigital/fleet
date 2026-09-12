@@ -250,15 +250,23 @@ def task_detail(request: Request, task_id: int):
     # difference between a gate and a trapdoor.
     blocker = None
     if task["status"] == "READY_FOR_REVIEW" and task["branch_name"]:
-        payload = (patch or {}).get("payload") or {}
+        # BY THE BRANCH, NOT BY RECENCY. `steps` above is the newest run and
+        # stays that way for the run panel; the decision reads the run that
+        # recorded THIS branch's commit. See _patch_for_branch.
+        decided_run, payload, tip = _patch_for_branch(task)
         try:
-            check = merge.preflight(
-                config.repo_root() / task["repo"], task, task["branch_name"],
-                payload.get("base_commit_sha", ""),
-                payload.get("patch_commit_sha", ""),
-                payload.get("branch_point_sha", ""))
-            if not check.ok:
-                blocker = {"reason": check.reason, "detail": list(check.detail)}
+            if decided_run is None and tip:
+                blocker = {"reason": NO_RUN_FOR_BRANCH.format(
+                    branch=task["branch_name"]), "detail": []}
+            else:
+                check = merge.preflight(
+                    config.repo_root() / task["repo"], task, task["branch_name"],
+                    payload.get("base_commit_sha", ""),
+                    payload.get("patch_commit_sha", ""),
+                    payload.get("branch_point_sha", ""))
+                if not check.ok:
+                    blocker = {"reason": check.reason,
+                               "detail": list(check.detail)}
         except Exception as exc:                          # noqa: BLE001
             # A page that 500s because a git read failed is worse than one
             # that says it could not look. It NEVER silently omits the
@@ -419,7 +427,60 @@ def _take_outcome(task_id: int) -> dict[str, Any] | None:
     return _OUTCOMES.pop(task_id, None)
 
 
+#: Said the same way wherever it is said. A decision surface and a sweep that
+#: describe the same state differently is how the same condition gets diagnosed
+#: twice.
+NO_RUN_FOR_BRANCH = (
+    "no run of this task recorded {branch} at the commit it is on, so nothing "
+    "here says what would merge")
+
+
+def _patch_for_branch(task) -> tuple[int | None, dict[str, Any], str]:
+    """The run that produced the branch this task records, found by its tip.
+
+    Returns (run_id, patch payload, tip).
+
+    RECENCY IS NOT IDENTITY, and the difference only became visible when
+    something started breaking the coincidence. Until 038 the newest run WAS
+    the run behind branch_name, because the runner writes branch_name from the
+    run it has just finished. Adoption points branch_name at an older run's
+    branch, and on the first one -- task 69, adopted at fleet/task-69.3 from
+    run 44 -- this page compared that branch against run 45's patch sha, which
+    belonged to fleet/task-69.4, and reported the branch as tampered with.
+
+    TWO DIFFERENT NOTHINGS, AND THEY MUST NOT BE REPORTED AS ONE. An empty tip
+    means git could not resolve the branch at all -- no checkout, no such ref,
+    git not on the path -- and the accurate sentence for that is preflight's
+    ("branch X is not in this checkout"), reached by leaving the payload empty
+    and letting it speak. A resolved tip with no matching run is the new
+    condition: the branch exists and nothing verified what it is on. Saying the
+    second when the first is true is the same substitution this fixes, pointed
+    the other way.
+    """
+    if not task.get("branch_name"):
+        return None, {}, ""
+    repo = config.repo_root() / task["repo"]
+    try:
+        tip = merge.branch_tip(repo, task["branch_name"])
+    except Exception:                                     # noqa: BLE001
+        return None, {}, ""
+    if not tip:
+        return None, {}, ""
+    row = queries.patch_for_tip(task["id"], tip)
+    if row is None:
+        return None, {}, tip
+    return row["run_id"], (row["payload"] or {}), tip
+
+
 def _load(task_id: int):
+    """The task and its newest run. REJECT's view, and the page furniture.
+
+    Deliberately still the newest run. Rejecting is a person saying no to a
+    task, which is true whatever branch is on disk and must stay possible when
+    nothing verifies -- that is the one decision that should never be blocked
+    by the state this module now refuses to guess at. accept() does its own
+    lookup, by branch, because it is the decision that merges.
+    """
     task = queries.task_detail(task_id)
     if task is None:
         return None, None, None
@@ -457,6 +518,29 @@ def accept(request: Request, task_id: int,
     if task is None:
         return render(request, "missing.html", status_code=404,
                       what=f"task {task_id}")
+
+    # THE MERGING DECISION PICKS ITS RUN BY THE BRANCH, NOT BY RECENCY.
+    #
+    # _load above is the newest run, which is what the page furniture and
+    # Reject want. What is about to be merged is a branch, and the only run
+    # that says anything about it is the one that recorded its commit. Those
+    # were the same row until 038 made adoption possible; task 69 is where
+    # they stopped being.
+    #
+    # A resolved tip with no matching run is refused here rather than left to
+    # preflight, which would say "the run recorded no patch commit" -- true of
+    # the empty payload and not the fact worth reporting. An UNRESOLVED tip is
+    # left to preflight on purpose: "branch X is not in this checkout" is its
+    # sentence and a better one than anything this can say.
+    decided_run, patch, tip = _patch_for_branch(task)
+    if decided_run is None and tip:
+        return render(request, "decided.html", status_code=409, task_id=task_id,
+                      outcome={"ok": False, "loud": True,
+                               "headline": "Refused: nothing verified this branch",
+                               "detail": [NO_RUN_FOR_BRANCH.format(
+                                   branch=task["branch_name"] or "(none)")]})
+    if decided_run is not None:
+        run_id = decided_run
 
     repo = config.repo_root() / task["repo"]
     contract = task["acceptance_contract"] or {}

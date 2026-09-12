@@ -89,6 +89,19 @@ def _sha(repo: Path, ref: str) -> str:
     return out.stdout.strip()
 
 
+def branch_tip(repo: Path, branch: str) -> str:
+    """What the branch is actually on, or "" if git does not have it.
+
+    Exported because the readers now pick a run BY this rather than by
+    recency, and asking the tree is the same discipline preflight uses three
+    lines further down: the tip is a fact, the newest row is a guess that
+    happened to be right until adoption existed.
+    """
+    if not BRANCH_RE.match(branch or ""):
+        return ""
+    return _sha(repo, branch)
+
+
 def _count(repo: Path, spec: str) -> int | None:
     """`git rev-list --count`, or None when the range could not be resolved.
 

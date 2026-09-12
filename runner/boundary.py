@@ -191,6 +191,30 @@ class Boundary:
     test_diff_lines: int = 0
     max_test_diff_lines: int = 0
 
+    @property
+    def size_only(self) -> bool:
+        """Too big, and nothing else. The checks can still be believed.
+
+        WHY THE DISTINCTION EARNS ITS KEEP. Verification is skipped on a
+        boundary violation for one reason: a diff that touched a protected
+        path may have touched the SUITE, and a suite the change rewrote cannot
+        judge the change. That argument does not reach a diff whose only fault
+        is length. Every path in it is one the contract admitted, the suite is
+        untouched, and the checks mean exactly what they mean on a clean run.
+
+        The cost of not drawing the line is measured, on task 69: two runs,
+        £7.97, refused at 377 of 300 and then at 606 of 600, and because both
+        died here neither test was ever executed. The re-measurement those runs
+        were paying for needed to know whether a long test PASSES and BITES,
+        and a size refusal is the one outcome that guarantees nobody finds out.
+
+        This does not make a size-refused branch acceptable. It is refused
+        either way -- `clean` is still False and the caller still returns
+        FAILED. This only decides whether the evidence gets collected first.
+        """
+        return ((self.over_diff_limit or self.over_test_limit)
+                and not self.protected_hits and not self.outside_writable)
+
     def reasons(self) -> list[str]:
         out = []
         for path, glob in sorted(self.protected_hits.items()):

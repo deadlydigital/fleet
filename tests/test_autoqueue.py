@@ -262,11 +262,20 @@ class TestWhatItQueues:
             (_P(__file__).resolve().parent.parent / "contracts"
              / "dd-analytics-frontend.yaml").read_text())
         for opt in ("creatable_paths", "paired_paths", "worktree_links",
-                    "readable_repos", "agent_tools", "contract_version"):
+                    "readable_repos", "agent_tools", "contract_version",
+                    # BOTH SIZE FIGURES, and they go wrong differently if
+                    # dropped. Without max_test_diff_lines the boundary stops
+                    # splitting and the test competes with the change again;
+                    # without test_diff_target the prompt falls back to a
+                    # fraction of a bound set never to bind, and anchors the
+                    # agent at 900 lines. Neither failure is visible in the
+                    # row -- both show up a run later.
+                    "max_test_diff_lines", "test_diff_target"):
             if shipped.get(opt) is not None:
                 assert c.get(opt) == shipped[opt], (
                     f"{opt} is in the contract and not in the frozen row")
         assert c["creatable_paths"]
+        assert c["test_diff_target"] < c["max_test_diff_lines"]
 
     def test_the_objective_is_carried_from_the_spec_task(self, merged_draft,
                                                          console):

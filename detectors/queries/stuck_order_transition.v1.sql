@@ -1,0 +1,99 @@
+-- STUCK_ORDER_TRANSITION
+--
+-- An order the platform was told about ONCE and never again, still sitting in
+-- a status it should have left by now.
+--
+-- `updated_at IS NULL` is exact rather than heuristic. sync_engine.py sets
+-- `updated_at = NOW()` only in the ON CONFLICT DO UPDATE arm of the order
+-- upsert, so a NULL means the row has only ever been INSERTed: exactly one
+-- push has ever mentioned this order.
+--
+-- WHAT IT IS FOR, MEASURED 12 Sep 2026
+--
+-- The connector changed on 2026-08-25 from pushing an order once, when it
+-- reached `completed`, to pushing on creation and again on every status
+-- change. Before that change the platform had never held a `pending` order in
+-- its life; 16,077 of the 16,080 orders in the week of 20 Jul carry exactly
+-- one push. The new design is better for freshness and worse for
+-- completeness: it loses roughly one transition push in every five hundred.
+-- The order lands at creation, the transition never arrives, and the row sits
+-- at `pending` for good while the store has it completed.
+--
+-- NO BARE PER-CENT SIGN ANYWHERE IN THIS FILE, INCLUDING HERE IN THE PROSE.
+-- psycopg scans the whole statement for pyformat placeholders and does not
+-- skip comments, so a stray sign is "incomplete placeholder" at execute time
+-- -- which fails the SUBJECT, not just this invariant, and the first version
+-- of this file failed all five for every tenant. Percentages are written in
+-- words below for that reason and not for style.
+--
+-- 78 such orders on tenant 2 as of 12 Sep, spanning 2026-08-26 to 2026-09-12
+-- and nothing outside it. They are 12 of the 14 discrepant days on
+-- /api/sync/manifest/status and about GBP 940 of orders the platform cannot
+-- see. On four of those days the count and the money match the day's manifest
+-- deficit exactly to the penny, which is what establishes that these orders
+-- ARE the missing ones rather than merely resembling them.
+--
+-- The manifest investigation counted 84, not 78. The six are orders stuck at
+-- `cancelled` -- one push, never updated -- which are outside the manifest's
+-- declared population and so show in its deficit, but are a status an order
+-- RESTS in and therefore not a lost transition. The two numbers answer two
+-- questions and neither is wrong.
+--
+-- It stayed invisible for eighteen days because the creation push had already
+-- put the order in the table. Nothing was absent; the rows were simply wrong,
+-- and the daily totals came up short with nothing anywhere looking missing.
+-- This is the check that would have said so on 26 August.
+--
+-- `pending` AND NOTHING ELSE, AND THE FIRST VERSION OF THIS FILE WAS WRONG
+--
+-- The obvious predicate is "any status an order does not REST in" -- anything
+-- outside completed, cancelled and refunded -- on the reasoning that a lost
+-- transition into `processing` or `on-hold` is the same defect. That is what
+-- this file said, on the stated grounds that neither status "has ever appeared
+-- in either tenant's analytics schema".
+--
+-- That claim was false and it was never checked. It was generalised from the
+-- statuses present since 26 Aug 2026, which is the window the defect lives in.
+-- Run against the whole table it matches 519 rows on tenant 2 and 134 on
+-- tenant 1, against a real defect of 78 and 0:
+--
+--     on-hold      203    newest 2025-10-10
+--     processing   241    newest 2025-02-14
+--     pending       78    2026-08-26 .. 2026-09-12
+--
+-- Every `processing` and `on-hold` row PREDATES the 2026-08-25 connector
+-- change, and that is exactly what the old design produced: one push, taken
+-- whenever the order happened to be looked at, so an order that was mid-flight
+-- at that moment is stored mid-flight forever. Those rows are the old
+-- behaviour working as designed. They are not lost transitions, nobody is
+-- going to repair them, and a first run that opened an issue over 441 of them
+-- would be a detector whose opening statement is noise.
+--
+-- So this fires on `pending` only: the one status the NEW design rests orders
+-- at when its transition push is lost, measured rather than reasoned about. A
+-- NULL status is included with it -- an order with one push and no status is
+-- at least as suspect -- and has never been observed, which is said here
+-- rather than left for someone to infer from its presence.
+--
+-- If `processing` or `on-hold` ever appears again after 2026-08-25, that is a
+-- lost transition of the same kind and this predicate is the thing to widen.
+-- It is deliberately not widened in advance, because the cost of being wrong
+-- in that direction is measured above and the cost of being wrong in this one
+-- is one missed status on a detector that is already firing.
+--
+-- A NULL created_at is EXCLUDED, and that is not the same decision as the NULL
+-- status above. Age is the
+-- whole predicate, and an order whose creation instant is unknown cannot be
+-- called overdue. `UNMATCHABLE_ORDER` covers the rows that cannot be judged.
+--
+-- %(settle)s IS THE REGISTRY'S settle_lag, NEVER A LITERAL. An order created
+-- seconds ago has not lost anything -- it simply has not transitioned yet.
+-- Measured on 41,900 healthy orders: the median create-to-transition lag is 20
+-- seconds and the 95th percentile is 3.1 minutes, so the registry's 15 minutes
+-- is about five times p95. `now()` is the transaction timestamp, and the run
+-- holds one REPEATABLE READ snapshot, so every tenant is judged at one instant.
+SELECT count(*) AS n
+  FROM {analytics_schema}.orders o
+ WHERE o.updated_at IS NULL
+   AND (o.status IS NULL OR o.status = 'pending')
+   AND o.created_at < now() - %(settle)s::interval;

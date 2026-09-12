@@ -267,13 +267,35 @@ class TestNothingActsOnIt:
             " WHERE from_status='FAILED' AND to_status='MERGED'").fetchone()
         assert got["n"] == 0
 
-    def test_the_only_ways_out_of_failed_are_still_two(self, console):
-        """FAILED -> ABANDONED and FAILED -> QUEUED, both the console's. A
-        third would be worth someone explaining."""
-        got = {r["to_status"] for r in console.execute(
-            "SELECT to_status FROM task_transitions WHERE from_status='FAILED'"
-        ).fetchall()}
-        assert got == {"ABANDONED", "QUEUED"}, got
+    def test_the_ways_out_of_failed_are_three_and_the_third_is_explained(
+            self, console):
+        """ABANDONED, QUEUED, and -- since 038 -- READY_FOR_REVIEW.
+
+        THE EXPLANATION THIS ASKED FOR. The third edge is adoption: a task
+        whose branch passed every check its contract has, refused by a boundary
+        rule rather than by anything wrong with it. Task 69's run 44 was one,
+        and without this edge the only road back was QUEUED, which does not
+        re-examine a branch -- it writes a new one. It wrote a worse one.
+
+        IT IS NOT THE EDGE §9.3 REFUSED, and the difference is the whole of why
+        it is allowed. FAILED -> MERGED would ship something no person looked
+        at. This lands on READY_FOR_REVIEW, which is where the runner's own
+        branches arrive and where a human decides -- and accept() re-runs the
+        contract's verification against the base as it stands before merging
+        anything. Adoption moves a branch INTO review. It does not shorten the
+        road out of it, and the FAILED -> MERGED assertion above still holds.
+
+        The precondition is in 038's trigger, not here: a recorded verification
+        whose checks were green, which is exactly what the two runs refused
+        before their checks opened do not have.
+        """
+        rows = {r["to_status"]: r["required_role"] for r in console.execute(
+            "SELECT to_status, required_role FROM task_transitions"
+            " WHERE from_status='FAILED'").fetchall()}
+        assert set(rows) == {"ABANDONED", "QUEUED", "READY_FOR_REVIEW"}, rows
+        # All three stay the console's. A runner that could adopt could promote
+        # the branch it had just failed.
+        assert set(rows.values()) == {"fleet_console"}, rows
 
     def test_the_runner_cannot_write_it(self, console):
         """A runner that can mark its own failed task as shipped is that edge

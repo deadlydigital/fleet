@@ -283,6 +283,46 @@ The runner derives the real diff from git and judges that.
 """
 
 
+#: Legacy only: the target as a fraction of the ceiling.
+#:
+#: `test_diff_target` is a contract field now, and this is what a contract
+#: FROZEN BEFORE 12 Sep 2026 falls back to. Task 69's own row was frozen
+#: without the field while all of this was being worked out, so the fallback
+#: is not hypothetical -- it is the path that row takes.
+#:
+#: It cannot be the main route any more, and the reason is the same change
+#: that made it legacy: max_test_diff_lines is no longer a calibrated ceiling
+#: but a runaway bound sitting far above any plausible test, so a fraction of
+#: it is a fraction of a number chosen not to bind. 0.75 of 1200 is 900, which
+#: would anchor the agent at three times the figure anyone wants.
+TEST_TARGET_FRACTION = 0.75
+
+
+def test_target(contract: dict) -> int:
+    """The test figure the PROMPT carries. Not the figure the gate enforces.
+
+    THE NUMBER IN THE PROMPT IS AN ANCHOR, NOT A CONSTRAINT, and that is
+    measured rather than supposed. Task 69 ran the same spec off the same base
+    three times, with nothing different between them but this sentence:
+
+        told 300  ->  wrote 377   ceiling 300, refused
+        told 600  ->  wrote 606   ceiling 600, refused
+        told 300  ->  wrote 439   ceiling 400, refused -- ALL CHECKS PASSED
+
+    and task 67 landed at 298 against 300. An agent with no meter, keeping a
+    rough hand tally, writes toward the figure it is given; it does not hit it
+    precisely, and the same target produced 377 and 439 on two runs. So the
+    target SHAPES the test and cannot BOUND it, and the two jobs belong to two
+    numbers: this one is told and exceedable, max_test_diff_lines is enforced,
+    never told, and set far enough away that overshoot is not a dead run.
+    """
+    target = contract.get("test_diff_target")
+    if target:
+        return int(target)
+    return int(int(contract.get("max_test_diff_lines") or 0)
+               * TEST_TARGET_FRACTION)
+
+
 def _size_note(contract: dict) -> str:
     """The size budget, in the units the runner actually counts.
 
@@ -292,6 +332,13 @@ def _size_note(contract: dict) -> str:
     pushed the total over a limit set before tests were mandated. An agent
     rationing one budget across both thins the test, and the test is the one
     artefact new_test_bites.sh exists to make mean something.
+
+    THE TEST FIGURE HERE IS A TARGET AND NOT A CEILING, and there no longer is
+    a ceiling worth naming: max_test_diff_lines is a runaway bound an order of
+    magnitude away, and the contract's `test_diff_target` is what this prints.
+    See test_target() for the three runs that established the difference. The
+    agent is told the target and not the bound, deliberately -- naming both
+    would put the anchor back on the larger number.
 
     SAYING "ADDED AND DELETED" IS THE POINT. The runner counts
     `git diff --numstat` added PLUS deleted, so rewriting 200 lines scores 400.
@@ -309,14 +356,18 @@ def _size_note(contract: dict) -> str:
                "go rather than checking.")
     if not test_limit:
         return (f"Keep the whole change under {limit} changed lines. {counted}")
+    target = test_target(contract)
     return f"""## Two size budgets, and they do not share
 
 Keep the change under {limit} changed lines, NOT counting the test file you
 add. {counted}
 
-The test file has its own budget of {test_limit} lines and does not come out of
-the {limit}. Write the test the change deserves: a thorough test is the point of
-being allowed to add one, and thinning it to save room buys you nothing here."""
+The test file has its own budget of about {target} lines and does not come out
+of the {limit}. Write the test the change deserves: a thorough test is the point
+of being allowed to add one, and thinning it to save room buys you nothing
+here. {target} is a target rather than a hard edge -- going a little over it is
+better than cutting a case that earns its place, and much better than padding
+one that does not."""
 
 
 def parse_report(text: str) -> list[str] | None:

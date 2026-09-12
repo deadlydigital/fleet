@@ -47,7 +47,7 @@ def test_known_gap_produces_one_observation_with_the_right_magnitude(fleet, dsns
     assert issue["occurrence_count"] == 1
 
 
-def test_all_four_invariants_and_a_clean_tenant(fleet, dsns):
+def test_all_five_invariants_and_a_clean_tenant(fleet, dsns):
     result = run_reconciliation(fleet, dsns["dd"])
 
     found = {(o["observation_type"], o["subject_id"]): o["magnitude"]
@@ -57,7 +57,22 @@ def test_all_four_invariants_and_a_clean_tenant(fleet, dsns):
         ("ORPHANED_ANALYTICS_ORDER", "2"): 1,
         ("ORDER_FIELD_DRIFT", "2"): 2,
         ("UNMATCHABLE_ORDER", "2"): 1,
+        # 2010, 2011 and 2012 only. The fixture also holds six orders that are
+        # deliberately NOT stuck -- a pending one that got a second push, three
+        # resting at terminal statuses on one push, one created now, and one
+        # with no created_at to age it by -- and every one of them would land
+        # here if the predicate were loosened by a clause.
+        ("STUCK_ORDER_TRANSITION", "2"): 3,
     }, "tenant 1 reconciles exactly; float representation must not fake drift"
+
+    # THE STUCK ORDERS AGREE PERFECTLY ACROSS THE TWO COPIES, and that is the
+    # point of the new invariant rather than an accident of the fixture. Both
+    # tables are written from the same connector push, so a transition that was
+    # never sent is absent from both -- the comparison sees nothing wrong and
+    # the order is wrong anyway. If this ever fails, the fixture has stopped
+    # modelling the defect and the invariant stops proving it catches one.
+    assert ("ORDER_FIELD_DRIFT", "2") in found and found[("ORDER_FIELD_DRIFT", "2")] == 2, \
+        "the three stuck orders must not show as drift; they match their source rows"
 
     # Severity is routed, and UNMATCHABLE_ORDER has no policy row yet.
     severities = {r["issue_type"]: r["severity"] for r in fleet.execute(
@@ -65,6 +80,80 @@ def test_all_four_invariants_and_a_clean_tenant(fleet, dsns):
     assert severities["ORPHANED_ANALYTICS_ORDER"] == "HIGH"
     assert severities["ORDER_FIELD_DRIFT"] == "CRITICAL"
     assert severities["UNMATCHABLE_ORDER"] == "UNTRIAGED"
+
+
+class TestStuckOrderTransition:
+    """The defect the comparison cannot reach.
+
+    The connector changed on 2026-08-25 from pushing an order once on
+    completion to pushing on creation and on every status change, and it loses
+    about one transition push in five hundred. The order arrives, the
+    transition never does, and the row rests at `pending` while the store has
+    it completed -- 84 orders on tenant 2 between 25 Aug and 12 Sep, 12 of the
+    14 discrepant days on the manifest endpoint, about GBP 940 invisible.
+
+    Nothing else here can see it. Both platform copies are written from the
+    same push, so they agree with each other exactly; only the store disagrees,
+    and the store is not a table.
+    """
+
+    def test_it_names_the_stuck_orders_and_only_those(self, fleet, dsns):
+        result = run_reconciliation(fleet, dsns["dd"])
+        stuck = observations(fleet, result.run_id, "STUCK_ORDER_TRANSITION")
+        assert len(stuck) == 1, "one observation per tenant, not one per order"
+        row = stuck[0]
+        assert row["subject_id"] == "2"
+        assert row["magnitude"] == 3
+        assert row["unit"] == "orders"
+        # Ids only. No status, no total, no email -- the same rule the rest of
+        # the evidence in this detector follows.
+        assert row["evidence_sample"] == {
+            "sample_1": 2010, "sample_2": 2011, "sample_3": 2012,
+            "sample_size": 3, "offending_count": 3}
+        assert row["evidence_query_key"] == "stuck_order_transition"
+        assert row["evidence_query_version"] == 1
+
+    def test_the_two_halves_describe_the_same_orders(self, fleet, dsns):
+        """The count and the sample share one predicate, so the ids ARE the
+        rows that were counted. A detector whose halves disagree reports "3
+        stuck" beside a list naming something else."""
+        result = run_reconciliation(fleet, dsns["dd"])
+        row = observations(fleet, result.run_id, "STUCK_ORDER_TRANSITION")[0]
+        sample = row["evidence_sample"]
+        assert sample["offending_count"] == row["magnitude"]
+        assert sample["sample_size"] == min(row["magnitude"], 5)
+
+    def test_a_clean_tenant_says_nothing(self, fleet, dsns):
+        """Tenant 1 has no stuck orders, so it gets no observation at all --
+        not a zero. A count of zero is a finding about nothing."""
+        result = run_reconciliation(fleet, dsns["dd"])
+        subjects = {o["subject_id"] for o in
+                    observations(fleet, result.run_id, "STUCK_ORDER_TRANSITION")}
+        assert subjects == {"2"}
+
+    def test_the_age_threshold_comes_from_the_registry(self, fleet, dsns, admin):
+        """Not a literal, and it really does gate the finding.
+
+        The fixture's 2017 is pending, never updated, and created NOW. It is
+        excluded from the 3 above ONLY because the settle lag says so, so the
+        same fixture judged with no lag must find 4. If it finds 3 either way,
+        the clause is decorative and the threshold is not reaching the query.
+
+        The lag is set BEFORE the first run, and has to be: schedule geometry
+        is frozen by enforce_schedule_immutability() as soon as a scheduled run
+        exists, which is the registry refusing to let a detector's meaning move
+        under runs already judged by it. Each test gets a fresh database, so
+        this is a clean A/B against the sibling test above rather than a
+        mutation of one.
+        """
+        admin.execute("UPDATE detector_registry SET settle_lag = interval '0'"
+                      " WHERE detector_key = %s", (DETECTOR,))
+        admin.commit()
+
+        result = run_reconciliation(fleet, dsns["dd"])
+        assert observations(fleet, result.run_id,
+                            "STUCK_ORDER_TRANSITION")[0]["magnitude"] == 4, \
+            "with no settle lag the just-created pending order is caught too"
 
 
 def test_inactive_tenant_is_never_enumerated(fleet, dsns):
@@ -195,7 +284,7 @@ def test_crash_and_retry_reports_the_persisted_count(fleet, admin, dsns,
     assert crashed["status"] == "RUNNING"
     assert crashed["observations_created"] == 0
     persisted = len(observations(fleet, first.run_id))
-    assert persisted == 4
+    assert persisted == 5
 
     # The instance is gone; only age is evidence of that.
     admin.execute("UPDATE detector_runs SET last_attempt_at = now() - interval '1 hour'"
@@ -210,8 +299,8 @@ def test_crash_and_retry_reports_the_persisted_count(fleet, admin, dsns,
     distinct = fleet.execute(
         "SELECT count(DISTINCT fingerprint) AS n FROM observations"
         " WHERE detector_run_id = %s", (second.run_id,)).fetchone()["n"]
-    assert retried["observations_created"] == persisted == distinct == 4
-    assert second.observations_created == 4
+    assert retried["observations_created"] == persisted == distinct == 5
+    assert second.observations_created == 5
     # And the retry did not double-count the issues.
     counts = fleet.execute(
         "SELECT DISTINCT occurrence_count FROM issues").fetchall()
