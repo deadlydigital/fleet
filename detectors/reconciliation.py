@@ -1,10 +1,14 @@
 """dd_analytics_reconciliation.
 
 Compares public.orders against analytics_<tenant_id>.orders inside
-deadly_digital. One connection, one read-only REPEATABLE READ transaction,
-one snapshot -- so every tenant and every invariant is judged against the
-same instant, and a sync that lands mid-run cannot manufacture a difference
-that never existed.
+deadly_digital -- and, since 12 Sep 2026, asks one question of the analytics
+copy on its own: STUCK_ORDER_TRANSITION, an order the connector mentioned once
+and never again. That one is not a comparison, and the note beside INVARIANTS
+says why it lives here rather than in a detector of its own.
+
+One connection, one read-only REPEATABLE READ transaction, one snapshot -- so
+every tenant and every invariant is judged against the same instant, and a sync
+that lands mid-run cannot manufacture a difference that never existed.
 
 Whole population, never windowed: created_at in public.orders starts at
 2026-08-18 because of a table rebuild, so a window on it would never see the
@@ -33,11 +37,23 @@ log = logging.getLogger(__name__)
 SUBJECT_TYPE = "tenant"
 
 # observation_type -> (count query key, sample query key, what the sample holds)
+#
+# STUCK_ORDER_TRANSITION IS NOT A COMPARISON, AND IT BELONGS HERE ANYWAY.
+# The other four read public.orders against analytics_<t>.orders; this one is a
+# property of the analytics copy alone -- an order the connector mentioned once
+# and never again. `UNMATCHABLE_ORDER` is already single-table, so the shape has
+# precedent, and the alternative was a fifth detector, which needs a
+# detector_registry row, which needs fleet_owner. This needs no database write
+# at all: observation_type is free text, and the threshold it judges against is
+# this detector's own settle_lag. A check that runs tonight beats a cleaner one
+# waiting on a credential. See queries/stuck_order_transition.v1.sql for what it
+# is for and what it cost to find.
 INVARIANTS = (
     ("MISSING_ANALYTICS_ORDER",  "missing_analytics_order",  "missing_analytics_order_sample"),
     ("ORPHANED_ANALYTICS_ORDER", "orphaned_analytics_order", "orphaned_analytics_order_sample"),
     ("ORDER_FIELD_DRIFT",        "order_field_drift",        "order_field_drift_sample"),
     ("UNMATCHABLE_ORDER",        "unmatchable_order",        "unmatchable_order_sample"),
+    ("STUCK_ORDER_TRANSITION",   "stuck_order_transition",   "stuck_order_transition_sample"),
 )
 
 # Queries pinned to something other than v1. A superseded version stays on
@@ -137,6 +153,13 @@ class ReconciliationDetector(Detector):
         self._require_readable(tenant_id, schema)
 
         source = f"deadly_digital:public.orders+{schema}.orders"
+        # EVERY THRESHOLD COMES FROM THE REGISTRY, so `settle` is passed to all
+        # five queries and used by the one that needs it. A query that does not
+        # mention %(settle)s simply never looks it up -- psycopg binds by name,
+        # so an unused key costs nothing. The alternative, a per-invariant
+        # params table, would put a threshold's name in Python beside the
+        # invariant that uses it, which is one edit away from a literal.
+        params = {"t": tenant_id, "settle": ctx.registry.settle_lag}
         for observation_type, count_key, sample_key in INVARIANTS:
             count_query = _load(count_key).bind_schema(schema)
             # A savepoint per query: a failure must not destroy the snapshot
@@ -144,7 +167,7 @@ class ReconciliationDetector(Detector):
             # failed query from ever being reported as a count of zero -- the
             # exception propagates and the subject is marked failed instead.
             with self._timed(tenant_id, count_query.key), self._dd.transaction():
-                n = int(self._dd.execute(count_query.sql, {"t": tenant_id}).fetchone()["n"])
+                n = int(self._dd.execute(count_query.sql, params).fetchone()["n"])
 
             if n == 0:
                 continue
@@ -153,7 +176,7 @@ class ReconciliationDetector(Detector):
             with self._timed(tenant_id, sample_query.key), self._dd.transaction():
                 ids = [r["offending_id"] for r in self._dd.execute(
                     sample_query.sql,
-                    {"t": tenant_id, "limit": MAX_EVIDENCE_SAMPLE}).fetchall()]
+                    {**params, "limit": MAX_EVIDENCE_SAMPLE}).fetchall()]
 
             result = emit(ctx, Observation(
                 observation_type=observation_type,

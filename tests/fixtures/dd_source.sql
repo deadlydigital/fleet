@@ -39,6 +39,12 @@ BEGIN
           wc_order_id bigint,
           status      varchar(20),
           total       numeric(10,2),
+          -- Both nullable, as in production, and both load-bearing for
+          -- STUCK_ORDER_TRANSITION. updated_at is NULL until a SECOND push
+          -- touches the row -- sync_engine.py sets it only in the ON CONFLICT
+          -- arm -- so NULL is "mentioned once", which is the whole signal.
+          created_at  timestamptz,
+          updated_at  timestamptz,
           synced_at   timestamptz DEFAULT now())$f$, t);
   END LOOP;
 END $$;
@@ -64,13 +70,59 @@ INSERT INTO public.orders (tenant_id, woo_order_id, status, total, created_at) V
  (2,2007,'completed',26.00,'2026-08-18 11:06'),   -- missing downstream
  (2,2008,'completed',27.00,'2026-08-18 11:07'),   -- missing downstream
  (2,NULL, 'completed',28.00,'2026-08-18 11:08');  -- unmatchable
-INSERT INTO analytics_2.orders (wc_order_id, status, total) VALUES
- (2001,'completed',20.00),
- (2002,'completed',21.00),
- (2003,'refunded', 22.00),   -- drift: status
- (2004,'completed',99.00),   -- drift: total
- (2005,'completed',24.00),
- (2999,'completed',99.99);   -- orphan: no such source order
+INSERT INTO analytics_2.orders (wc_order_id, status, total, created_at, updated_at) VALUES
+ (2001,'completed',20.00,'2026-08-18 11:00','2026-08-18 11:20'),
+ (2002,'completed',21.00,'2026-08-18 11:01','2026-08-18 11:21'),
+ (2003,'refunded', 22.00,'2026-08-18 11:02','2026-08-18 11:22'),  -- drift: status
+ (2004,'completed',99.00,'2026-08-18 11:03','2026-08-18 11:23'),  -- drift: total
+ (2005,'completed',24.00,'2026-08-18 11:04','2026-08-18 11:24'),
+ (2999,'completed',99.99,'2026-08-18 11:09','2026-08-18 11:29');  -- orphan: no such source order
+
+-- ---- tenant 2, the stuck transitions ------------------------------------
+-- The real shape, from analytics_2 on 12 Sep 2026: one push arrived, the
+-- transition never did, and the row sits outside the statuses an order rests
+-- in. `updated_at IS NULL` is the signal; age is what makes it a finding
+-- rather than an order that simply has not transitioned yet.
+--
+-- EVERY ROW BELOW MATCHES ITS SOURCE ROW EXACTLY, and that is the point
+-- rather than fixture hygiene. Both `public.orders` and `analytics_<t>.orders`
+-- are written from the same connector push, so a transition the connector
+-- never sent is missing from BOTH copies. The two sides agree perfectly, the
+-- other four invariants see nothing, and the order is still wrong. That is why
+-- this check had to exist: it is the failure the comparison cannot reach.
+INSERT INTO public.orders (tenant_id, woo_order_id, status, total, created_at) VALUES
+ (2,2010,'pending',  30.00,'2026-08-18 11:10'),
+ (2,2011,'pending',  31.00,'2026-08-18 11:11'),
+ (2,2012,NULL,       32.00,'2026-08-18 11:12'),
+ (2,2013,'pending',  33.00,'2026-08-18 11:13'),
+ (2,2014,'completed',34.00,'2026-08-18 11:14'),
+ (2,2015,'cancelled',35.00,'2026-08-18 11:15'),
+ (2,2016,'refunded', 36.00,'2026-08-18 11:16'),
+ (2,2017,'pending',  37.00,'2026-08-18 11:17'),
+ (2,2018,'pending',  38.00,'2026-08-18 11:18');
+INSERT INTO analytics_2.orders (wc_order_id, status, total, created_at, updated_at) VALUES
+ -- STUCK: one push, still pending, long past any settle lag.
+ (2010,'pending',  30.00,'2026-08-18 11:10',NULL),
+ (2011,'pending',  31.00,'2026-08-18 11:11',NULL),
+ -- STUCK: one push and no status at all. Included on purpose -- `status NOT
+ -- IN (...)` is NULL for this row, so three-valued logic would drop it.
+ (2012,NULL,       32.00,'2026-08-18 11:12',NULL),
+ -- NOT STUCK: pending, but a second push HAS touched it. The store is telling
+ -- us about this order; it is just still pending, which is not a defect.
+ (2013,'pending',  33.00,'2026-08-18 11:13','2026-08-18 11:40'),
+ -- NOT STUCK: one push, but it rests at a terminal status. 22 of these exist
+ -- in production -- an order born completed -- and they are harmless.
+ (2014,'completed',34.00,'2026-08-18 11:14',NULL),
+ (2015,'cancelled',35.00,'2026-08-18 11:15',NULL),
+ (2016,'refunded', 36.00,'2026-08-18 11:16',NULL),
+ -- NOT STUCK: one push, pending, and created NOW. It has not lost a
+ -- transition, it has not had time to make one. This is the row that fails if
+ -- the settle lag is ever dropped from the predicate.
+ (2017,'pending',  37.00, now(), NULL),
+ -- NOT JUDGED: one push, pending, and no creation instant to age it by.
+ -- Age is the whole predicate and this row has none. UNMATCHABLE_ORDER is
+ -- where rows that cannot be judged belong.
+ (2018,'pending',  38.00, NULL, NULL);
 
 -- ---- tenant 3: no analytics schema; tenant 4: inactive -------------------
 INSERT INTO public.orders (tenant_id, woo_order_id, status, total, created_at) VALUES
