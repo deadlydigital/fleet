@@ -261,6 +261,12 @@ class TestARefusedNightIsARecordedNight:
             "mechanics": {
                 "cut": {"n": 1, "bound_by": ["per_night"],
                         "limits": {"per_night": 1}},
+                # `older_batch` ON PURPOSE, and it is not stale. The gate was
+                # removed on 13 Sep 2026; every decision recorded before that
+                # carries this rule in its mechanics for ever, and the brief
+                # renders decisions from the log rather than re-deciding them.
+                # A renderer that only knew today's vocabulary would fail on
+                # its own history.
                 "ranked": [{"candidate_id": 20, "eligible": True},
                            {"candidate_id": 21, "eligible": True},
                            {"candidate_id": 17, "eligible": False,

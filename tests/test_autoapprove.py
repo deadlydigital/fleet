@@ -21,7 +21,7 @@ import json
 
 import pytest
 
-from console import approve, autoapprove, rank
+from console import approve, autoapprove, rank, work_key
 
 
 def _producer_task(console) -> int:
@@ -62,10 +62,22 @@ def _batch(console, doc="research/candidates.md", sha="4041d15",
 def _cand(console, batch_id, *, title="Do the thing", band="daily",
           probes=None, paths=None, signal=None, repo="fleet",
           premise=None) -> int:
-    """`premise` DEFAULTS TO NONE, which is the state every row in the real
-    pool was in on 10 Sep 2026 -- 030 added the column and nothing backfilled
-    it. Tests that are about gate 6 pass one; the rest inherit the silence the
-    pool actually has, which is what keeps them testing what they are about.
+    """`premise` DEFAULTS TO ONE THAT HOLDS, and it used to default to none.
+
+    THE DEFAULT FLIPPED ON 13 Sep 2026 BECAUSE THE POOL'S DEFAULT FLIPPED.
+    Until then an empty premise passed gate 8, so the silence every real row
+    carried was the honest fixture: "the rest inherit the silence the pool
+    actually has, which is what keeps them testing what they are about".
+
+    Empty is now ineligible (rank.check_premise), so that argument inverts.
+    A silent default would make all 44 of these rows test gate 8 instead of
+    the thing they are named for -- a path overlap test that fails because of
+    the premise is a test that has stopped watching its own subject. The
+    default is now what the producer is REQUIRED to emit since batch 11, which
+    is the state a fixture should describe.
+
+    TESTS ABOUT THE SILENCE PASS `premise=[]` EXPLICITLY. There is one, and it
+    asserts the refusal rather than inheriting it.
     """
     row = console.execute(
         "INSERT INTO candidates (batch_id, title, rationale, repo, band,"
@@ -76,7 +88,7 @@ def _cand(console, batch_id, *, title="Do the thing", band="daily",
          json.dumps(signal) if signal else None,
          json.dumps(probes if probes is not None else [
              {"path_exists": "console/approve.py"}]),
-         json.dumps(premise or []),
+         json.dumps(_PREMISE_HOLDS[repo] if premise is None else premise),
          paths or [])).fetchone()
     console.commit()
     return row["id"]
@@ -134,6 +146,28 @@ GLOB_MISSING = {"grep_count": {"glob": "console/*.py",
 #: candidate names, and naming the wrong one is itself a probe failure.
 PLATFORM = "deadly-digital-platform"
 API_PRESENT = {"path_exists": "api/analytics/routes/orders.py"}
+#: THE GAP DOCUMENT, at a sha it is readable at, and a heading that resolves to
+#: one of its table ROWS. Taken from the live batch 9 evidence rather than
+#: invented: supersede() only deduplicates `#row:` keys, and a fixture whose
+#: heading resolved to a weaker `topic:` key would silently test nothing.
+#: The same pair tests/test_repeat_failure.py keys its candidates with.
+SHA_GAP_DOC = "b198634063e5f9e3fc17467a6b6fe361013cfee3"
+SECTION_COUPON = ("Weekly — Coupon and discount performance: usage, discount "
+                  "total, orders, AOV with/without")
+
+#: THE DEFAULT PREMISE, per repo, and it must hold against the real checkout
+#: for the same reason EXISTS does: a fixture whose ground is missing turns
+#: every test that inherits it into a gate 8 test. Keyed by repo because gate 8
+#: runs each probe against the tree the candidate NAMES -- a fleet premise on a
+#: platform candidate is itself a premise failure.
+_PREMISE_HOLDS = {
+    "fleet": [{"claim": "the console still has the module that approves",
+               "probe": {"path_exists": "console/approve.py"}}],
+    "deadly-digital-platform": [
+        {"claim": "the analytics API still serves the order list",
+         "probe": {"path_exists": "api/analytics/routes/orders.py"}}],
+}
+
 #: A SENTINEL, not a real gap, and it became one on 10 Sep 2026. This asserted
 #: that platform/app/api/analytics/orders/route.ts does not mention
 #: `payment_method` -- true when it was written, and false the moment task 53
@@ -242,15 +276,25 @@ class TestTheGates:
         assert row["eligible"] is False
         assert row["rule"] == "not_pending"
 
-    def test_an_older_batch_is_superseded_by_construction(
+    def test_an_older_batch_is_not_held_for_being_older(
             self, dsns, console, admin):
+        """GATE 2 IS GONE, 13 Sep 2026, and this is the test that used to
+        assert it. It held a row because a newer batch existed, which said
+        nothing about whether that row's work had been done -- and on the live
+        pool six of the sixteen rows it held had never been superseded by any
+        later row at all.
+
+        These two candidates have no evidence, so neither keys to a document
+        row and supersede() cannot compare them. Being in an older batch is now
+        worth nothing on its own, which is the whole of what changed.
+        """
         _pool(admin)
         old, new = _batch(console), _batch(console)
         stale = _cand(console, old, title="CSV export of the order list")
         fresh = _cand(console, new, title="CSV export, honouring the filters")
         p = autoapprove.plan()
         assert next(r for r in p["ranked"]
-                    if r["candidate_id"] == stale)["rule"] == "older_batch"
+                    if r["candidate_id"] == stale)["eligible"] is True
         assert next(r for r in p["ranked"]
                     if r["candidate_id"] == fresh)["eligible"] is True
 
@@ -388,27 +432,57 @@ class TestGateSixTheGroundNotTheGap:
             "claim": "the console still has a module that ranks candidates",
             "probe": "path_exists: console/rank.py exists"}]
 
-    def test_a_candidate_with_no_premise_is_not_refused_and_is_counted(
+    def test_a_candidate_with_no_premise_is_refused_and_counted(
             self, dsns, console, admin):
-        """THE HOLE, ASSERTED RATHER THAN LEFT TO BE DISCOVERED.
+        """THE HOLE, CLOSED 13 Sep 2026. This test asserted the opposite until
+        then, and the reason it could assert it was that gate 2 was standing in
+        front of every row that would have exercised it.
 
-        Every row in the pool on 10 Sep 2026 was emitted before the key
-        existed, so refusing an empty premise would have stopped unattended
-        approval dead for rows whose producers were never asked. What must NOT
-        happen is the silence reading as a pass: `silent` counts it, and
-        candidate_block_shape.py refuses a new block that omits one, so the
-        hole closes from the producer end.
+        Removing gate 2 is what made this urgent rather than tidy. Sixteen rows
+        that predate 030 became reachable in one change, none of them declares
+        a premise, and c38 is what an unstated premise costs: four probes held,
+        the ground was never checked, £2.25 and three columns no spec asked
+        for. A gate that reports a pass for exactly the population it cannot
+        see is worse than no gate.
+
+        THE SILENCE IS STILL COUNTED, and the counter is still the point -- it
+        now measures how much of the backlog must be re-produced before it can
+        be approved unattended, rather than how much was waved through.
         """
         _pool(admin)
         b = _batch(console)
-        cid = _cand(console, b)          # no premise, like every real row
+        cid = _cand(console, b, premise=[])   # every row loaded before 030
         p = autoapprove.plan()
         row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
-        assert row["eligible"] is True
+        assert row["eligible"] is False
+        assert row["rule"] == "premise_missing"
         assert p["premise"]["silent"] >= 1
         assert p["premise"]["declared"] == 0
-        # and the zero is not reported as a verified pool
+        # and the zero was never a verified pool
         assert p["premise"]["held"] == 0
+
+    def test_a_missing_premise_and_a_failing_one_are_different_rules(
+            self, dsns, console, admin):
+        """Same argument as probes_failed vs premise_failed one class up, and
+        it has a counting edge as well as a repair edge: on the live pool two
+        rows reach gate 8 with no premise and exactly one is a real
+        `premise_failed`. Under one name the row whose ground actually moved
+        would be the one a reader could not pick out.
+
+            premise_missing  nobody stated the ground -- re-produce the row
+            premise_failed   the ground was stated and has gone -- re-propose
+        """
+        _pool(admin)
+        b = _batch(console)
+        silent = _cand(console, b, title="nobody said", premise=[])
+        moved = _cand(console, b, title="the ground went", premise=[{
+            "claim": "the console still has a module that ranks candidates",
+            "probe": {"path_exists": "console/a_file_that_is_not_here.py"}}])
+        p = autoapprove.plan()
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == silent)["rule"] == "premise_missing"
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == moved)["rule"] == "premise_failed"
 
     def test_the_premise_tally_reaches_the_decision(self, dsns, console, admin):
         """026 requires an unattended decision to carry its working. A gate
@@ -839,8 +913,7 @@ def _row(paths, **over):
 
 
 def _g(candidate, console, **over):
-    kw = {"newest_batch": candidate["batch_id"], "live_tasks": [],
-          "prior_failures": 0, "writables": _writables(),
+    kw = {"live_tasks": [], "prior_failures": 0, "writables": _writables(),
           "floor": _floor(console)}
     kw.update(over)
     return rank.gate(candidate, **kw)
@@ -945,7 +1018,7 @@ class TestAPathTheFleetMayNeverWrite:
             "SELECT * FROM candidates WHERE id = 35").fetchone()
         if row is None:
             pytest.skip("candidate 35 is not in this database")
-        g = _g(dict(row), console, newest_batch=row["batch_id"])
+        g = _g(dict(row), console)
         assert g["rule"] == "protected_path", g["detail"]
 
 
@@ -1028,7 +1101,7 @@ class TestTheGateStaysPure:
         depend on when it was asked."""
         both = _row(["api/analytics/routes/dashboard.py",
                       "platform/app/(dashboard)/analytics/page.tsx"])
-        g = rank.gate(both, newest_batch=1, live_tasks=[], prior_failures=0)
+        g = rank.gate(both, live_tasks=[], prior_failures=0)
         assert g["rule"] not in ("spans_contracts", "unwritable_path",
                                  "protected_path")
 
@@ -1071,47 +1144,127 @@ class TestTheGateAndAutoqueueAgree:
                     (p, _name)
 
 
-class TestOnlyAProducerBatchSupersedes:
-    """034. Gate 2's argument is "the newer batch re-verified these claims
-    against a later sha", and only a candidate_producer run does that.
+class TestSupersessionIsAboutWorkAndNotAboutBatches:
+    """What replaced gate 2 on 13 Sep 2026.
 
-    On 10 Sep 2026 batch 11 -- one candidate, written by hand from a draft,
-    its own note saying "NOT A PRODUCER BATCH" -- was the newest, so gate 2
-    reported all twenty real candidates as superseded and the first live
-    sweep would have approved nothing and looked like an ordinary quiet
-    night.
+    034 made gate 2 count only batches a candidate_producer run made, because
+    batch 11 -- one hand-written row, its own note saying "NOT A PRODUCER
+    BATCH" -- had superseded twenty real candidates. That was a repair to the
+    proxy. The proxy is now gone: supersede() compares the WORK, using the key
+    console/work_key.py derives from the findings document, and it runs after
+    every gate rather than as one of them.
+
+    Two rows are a duplicate only once both have survived the gates. Before
+    that they are one examined row and one unexamined row.
     """
 
-    def test_a_hand_made_batch_does_not_supersede_a_produced_one(
+    def _keyed(self, console, batch_id, *, title, section):
+        """A candidate that resolves to a row of the real gap document."""
+        evidence = [{"kind": "document", "document": "specs/metorik-gap.md",
+                     "repo": "fleet", "sha": SHA_GAP_DOC, "section": section}]
+        key = work_key.derive({"repo": "fleet", "evidence": evidence})["key"]
+        assert "#row:" in (key or ""), (
+            f"the fixture must key to a document ROW, not {key!r}; "
+            f"supersede() deliberately ignores anything weaker")
+        cid = _cand(console, batch_id, title=title)
+        console.execute("UPDATE candidates SET evidence=%s, work_key=%s"
+                        " WHERE id=%s", (json.dumps(evidence), key, cid))
+        console.commit()
+        return cid
+
+    def test_the_newer_row_is_kept_and_the_older_is_held_as_superseded(
             self, dsns, console, admin):
+        _pool(admin)
+        old, new = _batch(console), _batch(console, doc="research/b.md")
+        stale = self._keyed(console, old, title="Coupon report",
+                            section=SECTION_COUPON)
+        fresh = self._keyed(console, new, section=SECTION_COUPON,
+                            title="Coupon report, restated")
+        p = autoapprove.plan()
+        held = next(r for r in p["ranked"] if r["candidate_id"] == stale)
+        assert held["rule"] == "superseded", held["detail"]
+        assert str(fresh) in held["detail"], held["detail"]
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == fresh)["eligible"] is True
+        assert p["superseded"]["held"] == 1
+        assert p["superseded"]["ids"] == [stale]
+
+    def test_the_supersession_tally_reaches_the_decision(
+            self, dsns, console, admin):
+        """026 again, and this one was found by the first live run rather than
+        by reading: decision 53 recorded `superseded: None` because
+        mechanics_of() did not carry it. A morning could not then tell a sweep
+        that deduplicated nothing from a sweep that never looked -- which is
+        the distinction gate 2 was replaced in order to be able to make.
+        """
+        _pool(admin)
+        old, new = _batch(console), _batch(console, doc="research/b.md")
+        stale = self._keyed(console, old, title="Coupon report",
+                            section=SECTION_COUPON)
+        self._keyed(console, new, title="Coupon report, restated",
+                    section=SECTION_COUPON)
+        out = autoapprove.sweep()
+        assert out["approve_ids"], out
+        row = console.execute(
+            "SELECT mechanics FROM decision_log WHERE id=%s",
+            (out["decision_id"],)).fetchone()
+        assert row["mechanics"]["superseded"]["held"] == 1
+        assert row["mechanics"]["superseded"]["ids"] == [stale]
+
+    def test_a_hand_made_batch_supersedes_nothing_because_batches_do_not(
+            self, dsns, console, admin):
+        """034's property, now free. A hand-written batch cannot suppress a
+        produced one because NO batch suppresses anything any more."""
         _pool(admin)
         produced = _batch(console)
         cid = _cand(console, produced, title="CSV export of the order list")
-        # Newer, higher id, and nothing produced it.
         _batch(console, doc="drafts/one-row.md", producer=False)
         p = autoapprove.plan()
-        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
-        assert row["rule"] != "older_batch", row["detail"]
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == cid)["eligible"] is True
 
-    def test_a_newer_produced_batch_still_supersedes(
-            self, dsns, console, admin):
-        """The gate must keep working. This is the property 034 preserves."""
+    def test_a_row_held_by_a_gate_supersedes_nobody(self, dsns, console, admin):
+        """THE DEFECT THIS WHOLE CHANGE IS ABOUT, in miniature.
+
+        The newer row fails its probes -- its gap has closed, or it was never
+        real. Gate 2 would still have shelved the older row on the strength of
+        it. supersede() never sees the newer row at all, because it is handed
+        the survivors, so the older row is judged on its own evidence.
+        """
         _pool(admin)
         old, new = _batch(console), _batch(console, doc="research/b.md")
-        stale = _cand(console, old, title="CSV export of the order list")
-        _cand(console, new, title="CSV export, honouring the filters")
+        stale = self._keyed(console, old, title="Coupon report",
+                            section=SECTION_COUPON)
+        dead = _cand(console, new, title="Coupon report, restated",
+                     probes=[{"path_absent": "console/rank.py"}])
+        console.execute(
+            "UPDATE candidates SET work_key=(SELECT work_key FROM candidates"
+            " WHERE id=%s) WHERE id=%s", (stale, dead))
+        console.commit()
         p = autoapprove.plan()
         assert next(r for r in p["ranked"]
-                    if r["candidate_id"] == stale)["rule"] == "older_batch"
+                    if r["candidate_id"] == dead)["rule"] == "probes_failed"
+        assert next(r for r in p["ranked"]
+                    if r["candidate_id"] == stale)["eligible"] is True
+        assert p["superseded"]["held"] == 0
 
-    def test_no_producer_batch_at_all_supersedes_nobody(self, dsns, console,
-                                                        admin):
-        """Supersession is the whole content of the gate. With nothing to
-        have re-verified anything, holding every row would shut the pool on
-        the absence of a thing."""
+    def test_a_topic_key_is_too_weak_to_call_two_rows_the_same_work(
+            self, dsns, console, admin):
+        """work_key.py resolves an ambiguous heading to a `topic:` key and is
+        explicit about which way to fail: merging different work costs money
+        quietly. c25 and c33 are the live pair this protects.
+        """
         _pool(admin)
-        b = _batch(console, producer=False)
-        cid = _cand(console, b)
+        old, new = _batch(console), _batch(console, doc="research/b.md")
+        a = _cand(console, old, title="Segment anything")
+        b = _cand(console, new, title="Segment anything, restated")
+        console.execute(
+            "UPDATE candidates SET work_key='fleet::specs/metorik-gap.md"
+            "#topic:segment-any-resource' WHERE id IN (%s,%s)", (a, b))
+        console.commit()
         p = autoapprove.plan()
-        row = next(r for r in p["ranked"] if r["candidate_id"] == cid)
-        assert row["rule"] != "older_batch", row["detail"]
+        assert p["superseded"]["held"] == 0
+        assert p["superseded"]["unkeyed"] == 2
+        for cid in (a, b):
+            assert next(r for r in p["ranked"]
+                        if r["candidate_id"] == cid)["eligible"] is True

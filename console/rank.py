@@ -422,16 +422,40 @@ def check_premise(candidate: Dict[str, Any]) -> Dict[str, Any]:
                          doing and it is NOT the work the rationale describes,
                          so what it needs is re-proposing, not re-running.
 
-    AN EMPTY PREMISE DOES NOT FAIL HERE, AND THAT IS A HOLE WITH A DATE ON IT.
-    Every candidate in the pool on 10 Sep 2026 -- all 41, including the 20 still
-    pending -- was emitted before this key existed, so refusing an empty one
-    would stop unattended approval dead tonight for rows whose producers were
-    never asked. What closes the hole from the other end is
-    contracts/checks/candidate_block_shape.py, which refuses a NEW block that
-    omits a premise: batch 11 onwards cannot be emitted without one. Once the
+    AN EMPTY PREMISE FAILS HERE, SINCE 13 Sep 2026, AND THAT CLOSES A HOLE
+    THIS DOCSTRING HAS BEEN CARRYING SINCE 10 Sep. It used to pass, because
+    every row in the pool predated the column and refusing them would have
+    stopped unattended approval dead for rows whose producers were never
+    asked. The exit condition was written down at the time -- "once the
     pending pool is rows that were emitted under that rule, an empty premise
-    should join an empty probe list as ineligible, and until then this returns
-    `declared: 0` and says so on the decision rather than passing quietly.
+    should join an empty probe list as ineligible" -- and removing gate 2 is
+    what forced it, EARLIER THAN THE POOL TURNED OVER.
+
+    The reason it could not wait: gate 2 was the only thing keeping the
+    pre-030 rows away from approval, and every one of them is silent here.
+    Dropping gate 2 while this still returned ok would have released 16 rows
+    whose ground nothing has ever checked, and c38 is what that costs -- four
+    probes held, the premise was never stated, and the £2.25 bought three
+    columns nobody had specified. Gate 8 would have been vacuous on exactly
+    the rows the change released, which is the worst possible arrangement:
+    a check that reports a pass for the population it cannot see.
+
+    A MISSING PREMISE IS A DIFFERENT RULE FROM A FAILING ONE -- `premise_missing`
+    rather than `premise_failed` -- on the same argument gate 5 and gate 6 are
+    two rules. They send a reader to different repairs:
+
+        premise_missing  nobody ever stated the ground. Re-produce the row;
+                         the producer is required to state one now.
+        premise_failed   the ground was stated and is no longer there. The
+                         row needs re-proposing, not re-running.
+
+    And there is a counting reason as well as a repair reason. Sixteen rows in
+    the pool declare no premise; the gates short-circuit, so on the day this
+    ships only TWO of them get as far as here -- c21 and c37, the only two
+    whose probes still hold -- against exactly one real `premise_failed`, c46.
+    Under one rule name the brief would report three of the same thing, and the
+    one row whose ground actually moved would be the one a reader could not
+    pick out.
     """
     mod = _shape_check()
     premise = candidate.get("premise") or []
@@ -441,11 +465,12 @@ def check_premise(candidate: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "declared": len(premise), "held": 0,
                 "why": f"repo {candidate.get('repo')!r} is not one this host has"}
     if not premise:
-        return {"ok": True, "declared": 0, "held": 0, "results": [],
-                "why": None,
-                "note": ("declares no premise, so nothing about the ground "
-                         "this work stands on was re-executed. Not a pass on "
-                         "the premise -- there was none to check.")}
+        return {"ok": False, "missing": True, "declared": 0, "held": 0,
+                "results": [],
+                "why": ("declares no premise, so nothing about the ground this "
+                        "work stands on can be re-executed. Zero premises "
+                        "holding is a check that cannot fail, which is what "
+                        "024's header names as the recurring defect here")}
 
     results = []
     for entry in premise:
@@ -517,12 +542,18 @@ def _inside(path: str, globs: Sequence[str]) -> bool:
     return False
 
 
-def gate(candidate: Dict[str, Any], *, newest_batch: int,
+def gate(candidate: Dict[str, Any], *,
          live_tasks: Sequence[Dict[str, Any]],
          prior_failures: int = 0,
          writables: Optional[Sequence[Tuple[str, Sequence[str]]]] = None,
          floor: Optional[Sequence[str]] = None) -> Dict[str, Any]:
-    """The eight gates, in order, ahead of the sort.
+    """The seven gates, in order, ahead of the sort.
+
+    NUMBERED 1, 3, 4, 5, 6, 7, 8. Gate 2 was removed on 13 Sep 2026 and the
+    others keep their numbers, so a rule this file has not changed cannot
+    read as a behaviour change in the brief -- the same argument gate 4 makes
+    for staying behind gate 3. What gate 2 was reaching for now lives in
+    supersede(), below, and runs AFTER these rather than among them.
 
     Returns {"eligible": bool, "rule": str|None, "detail": str|None, ...}.
     The first failure stops: the rule that held a row is the one printed in the
@@ -577,29 +608,45 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
                           f"overrule it",
                 "prior_failures": prior_failures}
 
-    # 2. The newest batch only. Batch 9 re-verified batch 8's rows against a
-    #    newer sha, so an older row is superseded by construction -- and rows
-    #    left behind from an older batch are exactly the repetition
-    #    specs/approval-surface.md §5 wants a person to look at.
-    # None means NO PRODUCER BATCH EXISTS, and then nothing is superseded.
+    # 2. GONE, 13 Sep 2026. It held a candidate that was not in the newest
+    #    producer batch, on the argument that "the newer batch re-verified
+    #    these claims against a later sha".
     #
-    # Supersession is the whole content of this gate -- "the newer batch
-    # re-verified these claims against a later sha" -- so with no producer
-    # run to have done any re-verifying there is no newer claim to prefer.
-    # Holding every row instead would shut the pool on the absence of a
-    # thing, which is what happened on 10 Sep by a different route: a
-    # hand-written batch counted as the newest and held twenty real rows.
+    #    THE ARGUMENT WAS FALSE FOR MOST OF THE ROWS IT HELD. On 13 Sep it
+    #    held 16 of the 18 open rows, and SIX of those sixteen had never been
+    #    superseded by any later row at all: c18, c24, c25, c26, c27, c30 name
+    #    work no newer batch has ever mentioned. The gate told the brief that
+    #    those claims had been re-verified. Nothing had re-verified them. The
+    #    chain then ran four passes in a row approving nothing, because batch
+    #    13 had six rows, five were already approved, and the sixth failed its
+    #    premise -- so the newest batch was drained and everything else was
+    #    shut behind it.
     #
-    # It fails OPEN and only here. Every other gate still applies, and this
-    # one is about staleness rather than safety.
-    if newest_batch is not None and candidate.get("batch_id") != newest_batch:
-        return {"eligible": False, "rule": "older_batch",
-                "detail": f"batch {candidate.get('batch_id')}, and the newest "
-                          f"is {newest_batch}; the newer batch re-verified "
-                          f"these claims against a later sha. Only a batch a "
-                          f"candidate_producer run made counts here -- see "
-                          f"034",
-                "prior_failures": prior_failures}
+    #    §9.11 found the same defect from the other side on 10 Sep and
+    #    proposed the narrow fix: supersede on the SOURCE DOCUMENT rather than
+    #    the batch id. THAT WOULD NOT HAVE WORKED EITHER, and it is worth
+    #    writing down because it looks right. Every producer run writes its
+    #    own findings file -- research/candidates-metorik-gap-2026-09-09.md,
+    #    -09-10.md, -09-11.md -- so no two batches share a `source_document`
+    #    and nothing would ever have superseded anything. The stable document
+    #    is in `candidates.evidence` (specs/metorik-gap.md), not on the batch,
+    #    which is exactly what console/work_key.py already resolves against.
+    #
+    #    BATCH AGE WAS ALWAYS A PROXY FOR "HAS THIS WORK BEEN DONE?", AND
+    #    GATE 7 MEASURES THAT DIRECTLY. A probe re-executed at HEAD answers
+    #    the question about this row, today. The proxy got it wrong in both
+    #    directions on the live pool: c17, c23 and c32 were held as stale and
+    #    their probes agree they are stale, so nothing was gained there; while
+    #    c21 and c37 were held as superseded although BOTH gaps were still
+    #    open in the platform checkout. Each of those two had a newer sibling
+    #    approved -- c31 and c50 -- and in neither case did the work land:
+    #    c31's tasks established refund coverage rather than surfacing net
+    #    revenue, and c50's spec task 66 FAILED.
+    #
+    #    WHAT SUPERSESSION MEANS NOW: supersede(), applied after every gate.
+    #    Two rows are a duplicate of one piece of work only once BOTH have
+    #    proved themselves; until then the older one is not superseded, it is
+    #    unexamined, and those are not the same thing.
 
     # 3. No overlap with a task that is not terminal.
     mine = [p for p in (candidate.get("suggested_paths") or [])]
@@ -776,9 +823,69 @@ def gate(candidate: Dict[str, Any], *, newest_batch: int,
     #    important of two true things.
     premise = check_premise(candidate)
     if not premise["ok"]:
-        return {"eligible": False, "rule": "premise_failed",
+        return {"eligible": False,
+                "rule": "premise_missing" if premise.get("missing")
+                        else "premise_failed",
                 "detail": premise["why"], "probes": probes,
                 "premise": premise, "prior_failures": prior_failures, **spans}
 
     return {"eligible": True, "rule": None, "detail": None, "probes": probes,
             "premise": premise, "prior_failures": prior_failures, **spans}
+
+
+def supersede(passed: Sequence[Dict[str, Any]]) -> Dict[int, str]:
+    """Which rows that PASSED every gate are the same work as a newer row.
+
+    Returns {candidate id: detail} for the rows to hold. An id absent from the
+    result is kept. Pure, on the same argument gate() is: the dry run and the
+    real decision must not be two predicates.
+
+    NOT A GATE, AND THE POSITION IS THE WHOLE POINT. Gate 2 held a row because
+    a newer BATCH existed, which said nothing about whether this work had been
+    done -- see the note where gate 2 used to be. This runs last, over rows
+    that have already proved themselves: probes re-executed at HEAD, ground
+    still there, no live task on the path, under the repeat ceiling. Two rows
+    that have each survived all of that and name the same row of the same
+    findings document are a genuine duplicate, and approving both would buy
+    the same work twice in one sweep.
+
+    Before that point they are not duplicates. They are one examined row and
+    one unexamined row, and shelving the unexamined one on the strength of the
+    other is precisely the inference that shut the pool for four passes.
+
+    ONLY `#row:` KEYS DEDUPLICATE. console/work_key.py returns a weaker
+    `topic:` key when a heading is ambiguous, and is explicit about which way
+    to fail: "Merging genuinely different work is the failure mode that costs
+    money quietly; failing to merge is the failure mode that costs a ceiling
+    one night and prints why." A topic key is stable only while the producer
+    keeps quoting the heading the same way, so it does not get to call two
+    rows the same work. The live pool has the pair this protects: c25 keys
+    `topic:segment-any-resource-by-any-attribute-and-or-groups` and c33 keys
+    `row:segment-any-resource-orders-customers-products-...`, which are almost
+    certainly one gap row and are not provably one.
+
+    NEWEST WINS, BY (batch, id). Not by rank: the two rows describe the same
+    work, so whichever the producer wrote most recently is the one whose
+    title, paths and probes were written against the most recent tree.
+    """
+    by_work: Dict[str, List[Dict[str, Any]]] = {}
+    for row in passed:
+        key = row.get("work_identity") or ""
+        if "#row:" not in key:
+            continue
+        by_work.setdefault(key, []).append(row)
+
+    held: Dict[int, str] = {}
+    for key, group in by_work.items():
+        if len(group) < 2:
+            continue
+        newest = max(group, key=lambda r: (r["batch_id"], r["id"]))
+        for row in group:
+            if row["id"] == newest["id"]:
+                continue
+            held[row["id"]] = (
+                f"candidate {newest['id']} (batch {newest['batch_id']}) is the "
+                f"same work -- {key.split('#', 1)[-1]} -- and is newer. Both "
+                f"passed every gate, so this one is a duplicate rather than an "
+                f"unexamined row; approving both would buy it twice")
+    return held

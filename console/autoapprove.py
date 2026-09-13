@@ -279,12 +279,30 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
 
     scored = []
     for c in candidates:
-        g = rank.gate(c, newest_batch=newest, live_tasks=tasks,
+        g = rank.gate(c, live_tasks=tasks,
                       prior_failures=c["prior_failures"],
                       writables=writables, floor=protected_floor)
         scored.append({**dict(c), "gate": g,
                        "keys": rank.key_values(c, coverage_floor=coverage_floor),
                        "sort": rank.rank(c, coverage_floor=coverage_floor)})
+
+    # SUPERSESSION, AFTER THE GATES AND BEFORE THE SORT. This is what gate 2
+    # was reaching for and could not reach: "these two rows are the same work"
+    # is only a true sentence about rows that have each survived every gate,
+    # and gate 2 was saying it about rows nothing had examined. rank.supersede
+    # is handed the survivors and names the older of each pair.
+    #
+    # THE HELD ROW IS REWRITTEN IN `scored`, NOT DROPPED, so it flows into
+    # `ineligible` below and is listed in the brief with `superseded` as its
+    # rule -- the same treatment every other held row gets. A duplicate that
+    # vanished from the list would make the sweep unanswerable about what it
+    # passed over, which §2.2 is explicit is the thing a ranking gets wrong.
+    passed = [s for s in scored if s["gate"]["eligible"]]
+    duplicates = rank.supersede(passed)
+    for s in passed:
+        if s["id"] in duplicates:
+            s["gate"] = {**s["gate"], "eligible": False, "rule": "superseded",
+                         "detail": duplicates[s["id"]]}
 
     # THE GATES ARE AHEAD OF THE SORT. An ineligible row is not ranked into
     # position and then skipped; it never enters the order. It is still listed,
@@ -305,6 +323,11 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
         "coverage_floor": coverage_floor,
         "platform_sha": head,
         "considered": len(candidates),
+        # RECORDED, NO LONGER A GATE. Gate 2 held every row outside this batch
+        # until 13 Sep 2026. It is still worth stamping on the decision -- it
+        # says which producer run the pool had most recently been refreshed by
+        # -- but nothing reads it to decide anything, and a later reader
+        # comparing two decisions across that date should know that.
         "newest_batch": newest,
         "eligible": [s["id"] for s in eligible],
         "cut": cut,
@@ -392,12 +415,26 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
             "reached_gate_4": sum(1 for s in scored if "probes" in s["gate"]),
             "of_candidates": len(scored),
         },
-        # THE GROUND, COUNTED SEPARATELY FROM THE GAP. `silent` is the line
-        # that matters and it is the one that will read as good news if it is
-        # not labelled: a candidate declaring no premise passes gate 6 without
-        # anything being checked, because every row in the pool on 10 Sep 2026
-        # predates the key. Zero premises held out of zero declared is not a
-        # verified pool. See rank.check_premise.
+        # THE GROUND, COUNTED SEPARATELY FROM THE GAP. `silent` used to be
+        # the line that mattered, and it mattered because it read as good news:
+        # a candidate declaring no premise PASSED gate 8 without anything being
+        # checked. Since 13 Sep 2026 it does not pass -- it is held as
+        # `premise_missing` -- so this counter has stopped being a warning
+        # about the check and started being a measure of the pool: of the rows
+        # that got as far as gate 8, how many predate 030 and must be
+        # re-produced before they can be approved unattended.
+        #
+        # IT COUNTS ROWS THAT REACHED GATE 8, NOT THE POOL, because the gates
+        # short-circuit -- same caveat the probe tally carries. On 13 Sep it
+        # read `reached: 3, silent: 2` against 16 rows in the pool with no
+        # premise: the other fourteen were held by an earlier gate and gate 8
+        # never saw them. Read `silent` against `reached`, never against
+        # `of_candidates`.
+        #
+        # KEPT UNDER THE SAME NAME rather than renamed to `missing`, because a
+        # decision recorded last week and one recorded tonight are read by the
+        # same eye, and a counter that changes meaning AND name at once cannot
+        # be compared across that boundary. The meaning changed; see here.
         "premise": {
             "declared": sum(s["gate"].get("premise", {}).get("declared", 0)
                             for s in scored),
@@ -407,6 +444,20 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
             "silent": sum(1 for s in scored
                           if s["gate"].get("premise", {}).get("declared") == 0),
             "of_candidates": len(scored),
+        },
+        # WHAT SUPERSESSION ACTUALLY COST, which gate 2 could never report.
+        # `held` is rows dropped as duplicates of a newer row that ALSO passed
+        # every gate; `unkeyed` is rows that passed and could not be compared
+        # at all, because work_key.py could not resolve them to a document row.
+        # The second is the number to watch: a pool where nothing keys is a
+        # sweep that has quietly stopped deduplicating, which is the same
+        # failure 027 found in the repeat ceiling.
+        "superseded": {
+            "held": len(duplicates),
+            "ids": sorted(duplicates),
+            "unkeyed": sum(1 for s in passed
+                           if "#row:" not in (s["work_identity"] or "")),
+            "of_passed": len(passed),
         },
     }
 
@@ -448,6 +499,12 @@ def mechanics_of(p: Dict[str, Any]) -> Dict[str, Any]:
         "repeat": p["repeat"],
         "probes": p["probes"],
         "premise": p["premise"],
+        # THE SUPERSESSION TALLY, on the same argument as `repeat` above and
+        # caught by the first live run without it: decision 53 recorded
+        # `superseded: None`, so a morning could not tell a sweep that
+        # deduplicated nothing from one that never looked. That distinction is
+        # the entire reason gate 2 was replaced rather than deleted.
+        "superseded": p["superseded"],
         "cut": p["cut"],
         "ranked": p["ranked"],
         # The reading the spend was reserved against AND what was reserved, so

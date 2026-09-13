@@ -331,10 +331,18 @@ approval, never the candidate.
    human judgement about one specific candidate, and a machine that can overrule
    it leaves no veto short of editing code. This is also the cheapest correction
    in §5 — one click, no deploy.
-2. **The newest batch only.** This is the dedupe of §1.5's first case, and it is
-   one `WHERE`. Batch 9 re-verified batch 8's rows against a newer platform sha;
-   the older row is superseded by construction. Rows left behind from an older
-   batch are exactly the repetition §5 wants a person to look at.
+2. **REMOVED 13 Sep 2026 — it was "the newest batch only".** The argument was
+   that batch 9 re-verified batch 8's rows against a newer platform sha, so the
+   older row is superseded by construction. It held the pool shut for four
+   consecutive passes; §9.11 has the measurement and §9.11a has what replaced
+   it. The numbers of the other gates are unchanged, deliberately: a rule that
+   has not changed must not read as a behaviour change in the brief.
+
+   **What supersession means now:** two rows are a duplicate of one piece of
+   work once **both have passed every gate**, and the older is then held as
+   `superseded`. That runs after the gates rather than as one of them, because
+   "these are the same work" is only a true sentence about rows that have each
+   been examined. See `rank.supersede`.
 3. **No overlap with a task that is not terminal.** §1.5's second case. Compare
    `suggested_paths` against the `writable_paths` declared in the `fleet-spec`
    block of every QUEUED / CLAIMED / RUNNING / READY_FOR_REVIEW task, falling
@@ -357,6 +365,32 @@ approval, never the candidate.
    also, separately, the reason key 1 cannot rank such a row: key 1 is *read off
    the probes*, so a row without them has no discriminator, and §2.3 refuses to
    approve on the absence of one.
+
+5. **And the ground the work rests on is still there.** Re-execute the stored
+   `premise` the same way, and for the opposite reason: a probe tests the GAP,
+   a premise tests what the rationale ASSUMED. c38 passed four probes and was
+   still wrong about the tree — §9.9.1 — and the £2.25 bought three columns no
+   spec asked for.
+
+   **An empty `premise` fails this gate too, since 13 Sep 2026.** It passed
+   until then, on the stated grounds that every row in the pool predated the
+   column and refusing them would have stopped unattended approval dead. The
+   exit condition was written into `rank.check_premise` at the time — *"once
+   the pending pool is rows that were emitted under that rule, an empty premise
+   should join an empty probe list as ineligible"* — and removing gate 2 forced
+   it early, because gate 2 was the only thing standing between those rows and
+   approval. Releasing 16 rows whose ground nothing had ever checked, through a
+   gate that reports a pass for exactly the population it cannot see, is the
+   worst available arrangement.
+
+   **A missing premise and a failing one are different rules** —
+   `premise_missing` and `premise_failed` — because they send a reader to
+   different repairs (re-produce the row; re-propose the work). Sixteen rows in
+   the pool declare no premise, though only the two that get past the earlier
+   gates are reported as `premise_missing` on the day it ships — see §9.11a's
+   second table. The gates short-circuit, so the `premise` tally on a decision
+   counts rows that REACHED this gate, never the pool: read `silent` against
+   `reached`, the same caveat the probe tally carries.
 
 Plus the two ceilings already in `approve_batch`: the repeat-failure stop and
 the credit check.
@@ -1666,6 +1700,98 @@ stand and batch 10 wait for the next producer run. Left as found, and reported.
 
 ---
 
+### 9.11a Gate 2 is gone, and the narrow fix above would not have worked — **FIXED 13 Sep 2026** (`rank.supersede`, `rank.check_premise`)
+
+Found by the chain running **four passes overnight on 12/13 Sep and approving
+nothing**. Measured before anything was changed, from the `mechanics` recorded
+on decisions 48–52 and a dry run over the live pool.
+
+**The pool, and what was actually holding it.** 18 open rows, 14 distinct
+pieces of work:
+
+| rule | rows |
+|---|---|
+| `older_batch` | **16** |
+| `premise_failed` | 1 (c46) |
+| `not_pending` | 1 (c36, a person's NOT_NOW) |
+| eligible | **0** |
+
+The proximate cause is narrower than "every producer run resets the pool".
+Batch 13 emitted six rows, five were approved over the preceding day, and the
+sixth failed its premise. **The newest batch was drained and everything else
+was shut behind it.**
+
+**Supersession depth, over the 16 held rows.** Counting newer rows for the same
+`work_key`: three rows superseded more than once (c17 three times, c23 and c28
+twice), seven superseded once, and **six never superseded at all** — c18, c24,
+c25, c26, c27, c30 name work no later batch has ever mentioned. For those six
+the gate's stated reason was simply false.
+
+**§9.11's narrow fix would not have worked, and it is worth saying why because
+it looks right.** Every producer run writes its own findings file:
+
+    batch  8   specs/metorik-gap.md                             (hand)
+    batch  9   research/candidates-metorik-gap-2026-09-09.md    task 34
+    batch 10   research/candidates-metorik-gap-2026-09-10.md    task 50
+    batch 13   research/candidates-metorik-gap-2026-09-11.md    task 64
+
+No two batches share a `source_document`, so superseding on it would have
+superseded **nothing** and the pool would have stopped shelving genuine
+duplicates as well. The stable document is the one in `candidates.evidence`
+(`specs/metorik-gap.md`), which is what `console/work_key.py` already resolves
+against — it is not on the batch at all.
+
+**A work-identity version of the gate does not drain the pool either**, which
+is the result that decided the shape. Simulated over the live pool: all six
+never-superseded rows fail a later gate anyway, and the only two rows whose
+claims still verify — c21 and c37 — each **have** a newer sibling and would
+stay held.
+
+**What the proxy was for, and what measures it directly.** Batch age is a proxy
+for *"has this work been done?"*, and gate 7 answers that question about this
+row, today. The proxy was wrong in both directions:
+
+* c17, c23, c32 were held as stale, and their probes agree they are stale —
+  nothing was gained by holding them for their age.
+* c21 and c37 were held as superseded although **both gaps were still open in
+  the platform checkout**, verified at `71a60e6`. Each had a newer sibling
+  approved and in neither case did the work land: c31's tasks established
+  refund coverage rather than surfacing net revenue, and c50's spec task 66
+  FAILED.
+
+**So gate 2 was removed and `rank.supersede` runs after the gates.** Two rows
+are a duplicate once both have proved themselves; before that the older one is
+not superseded, it is unexamined. Only `#row:`-strength keys deduplicate — a
+`topic:` key is stable only while the producer keeps quoting a heading the same
+way, and c25/c33 are the live pair that protects.
+
+**The premise hole had to close in the same change, and that is the whole cost
+of it.** Gate 2 was the only thing keeping the 16 pre-030 rows away from
+approval. Not one of them declares a premise, so gate 8 was vacuous on exactly
+the population the change released — the c38 failure mode by construction.
+`check_premise` now refuses an empty premise, as its own docstring said it
+should once the pool turned over. It has not turned over; removing gate 2 is
+what made waiting for it unsafe.
+
+**What the sweep says the morning after, and it still approves nothing:**
+
+| rule | rows |
+|---|---|
+| `probes_failed` | 8 — three carry no probes at all (batch 8) |
+| `unwritable_path` | 4 |
+| `premise_missing` | 2 — c21 and c37, the two whose claims hold |
+| `protected_path` | 2 |
+| `premise_failed` | 1 — c46 |
+| `not_pending` | 1 |
+
+**That is the honest result and it is not a drain.** What changed is that every
+row now names its own defect instead of seventeen rows naming their age. Two of
+those defects are repairs to this pool (c21 and c37 need a premise); six are a
+producer defect that has been invisible for four batches and is raised
+separately in §9.20.
+
+---
+
 ### 9.12 The cheapest partial reader, costed
 
 Asked for on 10 Sep 2026, against §9.9 and `dd-analytics-frontend.yaml`'s
@@ -2305,6 +2431,93 @@ decision about what that contract is for, and that is the user's.
 `{dd-docstring-proving.yaml}`. A new contract with this shape fails; the known
 one is recorded rather than silently tolerated; and fixing it fails the test
 too, which is the prompt to delete the exception with it.
+
+---
+
+### 9.20 The producer emits paths no contract can write, and nothing checks it until approval — open
+
+Found while measuring §9.11a, 13 Sep 2026. **Not fixed here**, and separated
+from that change deliberately: removing gate 2 makes this defect *visible* in
+the brief, and visible is not fixed.
+
+**The measurement**, over every candidate ever loaded for
+`deadly-digital-platform`, against `rank.contract_writables`:
+
+    6 of 33 candidates name at least one path no contract makes writable
+    by batch:        9 -> 5 rows,  10 -> 1 row
+    by disposition:  PENDING -> 6   (not one has ever been approved)
+
+    c24  api/analytics/routes
+    c25  platform/app/(dashboard)/segments/builder/page.tsx
+    c26  api/analytics/schema_context.py, api/analytics/routes,
+         platform/app/(dashboard)/analytics
+    c27  api/analytics/migrations/versions
+    c28  api/analytics/routes, platform/app/(dashboard)/analytics
+    c35  api/analytics/migrations/versions/v0008_product_categories.py
+
+**Three shapes, and they are not one bug wearing three hats:**
+
+1. **A DIRECTORY where a file belongs** — `api/analytics/routes`,
+   `platform/app/(dashboard)/analytics`. c24, c26, c28. A contract makes
+   *files* writable; a directory matches no glob and never will.
+2. **A file outside every boundary** — c25's `segments/builder/page.tsx`,
+   c26's `schema_context.py`. The path is plausible and nothing may write it.
+3. **A path on the protected floor** — c27 and c35, both under
+   `api/analytics/migrations/**`. Refused by gate 5 rather than gate 6, and
+   refused however the work is scoped.
+
+**Why it survived four batches.** `contracts/checks/candidate_block_shape.py`
+does check `suggested_paths`, and the check it makes is the wrong one:
+
+    missing = [p for p in paths
+               if not (repo / str(p)).exists()
+               and not (repo / str(p)).parent.exists()]
+
+That asks whether the path *resolves in the tree*. `api/analytics/routes`
+resolves — it is a real directory — so the producer's block verifies, the batch
+loads, and the row sits in the pool until an approval sweep re-derives the
+contract and refuses it. Every one of these six was written on 9 and 10 Sep and
+has been in the pool through batches 9, 10, 11 and 13.
+
+**And gate 2 is why nobody saw it.** The brief reported all six as
+`older_batch`. The rule that actually held them — the one naming a repair —
+was four gates further down and never printed, because the gates short-circuit
+on the first failure. This is §9.7's defect in a new place: a check nobody can
+fail is what the first watched run is for, and a check whose finding is masked
+by an earlier one is the same thing with an extra step.
+
+**Where the fix belongs, and it is the producer end.** The same predicate
+`rank.gate` uses, run at *block* time instead of approval time: every
+`suggested_paths` entry must fall inside some contract's `writable_paths` for
+the repo it names, and none may fall on the protected floor. Both lists are
+already reachable from the check — it loads `objectives-2026-Q4.yaml` from the
+fleet checkout today, and the floor is generated into every
+`contracts/*.yaml` as `protected_paths` rather than living only in the
+database, which is what keeps §9.12's *"checks cannot reach the database and
+should not start"* true.
+
+**What that buys:** the refusal lands on the producer's own verification,
+before the row is ever loaded, where the repair is "name the file you mean"
+and the producer is the thing that can name it. What it costs is one more way
+for a producer run to fail — and a producer run that fails is cheaper than a
+candidate that cannot be built, because the candidate is the one that consumes
+a person's attention every morning.
+
+**Not proposed here:** teaching the producer to *widen* a contract. A path
+outside every boundary is sometimes a real answer — c25's segment builder is
+plausible work — and the response to it is a contract a person wrote, not one
+the producer negotiated for itself.
+
+**THE FLEET CANNOT FIX THIS ONE ITSELF, and that is by design rather than an
+oversight.** `contracts/**` is on `protected_path_floor` for `fleet`, and the
+only two fleet contracts that write anything write `research/**` and
+`drafts/**`. So no task this system can queue may edit
+`contracts/checks/candidate_block_shape.py` — the check that judges the work is
+the thing the floor exists to keep out of the agent's hands (`draft-spec.yaml`
+says so in as many words). **The repair is a person's, by hand**, and the only
+thing worth automating around it is the noticing, which §9.11a now does: the
+six rows report `unwritable_path` and `protected_path` in the brief instead of
+`older_batch`.
 
 ---
 

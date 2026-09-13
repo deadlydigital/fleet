@@ -87,9 +87,19 @@ def _batch(console, doc=DOC, sha=SHA_BATCH_9) -> int:
     return row["id"]
 
 
+#: A premise that holds against the platform checkout. Every candidate here
+#: carries one because rank.check_premise refuses an empty premise as of
+#: 13 Sep 2026 -- the same reason EXISTS is a real path and not a made-up one.
+#: These tests are about the repeat ceiling; a row of theirs held at gate 8
+#: would never reach gate 4 and the ceiling would go untested while the file
+#: still passed.
+PREMISE = [{"claim": "the analytics API still serves the order list",
+            "probe": {"path_exists": "api/analytics/routes/orders.py"}}]
+
+
 def _cand(console, batch_id, *, title, section=None, sha=SHA_BATCH_9,
           band="weekly", repo=PLATFORM, probes=None, paths=None,
-          document=DOC) -> int:
+          document=DOC, premise=None) -> int:
     """One candidate, keyed the way console/load_candidates.py keys one.
 
     The key is derived by the REAL derivation rather than typed, so a test that
@@ -100,11 +110,12 @@ def _cand(console, batch_id, *, title, section=None, sha=SHA_BATCH_9,
     key = work_key.derive({"repo": repo, "evidence": evidence})["key"]
     row = console.execute(
         "INSERT INTO candidates (batch_id, title, rationale, repo, band,"
-        " probes, suggested_paths, evidence, work_key)"
-        " VALUES (%s,%s,'because the finding said so',%s,%s,%s,%s,%s,%s)"
+        " probes, premise, suggested_paths, evidence, work_key)"
+        " VALUES (%s,%s,'because the finding said so',%s,%s,%s,%s,%s,%s,%s)"
         " RETURNING id",
         (batch_id, title, repo, band,
          json.dumps(probes if probes is not None else [EXISTS]),
+         json.dumps(PREMISE if premise is None else premise),
          paths or [], json.dumps(evidence), key)).fetchone()
     console.commit()
     return row["id"]
@@ -418,8 +429,8 @@ class TestTheCount:
 
         held = rank.gate({"disposition": "PENDING", "batch_id": new,
                           "suggested_paths": [], "repo": PLATFORM,
-                          "probes": [EXISTS], "id": c},
-                         newest_batch=new, live_tasks=[], prior_failures=n)
+                          "probes": [EXISTS], "premise": PREMISE, "id": c},
+                         live_tasks=[], prior_failures=n)
         assert held["eligible"] is False
         assert held["rule"] == "repeat_failure"
         assert "2 unsuccessful attempt" in held["detail"]
@@ -437,8 +448,8 @@ class TestTheCount:
         assert n == 1
         g = rank.gate({"disposition": "PENDING", "batch_id": new,
                        "suggested_paths": [], "repo": PLATFORM,
-                       "probes": [EXISTS], "id": c},
-                      newest_batch=new, live_tasks=[], prior_failures=n)
+                       "probes": [EXISTS], "premise": PREMISE, "id": c},
+                      live_tasks=[], prior_failures=n)
         assert g["eligible"] is True
         assert g["prior_failures"] == 1
 
@@ -616,10 +627,12 @@ class TestOnePredicate:
         _pool(admin)
         old = _batch(console, sha=SHA_BATCH_8)
         new = _batch(console)
+        attempts = []
         for _ in range(2):
             a = _cand(console, old, title="Coupon report", section=SECTION_8,
                       sha=SHA_BATCH_8)
             _attach(admin, a, _failed_task(admin, verification="FAIL"))
+            attempts.append(a)
         blocked = _cand(console, new, title="Coupon report, third time",
                         section=SECTION_9)
         clean = _cand(console, new, title="Something else entirely",
@@ -638,7 +651,16 @@ class TestOnePredicate:
         assert all(r["work_identity"] for r in p["ranked"])
         assert blocked not in p["approve_ids"]
         assert p["repeat"]["stop_at"] == 2
-        assert p["repeat"]["blocked"] == 1
+        # ALL THREE COUPON ROWS, not just the newest, and that is a change
+        # dated 13 Sep 2026. It read 1 while gate 2 existed: the two batch-8
+        # rows were held as `older_batch` and never reached gate 4, so the
+        # ceiling's own tally could not see two of the three rows it was
+        # counting over. The count was always 2 for each of them; only the
+        # reporting was short-circuited.
+        assert p["repeat"]["blocked"] == 3
+        assert {r["candidate_id"] for r in p["ranked"]
+                if r["rule"] == "repeat_failure"} == {*attempts, blocked}
+        assert by_id[clean]["rule"] != "repeat_failure"
 
     def test_the_plan_and_approve_batch_agree_on_the_same_rows(
             self, dsns, console, admin):
@@ -689,7 +711,10 @@ class TestOnePredicate:
 
         assert before == after
         assert out["decision_id"] is None
-        assert out["repeat"]["blocked"] == 1
+        # 3, not 1, since gate 2 went: the two batch-8 rows now reach gate 4
+        # instead of being held as `older_batch` ahead of it. See the note in
+        # test_the_plan_carries_the_count_for_every_row.
+        assert out["repeat"]["blocked"] == 3
 
 
 # ---- the mutation proof ----------------------------------------------------

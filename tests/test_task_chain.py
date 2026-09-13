@@ -131,8 +131,14 @@ class TestGateSixLetsThemThrough:
                 # gates and the recorded split is visible on a pass rather
                 # than on some later refusal.
                 "probes": [{"path_exists": "api/analytics/services/segment_engine.py"}],
-                "premise": []}
-        g = rank.gate(cand, newest_batch=1, live_tasks=[], writables=w, floor=floor)
+                # A PREMISE THAT HOLDS, for the same reason the probe does.
+                # An empty one is refused at gate 8 since 13 Sep 2026, and this
+                # test is about gate 6 recording the split on a PASS -- with no
+                # premise it would pass gate 6, fail gate 8, and assert nothing.
+                "premise": [{"claim": "the segment engine is in the analytics API",
+                             "probe": {"path_exists":
+                                       "api/analytics/services/segment_engine.py"}}]}
+        g = rank.gate(cand, live_tasks=[], writables=w, floor=floor)
         assert g["eligible"] is True, g.get("detail")
         assert g["rule"] != "spans_contracts"
         assert g.get("spans_contracts") is True, (
@@ -152,7 +158,7 @@ class TestGateSixLetsThemThrough:
                 "suggested_paths": ["api/analytics/services/segment_engine.py",
                                     "platform/app/(dashboard)/analytics/page.tsx"],
                 "probes": [{"path_exists": "api/nope_not_here.py"}], "premise": []}
-        g = rank.gate(cand, newest_batch=1, live_tasks=[], writables=w, floor=floor)
+        g = rank.gate(cand, live_tasks=[], writables=w, floor=floor)
         assert g["eligible"] is False
         assert g["rule"] == "probes_failed"
 
@@ -166,7 +172,7 @@ class TestGateSixLetsThemThrough:
         cand = {"id": 900, "disposition": "PENDING", "batch_id": 1,
                 "repo": "deadly-digital-platform",
                 "suggested_paths": ["api/analytics/routes"], "probes": [], "premise": []}
-        g = rank.gate(cand, newest_batch=1, live_tasks=[], writables=w, floor=floor)
+        g = rank.gate(cand, live_tasks=[], writables=w, floor=floor)
         assert g["rule"] == "unwritable_path"
 
 
