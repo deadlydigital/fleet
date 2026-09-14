@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuse a commit in the main checkout while the runner is building.
+# See tools/githooks/refuse_if_building.py for the whole argument.
+#
+# The venv python, by absolute path: a hook runs with whatever environment the
+# caller had, and `python3` on PATH is not the interpreter that can import
+# `console`.
+exec /home/ubuntu/fleet/.venv/bin/python \
+     /home/ubuntu/fleet/tools/githooks/refuse_if_building.py "$@"
