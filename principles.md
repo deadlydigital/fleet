@@ -69,6 +69,26 @@ migrations behind, a test-suite baseline three weeks stale when it was filed.
 by reverting them. Rehearse migrations against data that exercises the path. A
 green result from a check that could not have gone red says nothing.
 
+**Rebuild a function body from the live definition, by patch, never by
+retyping.** `CREATE OR REPLACE FUNCTION` restates the whole body, so a
+migration that adds one condition also rewrites every line it did not mean to
+touch — and a deletion performed that way reads, in the diff, as an addition.
+On 14 Sep 2026 a waiver added to `enforce_contract_floor()` was written from
+003's version of the function. Three later migrations had amended it since:
+017's `contract_is_new`, 020's creatable-path grounding, 024's paired paths.
+All three were silently deleted, and one `RAISE` message was reworded in the
+same stroke. Take the body from `pg_get_functiondef`, apply the change as a
+textual patch with the untouched lines asserted present, and diff the result
+against what is running before the file is finished.
+
+**The suite caught it, and it caught it sideways.** Nothing failed that was
+about the waiver; four paired-path tests failed, which is a rule the change
+never mentioned. That is the ordinary shape of this defect — the tests that go
+red are the ones belonging to whatever was overwritten, so a migration whose
+own tests pass has established nothing about what it removed. Run the whole
+suite against a database rebuilt from the migrations, not the migration's own
+assertions.
+
 **Rejections are the informative half.** What was considered and turned down is
 worth more in six months than the bare fact of what was chosen. Never discard a
 rejection, and never accept one without a reason.
