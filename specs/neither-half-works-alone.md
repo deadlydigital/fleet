@@ -24,6 +24,36 @@ shipped as a 112MB index per tenant schema that changed no plan at all.
 Each half alone is neutral or negative. Together the estimate falls 5.4× and
 the sort disappears.
 
+## Confirmed by execution, 14 September 2026
+
+The index was built — 1s on `analytics_1`, 5s on `analytics_2`, 26 MB and
+112 MB, the planner's size estimate exact. Both halves are now measured against
+the real thing rather than modelled:
+
+| | executed |
+|---|---|
+| `_query_period_stats` before the index | 3,410 ms |
+| `_query_period_stats` **with** the index | **3,602 ms** — plan identical |
+| the `LATERAL` rewrite **with** the index | **252 ms** |
+
+The plan with the index is unchanged in every respect that matters: the
+sequential scan over 2,885,101 rows to remove 2,068 is still there, the
+1,724,435-row external merge still spills 50,664 kB, and the query still uses
+`ix_analytics_orders_created` rather than the new composite. **hypopg was
+right**, by estimate and then by execution.
+
+The rewrite with the index is a **14× reduction, executed**: no seq scan, no
+sort, no spill, and a per-customer `Limit` costing 0.007 ms across 21,532
+loops.
+
+**And the dashboard's improvement in the same window was not this.** It went
+21.3s to 9.1s while the index changed no plan, which resolves a gap this
+document left open: the SQL only ever accounted for 6.5s of the 21.3s, and the
+remainder was contention — the first figure was taken while the chain and the
+test suite competed for two CPUs, the second on a box at load 0.03. Worth
+stating because the index landing and the page getting faster in the same
+afternoon is exactly the coincidence that would otherwise be read as cause.
+
 ## Why
 
 `DISTINCT ON (customer_id) … ORDER BY customer_id, created_at, id` over a set

@@ -54,8 +54,12 @@ accepts, not to how fast it answers.
 **6. A note on the `Migration` recording what it will cost to build.** Two
 tenant schemas hold this table — `analytics_1` with 679,917 orders and
 `analytics_2` with 2,887,844 — and the planner estimates 112 MB per schema. The
-build time is **unmeasured**; say so in the note rather than guessing, and say
-that `analytics_2` deserves its own window, as `v0003` does for `analytics_12`.
+build time was **unmeasured** when this was written and is now known: **1s on
+`analytics_1`, 5s on `analytics_2`** (applied 14 Sep 2026). The size estimate
+was exact — **112 MB on `analytics_2`, 26 MB on `analytics_1`**. `v0003` gives
+`analytics_12` its own window for an 802,396-row build; at five seconds this
+one did not need one, which is worth knowing rather than inheriting the
+caution.
 
 ## What the migration system gives you, so do not rebuild it
 
