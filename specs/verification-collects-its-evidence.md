@@ -1,12 +1,13 @@
 # Verification collects its evidence before it refuses
 
-**NOT APPLIED. This is a proposal and a recommendation, not a description of
-the runner as it stands.** `runner/verify.run` stops at the first failing check
-today, and nothing in this document changes that until somebody decides it
-should.
+**APPLIED 14 Sep 2026** in `runner/verify.run`, with the two callers that
+branched on `undecided` corrected alongside it (§6). Written first as a
+proposal; this paragraph and §4's ceiling note are the only parts rewritten
+after building it, and what changed is recorded rather than tidied away.
 
-**The recommendation, up front: run every check regardless of the first
-failure. Do not reorder them by cost.** What that costs, measured, is in §4.
+**The recommendation, which is what was built: run every check regardless of
+the first failure. Do not reorder them by cost.** What that costs, measured,
+is in §4.
 
 ---
 
@@ -135,11 +136,28 @@ So a run that fails its first check at 72ms would spend ~143 seconds instead,
 on a tick with a 1800s wall clock. Against task 87's actual cost — a day, a
 false premise, and a re-queue — that is not a close comparison.
 
-**The real exposure is timeouts, and it needs bounding.** Per-check deadlines
-(`reverify._deadline_for`) mean N checks can now burn N deadlines where the run
-used to stop at the first. "Run them all" must not become "wait for all of them
-to time out". A ceiling on the verification phase as a whole should be built
-with this, not after it.
+**The ceiling already existed, and this paragraph used to say otherwise.** As
+proposed, this section claimed that per-check deadlines meant N checks could
+burn N deadlines, and that a phase ceiling had to be built alongside. **That
+was wrong, and reading `verify.run` before changing it is what corrected it.**
+`deadline_seconds` is already one budget for the whole phase: the loop computes
+
+    remaining = deadline_seconds - sum(c.duration_ms for c in result.checks) / 1000
+
+and passes `remaining` as each check's timeout, so the checks share one
+allowance and continuing past a failure spends what is left of it rather than
+starting a fresh clock. N checks cannot burn N deadlines and never could. The
+worst case is one `deadline_seconds`, which is the contract's own verification
+budget — `reverify._deadline_for` derives it from the task's `timeout_seconds`,
+and `cycle` passes the task's wall clock less whatever the agent spent.
+
+**What did need building was smaller.** When the budget runs out the loop used
+to record the one check it was about to start and stop. That was defensible
+while everything after a stopping point was unknown by convention; now that the
+ordinary case is "everything ran", a silent tail reads as checks that passed.
+Every remaining command is recorded as `undecided`, on the argument the
+unresolved branch already makes one screen up: *recorded, rather than dropped,
+so the report shows the whole contract.*
 
 **Cascading noise is real and acceptable.** A `tsc` failure will usually make
 `vitest` fail for the same cause. Two failures, one defect. That is tolerable
@@ -168,6 +186,33 @@ sentences, and only the second is what §3 is about.
 
 **The refusal is still a refusal.** In `size_only`'s words: this only decides
 whether the evidence gets collected first.
+
+## 6. What building it turned up: one run can now hold both classes
+
+Not foreseen when this was written as a proposal, and the reason it is a change
+to three files rather than one.
+
+Until now `verify.run` stopped at the first failure, so a verification held at
+most one terminal check: **either** a failing verdict **or** a check that was
+killed, never both. Two callers rely on that without saying so —
+`console/reverify.run` and `runner/cycle._execute` both branch on
+`Verification.undecided` first and report *"this says nothing about the
+branch"*, which is right when the killed check is all there is.
+
+Running everything breaks the assumption. A genuine `exit 1` followed by a
+`tsc` the cgroup kills — which is not hypothetical; it is the measured task 53
+case `Check.undecided_reason` exists for — would have been reported as *"could
+not be verified"*, throwing away the one finding the run did establish and
+sending the reader to look at the unit's memory limits instead of at their
+diff. That is the same false-confidence failure `undecided` exists to prevent,
+pointing the other way.
+
+So `Verification.failed_outright` asks the question directly — did any check
+look at the tree and return a verdict of failure — and both callers ask it
+before they claim nothing is known. A verdict that was reached is kept.
+
+`tests/test_verify_evidence.py` asserts both orderings, because order must not
+decide which class a run reports.
 
 ---
 

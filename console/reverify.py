@@ -385,7 +385,15 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         # BEFORE the failure branch for the same reason the unresolved check
         # is: the branch below is the one that would otherwise tell the wrong
         # story, and it would send a reviewer to read a diff that is fine.
-        if result.undecided:
+        #
+        # AND ONLY WHEN NOTHING ELSE ANSWERED, since 14 Sep 2026. `verify.run`
+        # no longer stops at the first failure, so one verification can now
+        # hold both a genuine failing verdict and a later check the cgroup
+        # killed. Reaching here on that run would print "says nothing about
+        # this branch" over a run that had just established something specific
+        # about it -- the same false-confidence mistake this branch exists to
+        # prevent, pointing the other way. A verdict that was reached is kept.
+        if result.undecided and not result.failed_outright:
             return Reverification(
                 ok=False, could_not_run=True, base_sha=base_sha, merged_sha=head,
                 checks=checks,

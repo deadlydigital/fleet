@@ -390,6 +390,24 @@ class Verification:
                          if c.unresolved_reason)
 
     @property
+    def failed_outright(self) -> bool:
+        """Some check looked at the tree and returned a verdict of failure.
+
+        THE DIFFERENCE BETWEEN "THIS IS BROKEN" AND "NOTHING IS KNOWN", asked
+        of a run that can now hold both. Until 14 Sep 2026 `run` stopped at the
+        first failure, so a verification had at most one terminal check: either
+        a failure or a killed one, never both, and `undecided` alone was a safe
+        thing for a caller to branch on.
+
+        It is not safe now. A genuine failure followed by a later check the
+        cgroup kills would read as `undecided` and be reported as "this says
+        nothing about the branch" -- which would be false, and would throw away
+        the one finding the run did establish. Callers ask this first and keep
+        the verdict they have.
+        """
+        return any(c.ran and not c.passed for c in self.checks)
+
+    @property
     def undecided(self) -> bool:
         """Some check was killed, so it answered nothing.
 
@@ -431,11 +449,54 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
         changed: list[str] | None = None,
         facts: dict[str, str] | None = None,
         links: Sequence[Path] = ()) -> Verification:
-    """Each command in turn, stopping at the first failure.
+    """Every command in turn, and a failing one does not stop the rest.
 
-    Stopping early is deliberate: the second command's output is not evidence
-    about a tree the first command already rejected, and the wall clock is
-    better spent ending the tick.
+    IT STOPPED AT THE FIRST FAILURE UNTIL 14 Sep 2026, and the reason it gave
+    was: "the second command's output is not evidence about a tree the first
+    command already rejected, and the wall clock is better spent ending the
+    tick."
+
+    That holds when the first command judged the TREE. It does not when the
+    first command judged the ANNOTATION, and this contract's cheapest check
+    does exactly that. `contracts/checks/spec_requirements_cited.py` says so
+    in its own docstring -- "that a claim was made, not that it was met" --
+    and lists, under a heading written so nobody would oversell it, that it
+    establishes nothing about "whether the requirement was implemented
+    correctly, or at all".
+
+    WHAT IT COST. Task 87 was refused on 13 Sep at 21:03:17 by that check,
+    exit 1 in 72ms, and that is the whole of what run 62 recorded. tsc,
+    vitest, the bite check and proxy_passthrough never ran against the
+    branch. The citation error was real and one character wide; it was fixed
+    by hand the same evening and the branch was then believed to be done. It
+    had never passed its own test -- `getByText('£0.00')` matching three
+    elements, 1 failed and 6 passed against the branch alone -- and the check
+    that would have found that out was never reached. A day of believing a
+    broken branch was nearly landed, and a re-queue, for want of 143 seconds.
+
+    THE SAME DECISION WAS ALREADY MADE ONE LAYER UP. `boundary.size_only`
+    stopped a cheap structural refusal from pre-empting evidence collection,
+    on task 69's measured £7.97 where "because both died here neither test was
+    ever executed", and ends: "this only decides whether the evidence gets
+    collected first". That is this sentence too. The refusal is unchanged --
+    `passed` is False either way and the caller still returns FAILED.
+
+    NOT A REORDERING, which was the alternative. Whichever check runs first
+    would still be the only fact recorded; "cheap" is not the property that
+    matters ("establishes nothing about the tree" is, and the two correlate
+    only by accident); and an order maintained by hand across every contract
+    is the shape this repository has watched go stale while being believed.
+
+    WHAT IT COSTS. Nothing on a green run -- one has always executed every
+    check, because this only ever stopped on failure. No model spend, since
+    verification runs after the agent is billed. On a failing run it is
+    bounded by `deadline_seconds`, which is the whole verification phase's
+    budget and not a per-check one: `remaining` below subtracts what the
+    earlier checks already spent, so N checks cannot burn N deadlines. The
+    measured worst case on the frontend contract is ~143s against a 1800s
+    tick.
+
+    See specs/verification-collects-its-evidence.md.
     """
     result = Verification()
     changed = changed or []
@@ -494,7 +555,7 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
                     "be resolved")))
         return result
 
-    for command in commands:
+    for index, command in enumerate(commands):
         expanded, has_placeholder, matched = expand_changed_files(command, changed)
         if has_placeholder and matched == 0:
             # Linting nothing is not a failure, but neither is it a result.
@@ -511,12 +572,29 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
             # NEVER STARTED, because the checks before it spent the deadline.
             # The same class for the same reason: this one did not merely fail
             # to answer, it was never asked.
-            result.checks.append(Check(
-                command, -1, 0, "", timed_out=True, expanded=expanded,
-                undecided_reason=(
-                    f"the contract's {deadline_seconds:.0f}s deadline was "
-                    f"already spent by the checks before it, so this one "
-                    f"never ran and there is no verdict to read")))
+            #
+            # THE CEILING THAT KEEPS "RUN THEM ALL" HONEST, and it is this one
+            # rather than a new one: `deadline_seconds` is the budget for the
+            # whole phase, and `remaining` is what the earlier checks left of
+            # it. So continuing past a failure spends the contract's existing
+            # allowance and cannot exceed it -- N checks never burn N
+            # deadlines, which is the one way this change could have been
+            # worse than the fail-fast it replaces.
+            #
+            # EVERY REMAINING COMMAND IS RECORDED, not just this one. The
+            # unresolved branch above already made that argument -- "recorded,
+            # rather than dropped, so the report shows the whole contract" --
+            # and it bites harder now: a run that stops early no longer means
+            # "everything after this is unknown by convention", because the
+            # ordinary case is that everything after it ran.
+            for later in commands[index:]:
+                result.checks.append(Check(
+                    later, -1, 0, "", timed_out=True,
+                    expanded=expand_changed_files(later, changed)[0],
+                    undecided_reason=(
+                        f"the contract's {deadline_seconds:.0f}s deadline was "
+                        f"already spent by the checks before it, so this one "
+                        f"never ran and there is no verdict to read")))
             break
         started = time.monotonic()
         # READ BEFORE AND AFTER, so an OOM kill is attributed to THIS check
@@ -562,6 +640,7 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
         result.checks.append(
             Check(command, code, duration_ms, out[-4000:], timed_out,
                   expanded=expanded, undecided_reason=killed))
-        if code != 0 or timed_out:
-            break
+        # AND ON TO THE NEXT ONE, FAILED OR NOT. The `break` that stood here
+        # is what made the first failure the only fact a run recorded; the
+        # docstring carries the argument and what it cost.
     return result

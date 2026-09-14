@@ -511,8 +511,15 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 # SAME CLASS, SAME SENTENCE. A run whose check was killed did
                 # not fail verification; it never got a verdict, and 033's
                 # whole argument is that the reason column must say which.
+                #
+                # UNLESS ANOTHER CHECK DID GET ONE, since 14 Sep 2026:
+                # verification no longer stops at the first failure, so a run
+                # can hold a real failing verdict AND a later killed check.
+                # "Could not be verified" over that run would bury the finding
+                # the run actually made. See verify.Verification.failed_outright.
                 f"could not be verified: {verification.undecided_summary()}"
-                if verification.undecided else "verification failed")
+                if verification.undecided and not verification.failed_outright
+                else "verification failed")
             return
 
         # ---- the branch, and nothing beyond it ----
