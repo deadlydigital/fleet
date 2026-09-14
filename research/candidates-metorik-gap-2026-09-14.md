@@ -6,10 +6,60 @@ task at fleet `da496f8`, and re-verified against `deadly-digital-platform` at
 `.git/refs/heads/main`; every probe below reads the working tree at that
 checkout).
 
-**Five candidates**, `ordering: unranked`. They are printed in the order I
+**Six candidates**, `ordering: unranked`. They are printed in the order I
 happened to establish them, which is neither the document's band order nor a
 ranking. Candidate order is read as rank order by whoever loads this, so it is
 said here as well as in the block: **I did not rank these.**
+
+> **Edited by hand, 14 September 2026, after the load refused this document.**
+> It emitted five candidates; it now carries six. See "What was edited, and
+> why" immediately below — the change is recorded rather than tidied away,
+> because the rest of the document is the producer's and this part is not.
+
+---
+
+## 0. What was edited, and why
+
+`console.load_candidates` refused the block this run emitted:
+
+    REFUSED: 2 problem(s) in the block; nothing was written:
+      - candidate 2: evidence sections name more than one band (['daily', 'rarely'])
+      - candidate 3: evidence sections name more than one band (['daily', 'weekly'])
+
+The loader's rule is that a candidate has one frequency, because *"picking the
+first would be a way of not noticing that the document disagrees with itself"*.
+**The producer could not have known.** `contracts/checks/candidate_block_shape.py`
+— the gate its contract makes it pass — carries no band validation at all, so a
+block can pass verification, merge, and then be unloadable. That is being fixed
+separately; it is not a fault of this run.
+
+The two refusals were not the same shape, and are not repaired the same way.
+
+**Candidate 2 was two pieces of work and is now two rows.** It merged net
+revenue (a Daily row) and the payment-method block (a Rarely row) on the
+strength of §3 below — same page, same payload, same render-only change. Split
+along the band line into *"Render the net-revenue figures…"* and *"Render the
+payment-method breakdown…"*, each citing one band, each keeping the probes and
+premises that belong to it, and the `hib_signal` divided at the same seam: the
+refund_total reading to the first, the payment_method coverage to the second.
+
+**This overrides §3 for that pair, deliberately.** Two rows now name
+`analytics/revenue/page.tsx`. What §3 was protecting is gate 3 (`path_overlap`),
+which holds any candidate whose path a non-terminal task declares — so the
+second row waits for the first to finish rather than colliding with it. The
+protection is in the ranker, not in the batch's shape.
+
+**Candidate 3 was one piece of work and is still one row.** It cites the Daily
+export row as its gap and cited *"Weekly — Product sales and trends"* as
+supporting evidence that `product_report` already returns a complete row shape.
+There is no second piece of work to split out, so splitting it would have
+invented one. The Weekly citation was removed instead. **The claim it supported
+is not lost**: the rationale still states it, and the candidate's first premise
+proves it by probe (`product_report` appears twice in `api/analytics/routes/products.py`).
+
+Nothing else was touched: no probe, no premise, no rationale except where the
+split required one sentence to move, and no row was added or dropped beyond
+candidate 2 becoming two.
 
 ---
 
@@ -130,6 +180,13 @@ single-valued.
 
 **Candidate 2, the cheapest row in this batch by a distance, and it needs
 reading carefully against the two shipped rows it is adjacent to.**
+
+> **Since the §0 edit this section describes two rows, 2a and 2b**, split along
+> the band line. The argument below for treating them as one piece of work is
+> left standing because it is the producer's reasoning and it is sound about
+> the work; what it did not account for is that a candidate carries one band.
+> The paragraph beginning "The two are one row rather than two" is the part
+> that no longer describes the block.
 
 `GET /api/analytics/revenue` returns three things the page never looks at:
 `net_revenue` on every period row, `net_revenue` on the window summary, and
@@ -431,41 +488,30 @@ candidates:
             pattern: 'FilterValues'
             expected: 14
 
-  - title: Render the net-revenue and payment-method figures the revenue endpoint already returns
+  - title: Render the net-revenue figures the revenue endpoint already returns
     repo: deadly-digital-platform
     objective_ref: dd-feature-parity
     verified_sha: ab65311885b65cb6e6cf2f0085678f18ac7f8220
     rationale: >
-      The revenue trends page discards two blocks its own payload carries.
-      revenue_report gives every period row a net_revenue beside its gross,
-      revenue_summary gives the window the same, and the endpoint returns
-      payment_methods as a top-level key computed server-side over exactly the
-      rows gross revenue is summed from. The page matches net_revenue zero
-      times, payment zero times and refund zero times across 535 lines, and the
-      proxy hands the API's body back unmodified, so all of it reaches the
-      browser today. This is one file, no proxy change, no query. It is NOT
-      either of the two rows that shipped on 14 Sep - net revenue shipped on the
-      analytics OVERVIEW page, and the payment-method work shipped as the
-      AGGREGATE in the API, which is why payment_method_breakdown exists and why
-      nothing renders it. Batch 14 said net revenue on this page was real and
-      held it back only because the coupon block already claimed the file; that
-      block has landed. The two figures are one row rather than two because they
-      are the same page, the same payload and the same render-only change. Two
-      properties must come from the payload rather than be invented. Net must
-      ship beside refunded_amount and orders_with_refund, because net equal to
-      gross is the common case here and has to read as no refund being recorded
-      rather than as refunds netting to nothing. And the payment-method block's
-      named bucket for orders carrying no method must be shown, or the
-      percentages describe 97.83% of the store while being printed as the store.
+      The revenue trends page discards the net-revenue figures its own payload
+      carries. revenue_report gives every period row a net_revenue beside its
+      gross and revenue_summary gives the window the same, and the page matches
+      net_revenue zero times and refund zero times across 535 lines. The proxy
+      hands the API's body back unmodified, so the figures reach the browser
+      today. This is one file, no proxy change, no query. It is NOT the row that
+      shipped on 14 Sep - that put net revenue on the analytics OVERVIEW page,
+      and this is the revenue trends page. Batch 14 said net revenue on this
+      page was real and held it back only because the coupon block already
+      claimed the file; that block has landed. One property must come from the
+      payload rather than be invented: net must ship beside refunded_amount and
+      orders_with_refund, because net equal to gross is the common case here and
+      has to read as no refund being recorded rather than as refunds netting to
+      nothing.
     evidence:
       - document: specs/metorik-gap.md
         sha: da496f8
         repo: fleet
         section: "Daily — Net revenue (gross less refunds) on the main figures"
-      - document: specs/metorik-gap.md
-        sha: da496f8
-        repo: fleet
-        section: "Rarely — Payment method breakdown"
       - document: research/refund-coverage.md
         sha: da496f8
         repo: fleet
@@ -473,12 +519,12 @@ candidates:
     suggested_paths:
       - platform/app/(dashboard)/analytics/revenue/page.tsx
     hib_signal:
-      value: payment_method populated on 2,782,530 of 2,844,177 orders on tenant 2, leaving 61,647 with none; refund_total is non-zero on 1 of the same 2,844,177, which is why the refunded count has to be rendered beside the money rather than instead of it
+      value: refund_total is non-zero on 1 of 2,844,177 orders on tenant 2, which is why the refunded count has to be rendered beside the money rather than instead of it
       as_of: '2026-08-28'
       source: specs/metorik-gap.md
       coverage:
-        metric: payment_method
-        populated: 2782530
+        metric: refund_total
+        populated: 1
         total: 2844177
     probes:
       - path_exists: platform/app/(dashboard)/analytics/revenue/page.tsx
@@ -488,25 +534,12 @@ candidates:
           expected: 0
       - grep_count:
           glob: platform/app/(dashboard)/analytics/revenue/page.tsx
-          pattern: 'payment'
-          expected: 0
-      - grep_count:
-          glob: platform/app/(dashboard)/analytics/revenue/page.tsx
           pattern: '[Rr]efund'
           expected: 0
     premise:
       - claim: >
-          The revenue endpoint already returns the payment-method breakdown as a
-          top-level key of its response, so the page renders a payload it
-          receives rather than asking for a report to be computed.
-        probe:
-          grep_count:
-            glob: api/analytics/routes/revenue.py
-            pattern: 'payment_methods'
-            expected: 4
-      - claim: >
           The revenue proxy hands the API's response body back unmodified, so
-          both blocks reach the page today and no proxy change is part of this
+          the figures reach the page today and no proxy change is part of this
           work.
         probe:
           grep_count:
@@ -522,6 +555,62 @@ candidates:
             glob: api/analytics/services/analytics_engine.py
             pattern: '"net_revenue": float'
             expected: 4
+
+  - title: Render the payment-method breakdown the revenue endpoint already returns
+    repo: deadly-digital-platform
+    objective_ref: dd-feature-parity
+    verified_sha: ab65311885b65cb6e6cf2f0085678f18ac7f8220
+    rationale: >
+      The revenue endpoint returns payment_methods as a top-level key, computed
+      server-side over exactly the rows gross revenue is summed from, and the
+      revenue trends page matches payment zero times across 535 lines. The proxy
+      hands the API's body back unmodified, so the block reaches the browser
+      today. This is one file, no proxy change, no query. It is NOT the row that
+      shipped on 14 Sep - that shipped the AGGREGATE in the API, which is why
+      payment_method_breakdown exists and why nothing renders it. One property
+      must come from the payload rather than be invented: the block's named
+      bucket for orders carrying no method must be shown, or the percentages
+      describe 97.83% of the store while being printed as the store.
+    evidence:
+      - document: specs/metorik-gap.md
+        sha: da496f8
+        repo: fleet
+        section: "Rarely — Payment method breakdown"
+    suggested_paths:
+      - platform/app/(dashboard)/analytics/revenue/page.tsx
+    hib_signal:
+      value: payment_method populated on 2,782,530 of 2,844,177 orders on tenant 2, leaving 61,647 with none, which is the bucket the block has to name rather than drop
+      as_of: '2026-08-28'
+      source: specs/metorik-gap.md
+      coverage:
+        metric: payment_method
+        populated: 2782530
+        total: 2844177
+    probes:
+      - path_exists: platform/app/(dashboard)/analytics/revenue/page.tsx
+      - grep_count:
+          glob: platform/app/(dashboard)/analytics/revenue/page.tsx
+          pattern: 'payment'
+          expected: 0
+    premise:
+      - claim: >
+          The revenue endpoint already returns the payment-method breakdown as a
+          top-level key of its response, so the page renders a payload it
+          receives rather than asking for a report to be computed.
+        probe:
+          grep_count:
+            glob: api/analytics/routes/revenue.py
+            pattern: 'payment_methods'
+            expected: 4
+      - claim: >
+          The revenue proxy hands the API's response body back unmodified, so
+          the block reaches the page today and no proxy change is part of this
+          work.
+        probe:
+          grep_count:
+            glob: platform/app/api/analytics/revenue/route.ts
+            pattern: 'NextResponse\.json\(data'
+            expected: 1
 
   - title: Add a CSV export of the product performance report
     repo: deadly-digital-platform
@@ -552,10 +641,6 @@ candidates:
         sha: da496f8
         repo: fleet
         section: "Daily — CSV export of orders / customers / products"
-      - document: specs/metorik-gap.md
-        sha: da496f8
-        repo: fleet
-        section: "Weekly — Product sales and trends"
     suggested_paths:
       - api/analytics/routes/products.py
       - api/analytics/services/analytics_engine.py
@@ -733,19 +818,25 @@ candidates:
 
 ## 7. File contention, and an order to approve these in
 
-There is none. Every row sits on files no other row names:
+There is none between the pieces of work. Every row sits on files no other row
+names — **with one exception introduced by the §0 edit**, marked below:
 
-    1  order export, multi-value filters    orders.py, order_query.py
-    2  net revenue + payment methods        analytics/revenue/page.tsx
-    3  product report CSV export            products.py, analytics_engine.py
-    4  segment export column choice         segments.py, segment_engine.py
-    5  per-campaign source timeline         analytics/sources/page.tsx
+    1   order export, multi-value filters    orders.py, order_query.py
+    2a  net revenue                          analytics/revenue/page.tsx  <- same file
+    2b  payment-method breakdown             analytics/revenue/page.tsx  <- same file
+    3   product report CSV export            products.py, analytics_engine.py
+    4   segment export column choice         segments.py, segment_engine.py
+    5   per-campaign source timeline         analytics/sources/page.tsx
 
-All five can run the same night. If an order is wanted anyway: **1 first**,
-because it is the correctness row and because the held frontend multi-select row
-must not precede it; then **5 and 2**, which are the cheapest and are pure
-render work over payloads that already arrive; then **3 and 4**, which are new
-endpoints and new service work.
+If an order is wanted: **1 first**, because it is the correctness row and
+because the held frontend multi-select row must not precede it; then **5, then
+2a and 2b**, which are the cheapest and are pure render work over payloads that
+already arrive; then **3 and 4**, which are new endpoints and new service work.
+
+**2a and 2b cannot run the same night and do not need to be stopped by hand.**
+They name one file, so whichever is approved first takes it, and gate 3
+(`path_overlap`) holds the other while that task is non-terminal. The rest can
+run alongside either of them.
 
 ## 8. On not deduplicating, and what that means for the six unbuildable rows
 
