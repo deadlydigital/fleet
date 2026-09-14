@@ -87,6 +87,75 @@ def test_single_star_does_not_cross_a_separator():
     assert boundary.glob_to_regex("platform/*").match("platform/page.tsx")
 
 
+# ---- the one matcher ------------------------------------------------------
+
+class TestGlobRootTruncatesAtASeparator:
+    """The bug that hid behind three agreeing copies.
+
+    `console/rank.py`, `console/autoqueue.py` and
+    `contracts/checks/draft_spec_shape.py` each split a glob at the first `*`
+    and stopped. That is correct for every glob written before 14 Sep 2026,
+    because they all opened a segment with the star -- `api/analytics/**`,
+    `api/analytics/routes/*.py`. The first one that did not was
+    contracts/dd-index-migration.yaml's `.../versions/v*.py`, reduced to the
+    prefix `.../versions/v`: half a filename, matching neither the directory
+    nor a file under it.
+    """
+
+    @pytest.mark.parametrize("glob,root", [
+        ("api/analytics/**", "api/analytics"),
+        ("api/analytics/routes/*.py", "api/analytics/routes"),
+        ("api/analytics/migrations/versions/v*.py",
+         "api/analytics/migrations/versions"),
+        ("api/pytest.ini", "api/pytest.ini"),
+        ("*.py", ""),
+    ])
+    def test_the_root_is_a_directory(self, glob, root):
+        assert boundary.glob_root(glob) == root
+
+    def test_the_old_prefix_test_would_have_failed_this(self):
+        """The exact expression the three copies carried, kept as the record
+        of what was wrong: it cannot reach the file the glob was written for."""
+        g = "api/analytics/migrations/versions/v*.py"
+        old_prefix = g.split("*", 1)[0].rstrip("/")
+        path = "api/analytics/migrations/versions/v0015_x.py"
+        assert old_prefix == "api/analytics/migrations/versions/v"
+        assert not (path == old_prefix or path.startswith(old_prefix + "/"))
+        assert boundary.path_inside(path, [g])
+
+
+class TestPathInsideAnswersTwoQuestions:
+    """A file the glob matches, and the directory the glob is rooted at."""
+
+    @pytest.mark.parametrize("path,globs,expected", [
+        # exact, via the glob
+        ("api/analytics/migrations/versions/v0015_x.py",
+         ["api/analytics/migrations/versions/v*.py"], True),
+        ("api/analytics/migrations/versions/README.md",
+         ["api/analytics/migrations/versions/v*.py"], False),
+        ("api/analytics/routes/orders.py", ["api/analytics/routes/*.py"], True),
+        # the directory the glob is rooted at
+        ("api/analytics/migrations/versions",
+         ["api/analytics/migrations/versions/v*.py"], True),
+        ("platform/app/(dashboard)/analytics/orders",
+         ["platform/app/(dashboard)/analytics/orders/**"], True),
+        # a sibling directory is not the root
+        ("platform/app/(dashboard)/analytics/orders-admin",
+         ["platform/app/(dashboard)/analytics/orders/**"], False),
+        # regex metacharacters in the path are literal, not a group
+        ("platform/app/dashboard/x.tsx", ["platform/app/(dashboard)/**"], False),
+    ])
+    def test_cases(self, path, globs, expected):
+        assert boundary.path_inside(path, globs) is expected
+
+    def test_a_writable_file_does_not_make_its_directory_writable(self):
+        """The widening this deliberately does not do. The api contract
+        enumerates 27 files on purpose; if naming the directory matched, the
+        gate would approve work to create files no contract named."""
+        assert not boundary.path_inside(
+            "api/analytics/routes", ["api/analytics/routes/orders.py"])
+
+
 # ---- derivation -----------------------------------------------------------
 
 def test_a_clean_change_inside_the_contract(repo):

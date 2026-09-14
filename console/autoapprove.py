@@ -49,7 +49,7 @@ import json
 import sys
 from typing import Any, Dict, List
 
-from . import approve, db, rank
+from . import approve, db, queries, rank
 
 
 #: The one repository this sweep ranks work for. Named once: it was already
@@ -200,16 +200,31 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
                f"coverage reading, and its band is "
                f"{keys_last['key3_band']} against {keys_next['key3_band']} for "
                f"the next eligible row ({nxt['id']})")
+    elif keys_last["key4_prior_failures"] != keys_next["key4_prior_failures"]:
+        # KEY 4, ADDED 14 Sep 2026. The night c63 and c64 tied on the first
+        # three keys this branch did not exist, and the sweep approved nothing
+        # -- correctly, because the only thing left was the id. This is the
+        # fourth fact that was already in the record and already printed, and
+        # it says something about the work rather than about the row's age.
+        def _attempts(n):
+            return "no prior unsuccessful attempt" if n == 0 else (
+                f"{n} prior unsuccessful attempt" + ("s" if n != 1 else ""))
+        why = (f"both are {keys_last['key1_class']} work with the same "
+               f"coverage reading and the same band, and this one has "
+               f"{_attempts(keys_last['key4_prior_failures'])} against "
+               f"{_attempts(keys_next['key4_prior_failures'])} for the next "
+               f"eligible row ({nxt['id']})")
     else:
         # NO DISCRIMINATOR. Approve nothing.
         raise NothingToApprove(
             f"candidates {last['id']} and {nxt['id']} are indistinguishable on "
             f"every key that means anything: both {keys_last['key1_class']}, "
             f"both {keys_last['key2_coverage']}, "
-            f"both band {keys_last['key3_band']}, and only the candidate id "
-            f"separates them. Approving on that is approving because it was "
-            f"first, which is a decision nobody made and a reason nobody wrote. "
-            f"Nothing was approved.")
+            f"both band {keys_last['key3_band']}, both with "
+            f"{keys_last['key4_prior_failures']} prior unsuccessful "
+            f"attempt(s), and only the candidate id separates them. Approving "
+            f"on that is approving because it was first, which is a decision "
+            f"nobody made and a reason nobody wrote. Nothing was approved.")
 
     held_lines = "; ".join(
         f"{b['id']} held ({b['gate']['rule']})"
@@ -249,13 +264,21 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
             "SELECT max(c.batch_id) AS b FROM candidates c"
             " JOIN candidate_batches b ON b.id = c.batch_id"
             " WHERE b.produced_by_task_id IS NOT NULL").fetchone()["b"]
-        # THE FLOOR FROM THE TABLE, never a literal here. Same argument as
-        # the coverage floor below and as contracts/draft-spec.yaml's
-        # generated protected list: a typed copy drifts, and here a drifted
-        # copy means approving work no contract can write.
-        protected_floor = [r["glob"] for r in conn.execute(
-            "SELECT glob FROM protected_path_floor WHERE repo = %s",
-            (REPO,)).fetchall()]
+
+    # THE FLOOR FROM THE TABLE, never a literal here. Same argument as the
+    # coverage floor below and as contracts/draft-spec.yaml's generated
+    # protected list: a typed copy drifts, and here a drifted copy means
+    # approving work no contract can write.
+    #
+    # AND THE WAIVED ROWS ARE NOT PART OF IT. This read `SELECT glob` alone
+    # until 14 Sep 2026 and threw `except_work_type` away, so gate 5 read
+    # 040's waiver as an absolute floor and refused every migration candidate
+    # with "no contract can make it writable" -- a sentence that stopped being
+    # true the morning contracts/dd-index-migration.yaml was written.
+    # queries.absolute_floor asks the question a path gate actually has, and
+    # says why it is not the question runner.config.effective_contract asks of
+    # the same table.
+    protected_floor = queries.absolute_floor(REPO)
 
     # Read once for the whole sweep rather than per candidate, and handed to
     # gate() so the gate stays pure. See rank.contract_writables.

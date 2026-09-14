@@ -141,3 +141,45 @@ class TestTheDatabaseRefusesAnUngrantedDeclaration:
         index = yaml.safe_load(
             (config.CONTRACT_DIR / "dd-index-migration.yaml").read_text())
         self._insert(console, index)          # must not raise
+
+
+class TestThePathGateReadsADifferentFloor:
+    """`queries.absolute_floor` against `queries.protected_floor`, and why
+    one table answers two questions.
+
+    `effective_contract` above resolves a waiver against ONE contract's
+    work_type: it can, because it has one. A PATH GATE has none -- it is
+    asking whether anything at all may write a path -- and for that question a
+    waived row is not part of the floor, because some contract may write it
+    and which one is a later gate's business.
+
+    WHAT IT COST TO HAVE ONLY THE FIRST. console/autoapprove.plan() read
+    `SELECT glob FROM protected_path_floor` and dropped `except_work_type`, so
+    from 040 onward gate 5 held every migration candidate with "no contract
+    can make it writable" -- about the tree contracts/dd-index-migration.yaml
+    had been written that morning to write. Candidate 66 was refused by it on
+    the night it was filed.
+    """
+
+    def test_a_waived_glob_is_not_in_the_absolute_floor(self, dsns, console):
+        from console import queries
+        full = queries.protected_floor("deadly-digital-platform")
+        waived = [g for _r, g, w in full if w is not None]
+        assert waived, "no waiver is granted, so this asserts nothing"
+        absolute = queries.absolute_floor("deadly-digital-platform")
+        for g in waived:
+            assert g not in absolute, g
+
+    def test_every_unwaived_glob_still_is(self, dsns, console):
+        from console import queries
+        full = queries.protected_floor("deadly-digital-platform")
+        unwaived = [g for _r, g, w in full if w is None]
+        assert sorted(queries.absolute_floor("deadly-digital-platform")) == sorted(unwaived)
+
+    def test_the_two_differ_by_exactly_the_waivers(self, dsns, console):
+        """The property stated as one sentence, so a second waiver cannot be
+        granted without this noticing which set it landed in."""
+        from console import queries
+        full = queries.protected_floor("deadly-digital-platform")
+        assert (len(full) - len(queries.absolute_floor("deadly-digital-platform"))
+                == sum(1 for _r, _g, w in full if w is not None))

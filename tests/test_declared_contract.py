@@ -158,15 +158,37 @@ class TestTheAgentIsToldToWriteIt:
 
 
 class TestTheThreeCopiesOfInsideAgree:
-    """draft_spec_shape runs in the agent's worktree where `console` is not
-    importable, so `_inside` is copied there. The copy is only acceptable with
-    a test that the copies agree."""
+    """There are no longer three copies, and the cases they were wrong about.
+
+    The class name is kept because the property is the same one: every place
+    that asks "is this path inside these globs" must answer identically. It is
+    now guaranteed by there being ONE function rather than checked across
+    three -- see runner.boundary.path_inside. draft_spec_shape.py imported
+    `console.requirements` already, so "console is not importable there" had
+    stopped being true long before the copy was removed.
+
+    THE LAST THREE CASES ARE WHAT THE COPIES GOT WRONG. Every glob anyone had
+    written until 14 Sep 2026 put its `*` at the start of a segment, so
+    splitting at the star left a clean directory. `v*.py` does not, and all
+    three copies reduced it to the prefix `.../versions/v`, which matches
+    neither the directory nor any file under it.
+    """
 
     CASES = [("api/analytics/routes/orders.py", ["api/analytics/routes/*.py"], True),
              ("api/analytics/routes/orders.py", ["api/analytics/services/**"], False),
              ("platform/app/(dashboard)/x/page.tsx", ["platform/app/**"], True),
              ("api/x.py", ["api/x.py"], True),
-             ("api/xy.py", ["api/x.py"], False)]
+             ("api/xy.py", ["api/x.py"], False),
+             # The mid-segment wildcard, in all three directions.
+             ("api/analytics/migrations/versions",
+              ["api/analytics/migrations/versions/v*.py"], True),
+             ("api/analytics/migrations/versions/v0015_x.py",
+              ["api/analytics/migrations/versions/v*.py"], True),
+             ("api/analytics/migrations/versions/README.md",
+              ["api/analytics/migrations/versions/v*.py"], False),
+             # A writable file beneath a directory does not make the directory
+             # writable. The contracts enumerate files on purpose.
+             ("api/analytics/routes", ["api/analytics/routes/orders.py"], False)]
 
     @pytest.mark.parametrize("path,globs,want", CASES)
     def test_all_three_agree(self, path, globs, want):

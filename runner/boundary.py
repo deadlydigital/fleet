@@ -69,6 +69,67 @@ def matches_any(path: str, globs: list[str]) -> str | None:
     return None
 
 
+def glob_root(glob: str) -> str:
+    """The deepest DIRECTORY a glob is rooted at, or "" if it has none.
+
+    TRUNCATED AT A SEPARATOR, NEVER MID-SEGMENT, and that is the whole reason
+    this exists. console/rank.py and console/autoqueue.py each carried
+
+        g.split("*", 1)[0].rstrip("/")
+
+    which turns `api/analytics/migrations/versions/v*.py` into
+    `api/analytics/migrations/versions/v` -- half a filename. It is not a
+    directory, it matches nothing, and a `startswith(pre + "/")` test built on
+    it cannot be made to match even the file the glob was written for.
+
+    IT WAS INVISIBLE FOR AS LONG AS EVERY CONTRACT GLOBBED AT A SEPARATOR.
+    `api/analytics/**` and `api/analytics/routes/*.py` both split cleanly --
+    the second only because its `*` opens the segment. The first contract to
+    put a literal before the star was contracts/dd-index-migration.yaml, on
+    14 Sep 2026, and it was invisible to the approval path from the moment it
+    was written.
+    """
+    head = glob.split("*", 1)[0]
+    if "*" in glob:
+        head = head.rsplit("/", 1)[0] if "/" in head else ""
+    return head.rstrip("/")
+
+
+def path_inside(path: str, globs) -> bool:
+    """Could this path, or this directory, be written under one of these globs?
+
+    THE ONE MATCHER. console/rank.py, console/autoqueue.py and
+    contracts/checks/draft_spec_shape.py each held a copy of an eight-line
+    prefix test, kept in step by a test asserting the three agreed. They did
+    agree -- on every glob anyone had written until the one they were all
+    wrong about. A test that three copies agree cannot notice that all three
+    are wrong, which is the failure mode a copy has and an import does not.
+
+    TWO QUESTIONS, because callers ask about two kinds of path:
+
+      * the glob MATCHES the path -- exact, `matches_any`, and what a draft
+        spec's declared files need; or
+      * the path IS the directory the glob is rooted at, which is how a
+        candidate naming `platform/app/(dashboard)/analytics/orders` has
+        always matched `.../orders/**`.
+
+    WHAT IT DELIBERATELY DOES NOT DO is call a path inside because a writable
+    file happens to sit beneath it. `api/analytics/routes` is not writable
+    because `api/analytics/routes/orders.py` is -- the contracts enumerate
+    files on purpose, see contracts/deadly-digital-platform-api.yaml under
+    "WRITABLE PATHS ARE ENUMERATED", and widening it here would approve work
+    to create files no contract named.
+    """
+    for g in globs:
+        g = str(g)
+        if glob_to_regex(g).match(path):
+            return True
+        root = glob_root(g)
+        if root and path == root:
+            return True
+    return False
+
+
 # ---- the derived change ---------------------------------------------------
 
 @dataclass

@@ -1017,3 +1017,37 @@ def protected_floor(repo: str) -> list[tuple[str, str, str | None]]:
                 for r in conn.execute(
                     "SELECT repo, glob, except_work_type"
                     "  FROM protected_path_floor WHERE repo = %s", (repo,))]
+
+
+def absolute_floor(repo: str) -> list[str]:
+    """The floor globs NOTHING may write -- the waived rows left out.
+
+    A DIFFERENT QUESTION FROM `protected_floor` ABOVE, and the difference is
+    the whole reason this is a named function rather than a comprehension at
+    the call site.
+
+    `protected_floor` answers "what is floored, and for whom is it waived",
+    which is what runner.config.effective_contract needs: it resolves the
+    waiver against ONE contract's work_type. A path gate has no work_type to
+    resolve against -- it is asking whether a path is writable by anything at
+    all -- and for that question a waived row is simply not part of the floor.
+    A contract may write it, and which contract is gate 6's question.
+
+    WHAT IT COST TO NOT HAVE THIS. console/autoapprove.py read the table with
+
+        [r["glob"] for r in conn.execute("SELECT glob FROM ...")]
+
+    and dropped `except_work_type` on the floor. From 040 onward gate 5 held
+    every migration candidate with "no contract can make it writable", which
+    040 had made false that morning -- contracts/dd-index-migration.yaml is
+    exactly the contract that can. Candidate 66 was refused by it on the night
+    it was filed.
+
+    That is the ninth site of one defect: the floor is consulted in more places
+    than anything enumerates, and a caller that reads the table directly can
+    drop a column no reviewer will miss. A grep for `boundary.enforce` and for
+    `contract['protected_paths']` -- which is how the previous eight were
+    found -- could not have found this one.
+    """
+    return [glob for _repo, glob, waiver in protected_floor(repo)
+            if waiver is None]

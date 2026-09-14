@@ -139,19 +139,20 @@ def fail(msg: str) -> int:
     return 1
 
 
-def _inside(path: str, globs) -> bool:
-    """The prefix test console/autoqueue.py and console/rank.py both use.
-
-    Copied rather than imported for the reason those two copy it from each
-    other: this file runs inside the agent's worktree, where `console` is not
-    importable. Eight lines, and the tests assert all three agree on the paths
-    that matter -- which is the only thing that makes a copy acceptable.
-    """
-    for g in globs:
-        pre = str(g).split("*", 1)[0].rstrip("/")
-        if pre and (path == pre or path.startswith(pre + "/")):
-            return True
-    return False
+#: THE COPY IS GONE, 14 Sep 2026.
+#:
+#: It said it was copied because "this file runs inside the agent's worktree,
+#: where `console` is not importable" -- and that had stopped being true: the
+#: line above already inserts the fleet root on sys.path and imports
+#: `console.requirements`. The reason for the copy had expired and the copy
+#: had not, which is how all three copies came to be wrong together about
+#: `api/analytics/migrations/versions/v*.py`. runner.boundary imports re,
+#: subprocess, dataclasses and pathlib, so it costs this check nothing.
+#:
+#: If this file is ever run somewhere the fleet root is not on sys.path, this
+#: import fails loudly at startup and the check reports could-not-run, which
+#: is the correct outcome and is not what a stale copy does.
+from runner.boundary import path_inside as _inside          # noqa: E402
 
 
 def _covers(contract_path, work_type: str, repo: str, declared) -> bool:

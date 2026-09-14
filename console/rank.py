@@ -50,13 +50,24 @@ from . import config
 # another. This gate is the same rule, applied early enough that the ranking
 # can pass over the row instead of the night dying on a refusal.
 from .approve import REPEAT_FAILURE_STOP
+from runner.boundary import path_inside
 
 #: Bumped when any key changes meaning or order. Recorded on every decision, so
 #: last week's batches stay attributable to the ranking that made them instead
 #: of being silently re-explained by this week's.
 #:
 #: v2 (10 Sep 2026): coverage inserted as key 2, band moves to key 3. 028.
-RANK_VERSION = 2
+#: v3 (14 Sep 2026): prior failures inserted as key 4, id moves to key 5.
+#:     Not a preference but a REASON: the sweep refused to approve anything on
+#:     the night c63 and c64 tied on all three keys, because the only thing
+#:     left was the id and "it was first" is a decision nobody made. A row that
+#:     has already been built and failed is a worse bet than one that has not,
+#:     the number is already computed by candidate_prior_failures() and already
+#:     printed in the dry run, and it writes a sentence. Below the band on
+#:     purpose: a daily row that failed once still beats a weekly row that
+#:     never ran, because what the work is worth does not change because an
+#:     attempt at it went wrong.
+RANK_VERSION = 3
 
 #: Key 1's three classes, lower first.
 FRONTEND_ONLY, MODIFY, CREATE = 0, 1, 2
@@ -273,7 +284,13 @@ def rank(candidate: Dict[str, Any], *,
     klass, _ = work_class(candidate.get("probes") or [])
     cov, _ratio = coverage_class(candidate, coverage_floor)
     band = BAND_ORDER.get(candidate.get("band"), NO_BAND)
-    return (klass, cov, band, candidate["id"])
+    # OFF THE ROW, not fetched, and that keeps this pure: the count is
+    # `candidate_prior_failures(id)`, computed by the same function
+    # console/approve.py enforces the repeat-failure stop with, and selected
+    # alongside every other key in _open_candidates. Absent means zero, which
+    # is what a row nothing has attempted has.
+    prior = int(candidate.get("prior_failures") or 0)
+    return (klass, cov, band, prior, candidate["id"])
 
 
 def key_values(candidate: Dict[str, Any], *,
@@ -291,9 +308,11 @@ def key_values(candidate: Dict[str, Any], *,
         "key2_ratio": ratio,
         "key2_floor": coverage_floor,
         "key3_band": candidate.get("band"),
-        "key4_id": candidate["id"],
+        "key4_prior_failures": int(candidate.get("prior_failures") or 0),
+        "key5_id": candidate["id"],
         "sort_key": [klass, cov,
                      BAND_ORDER.get(candidate.get("band"), NO_BAND),
+                     int(candidate.get("prior_failures") or 0),
                      candidate["id"]],
     }
 
@@ -523,23 +542,16 @@ def contract_writables(repo: str,
     return out
 
 
-def _glob_prefix(g: str) -> str:
-    return g.split("*", 1)[0].rstrip("/")
-
-
-def _inside(path: str, globs: Sequence[str]) -> bool:
-    """The same prefix test console/autoqueue.py refuses with.
-
-    Copied deliberately rather than imported: autoqueue imports db and would
-    drag a writer-side module into the ranker. Eight lines, and a test asserts
-    the two agree on the paths that matter -- which is the only property that
-    makes a copy acceptable.
-    """
-    for g in globs:
-        pre = _glob_prefix(g)
-        if pre and (path == pre or path.startswith(pre + "/")):
-            return True
-    return False
+#: THE COPY IS GONE, 14 Sep 2026. This was eight lines of prefix test, copied
+#: from console/autoqueue.py because that module imports db and would drag a
+#: writer-side module into the ranker -- a real reason, and runner.boundary has
+#: neither problem: it imports re, subprocess, dataclasses and pathlib.
+#:
+#: The copies agreed with each other and were all three wrong about
+#: `api/analytics/migrations/versions/v*.py`, which they read as the prefix
+#: `.../versions/v` and matched against nothing. A test that copies agree
+#: cannot notice that every copy is wrong. See runner.boundary.glob_root.
+_inside = path_inside
 
 
 def gate(candidate: Dict[str, Any], *,

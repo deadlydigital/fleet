@@ -66,6 +66,7 @@ from typing import Any
 import yaml
 
 from console import config, db, requirements
+from runner.boundary import path_inside
 
 #: The same block the draft-spec check reads. One shape, one parser.
 BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
@@ -158,16 +159,12 @@ def _contract_for(work_type: str, repo: str,
         f"runs under, and the boundary is the whole of what a contract is.")
 
 
-def _glob_prefix(g: str) -> str:
-    return g.split("*", 1)[0].rstrip("/")
-
-
-def _inside(path: str, globs: list[str]) -> bool:
-    for g in globs:
-        pre = _glob_prefix(g)
-        if pre and (path == pre or path.startswith(pre + "/")):
-            return True
-    return False
+#: THE COPY IS GONE, 14 Sep 2026 -- see console/rank.py and
+#: runner.boundary.glob_root. Three modules held this prefix test and all
+#: three read `api/analytics/migrations/versions/v*.py` as the prefix
+#: `.../versions/v`, so the contract written that morning to create migrations
+#: was refused by the very path check meant to admit it.
+_inside = path_inside
 
 
 def spec_blocks(markdown: str) -> list[dict[str, Any]]:

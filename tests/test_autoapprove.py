@@ -938,8 +938,23 @@ def _writables():
 
 
 def _floor(console):
+    """What `plan()` hands gate 5: the floor MINUS the waived rows.
+
+    MIRRORS console.queries.absolute_floor AND MUST. It is spelled out here
+    rather than called because this fixture reads through the test's own
+    connection, and every caller of `_g()` has one of those where not all of
+    them have `dsns`.
+
+    IT WAS `SELECT glob` UNTIL 14 Sep 2026 -- the same expression that was the
+    production bug in console/autoapprove.plan(), so the fixture reproduced
+    the defect it was meant to test past, and the two tests written to catch
+    the defect failed against a harness that still had it. That is the shape
+    tests/conftest.py's header is about: a fixture that cannot produce what
+    production produces.
+    """
     return [r["glob"] for r in console.execute(
-        "SELECT glob FROM protected_path_floor WHERE repo = %s",
+        "SELECT glob FROM protected_path_floor"
+        " WHERE repo = %s AND except_work_type IS NULL",
         (REPO,)).fetchall()]
 
 
@@ -1030,26 +1045,59 @@ class TestAPathNoContractCovers:
 
 
 class TestAPathTheFleetMayNeverWrite:
-    """c35 and c27, and the reason is stronger than gates 6's.
+    """The absolute floor, which is the floor MINUS the waived rows.
 
-    A migration is on protected_path_floor and is console/autodeploy.py's
-    third refusal: deploy.sh migrates before the code swap, and a migration is
-    the one action here git does not make reversible. No contract can make it
-    writable, so this is not unattended work however the candidate is cut.
+    THIS CLASS SAID "A MIGRATION" UNTIL 14 Sep 2026 and it was right until
+    040 granted `api/analytics/migrations/**` a waiver for
+    `dd_index_migration` and contracts/dd-index-migration.yaml was written to
+    use it. "No contract can make it writable" stopped being true that
+    morning, and gate 5 went on saying it because console/autoapprove.plan()
+    read `SELECT glob` and dropped the waiver column -- which held candidate
+    66 on the night it was filed, with a sentence about the very contract that
+    covers it.
+
+    So the rule under test is now: a path gate refuses paths floored for
+    EVERYBODY. A waived glob is not that, and whether any contract actually
+    covers the path is gate 6's question, which it answers with
+    `unwritable_path`. The examples below are the unwaived rows -- the suite
+    and alembic -- because they are what "never" still means.
     """
 
-    def test_a_migration_is_held_and_reported_as_its_own_rule(self, console):
+    def _unwaived(self, console) -> str:
+        """An absolutely floored path, derived from the table, never typed."""
+        glob = console.execute(
+            "SELECT glob FROM protected_path_floor"
+            " WHERE repo = %s AND except_work_type IS NULL AND glob LIKE %s"
+            " ORDER BY glob LIMIT 1", (REPO, "api/tests/%")).fetchone()["glob"]
+        return glob.replace("**", "analytics/test_x.py")
+
+    def test_an_unwaived_path_is_held_and_reported_as_its_own_rule(self, console):
         g = _g(_row(["api/analytics/routes/products.py",
-                      "api/analytics/migrations/versions/v0008_x.py"]), console)
+                      self._unwaived(console)]), console)
         assert g["rule"] == "protected_path"
 
     def test_the_floor_is_checked_before_the_contract_coverage(self, console):
-        """A row that is BOTH two-sided and names a migration must report the
-        floor: splitting it would not help."""
-        g = _g(_row(["api/analytics/migrations/versions/v0008_x.py",
+        """A row that is BOTH two-sided and names a floored path must report
+        the floor: splitting it would not help."""
+        g = _g(_row([self._unwaived(console),
                       "platform/app/(dashboard)/analytics/products/page.tsx"]),
                console)
         assert g["rule"] == "protected_path"
+
+    def test_a_waived_glob_is_not_the_absolute_floor(self, console):
+        """040's waiver, at the gate. A migration under `versions/v*.py` is
+        work SOME contract can do, so gate 5 is not the thing that refuses it
+        -- and gate 5 saying so was a false sentence about a real contract."""
+        g = _g(_row(["api/analytics/migrations/versions/v0015_x.py"]), console)
+        assert g["rule"] != "protected_path", g["detail"]
+
+    def test_but_the_rest_of_the_waived_tree_still_has_no_contract(self, console):
+        """The waiver covers `api/analytics/migrations/**`; the contract that
+        uses it covers only `versions/v*.py`. Everything between the two is
+        held by gate 6 rather than gate 5, which is a different sentence and a
+        true one."""
+        g = _g(_row(["api/analytics/migrations/migration.py"]), console)
+        assert g["rule"] == "unwritable_path", g["detail"]
 
     def test_c35_on_the_live_row_if_it_is_here(self, console):
         row = console.execute(
@@ -1057,7 +1105,10 @@ class TestAPathTheFleetMayNeverWrite:
         if row is None:
             pytest.skip("candidate 35 is not in this database")
         g = _g(dict(row), console)
-        assert g["rule"] == "protected_path", g["detail"]
+        # Not asserting WHICH later rule catches it: c35's probes are live data
+        # and move. What must not happen is gate 5 claiming no contract can
+        # ever write it.
+        assert g["rule"] != "protected_path", g["detail"]
 
 
 class TestPlanHandsTheGatesWhatTheyASKEDFor:
@@ -1083,12 +1134,18 @@ class TestPlanHandsTheGatesWhatTheyASKEDFor:
     """
 
     def _floor_path(self, console):
-        """Derived from the table, never typed. Same rule as _floor()."""
+        """Derived from the table, never typed. Same rule as _floor().
+
+        AND FROM AN UNWAIVED ROW. This took `%migrations/**` until 14 Sep
+        2026, which stopped being an absolute floor when 040 waived it for
+        `dd_index_migration` -- so the path this built was no longer an
+        example of the thing the test is about.
+        """
         glob = console.execute(
             "SELECT glob FROM protected_path_floor"
-            " WHERE repo = %s AND glob LIKE %s ORDER BY glob LIMIT 1",
-            (REPO, "%migrations/**")).fetchone()["glob"]
-        return glob.replace("**", "versions/v0008_product_categories.py")
+            " WHERE repo = %s AND except_work_type IS NULL AND glob LIKE %s"
+            " ORDER BY glob LIMIT 1", (REPO, "api/tests/%")).fetchone()["glob"]
+        return glob.replace("**", "analytics/test_x.py")
 
     def test_a_protected_path_is_held_when_plan_is_the_caller(
             self, dsns, console, admin):
@@ -1162,24 +1219,44 @@ class TestTheGateStaysPure:
 
 
 class TestTheGateAndAutoqueueAgree:
-    """rank._inside is a copy of autoqueue._inside, and a copy is only
-    acceptable if something asserts they answer the same. If they diverge,
-    the gate approves work the accept route then refuses -- after the spec
-    has been written and paid for."""
+    """They agreed as copies, and were wrong together. Now they are one.
 
-    def test_they_answer_the_same_on_every_real_writable_glob(self):
+    The old test asserted rank._inside and autoqueue._inside ANSWER the same,
+    which they always did -- including on
+    `api/analytics/migrations/versions/v*.py`, where all three copies read the
+    prefix as `.../versions/v` and matched nothing. Two copies agreeing is not
+    evidence that either is right, and the probe list below even contained a
+    v0008 path: the assertion compared them to each other and neither to the
+    truth, so it passed.
+
+    So this now asserts the stronger and falsifiable thing: THERE IS ONE
+    FUNCTION. If somebody re-copies it, this fails.
+    """
+
+    def test_there_is_one_matcher_and_not_a_copy(self):
         from console import autoqueue
-        probes = ["api/analytics/routes/orders.py",
-                  "api/analytics/routes",
-                  "api/analytics/migrations/versions/v0008_x.py",
-                  "platform/app/(dashboard)/analytics/page.tsx",
-                  "platform/app/(dashboard)/segments/builder/page.tsx",
-                  "platform/components/layout/Sidebar.tsx",
-                  "drafts/a.md", ""]
-        for _name, globs in rank.contract_writables(REPO):
-            for p in probes:
-                assert rank._inside(p, globs) == autoqueue._inside(p, list(globs)), \
-                    (p, _name)
+        from runner import boundary
+        assert rank._inside is boundary.path_inside
+        assert autoqueue._inside is boundary.path_inside
+
+    def test_the_index_contract_is_visible_to_the_gate(self):
+        """The regression this replaced a passing test with.
+
+        contracts/dd-index-migration.yaml writes
+        `api/analytics/migrations/versions/v*.py`, and until 14 Sep 2026 the
+        gate could not see it: not the directory, and not a migration
+        filename either.
+        """
+        index = [globs for name, globs in rank.contract_writables(REPO)
+                 if name == "dd-index-migration.yaml"]
+        assert index, "the index contract is not on this repo any more"
+        globs = index[0]
+        assert rank._inside("api/analytics/migrations/versions", globs)
+        assert rank._inside(
+            "api/analytics/migrations/versions/v0015_orders_x.py", globs)
+        assert not rank._inside(
+            "api/analytics/migrations/versions/README.md", globs)
+        assert not rank._inside("api/analytics/migrations/runner.py", globs)
 
 
 class TestSupersessionIsAboutWorkAndNotAboutBatches:
@@ -1306,3 +1383,62 @@ class TestSupersessionIsAboutWorkAndNotAboutBatches:
         for cid in (a, b):
             assert next(r for r in p["ranked"]
                         if r["candidate_id"] == cid)["eligible"] is True
+
+
+class TestKeyFourIsPriorFailures:
+    """v3, 14 Sep 2026. The fourth fact, and why it is below the band.
+
+    On 13 Sep the sweep approved nothing because c63 and c64 tied on class,
+    coverage and band, and the only thing left was the id. `NothingToApprove`
+    was the right answer to that -- "it was first" is not a reason a decision
+    can be written from -- so the fix is a fourth fact rather than a weaker
+    refusal. `candidate_prior_failures(id)` was already computed for the
+    repeat-failure stop and already printed in the dry run.
+    """
+
+    #: An api PRESENCE probe, which is what makes key 1 read `modify`.
+    MODIFY = {"path_exists": "api/analytics/routes/orders.py"}
+
+    def _c(self, cid, prior, band="daily", probes=None):
+        return {"id": cid, "band": band, "prior_failures": prior,
+                "probes": probes if probes is not None else [self.MODIFY]}
+
+    def test_a_row_that_has_never_failed_sorts_first(self):
+        clean, burnt = self._c(63, 0), self._c(64, 1)
+        assert rank.rank(clean) < rank.rank(burnt)
+
+    def test_the_real_pair_is_separated(self):
+        """c63 rf=0 against c64 rf=1 -- the pair that shut the night."""
+        order = sorted([self._c(64, 1), self._c(63, 0)], key=rank.rank)
+        assert [c["id"] for c in order] == [63, 64]
+
+    def test_it_is_below_the_band(self):
+        """A daily row that failed once still beats a weekly row that never
+        ran. What the work is worth does not change because an attempt at it
+        went wrong, and putting this above the band would say it does."""
+        daily_burnt = self._c(1, 3, band="daily")
+        weekly_clean = self._c(2, 0, band="weekly")
+        assert rank.rank(daily_burnt) < rank.rank(weekly_clean)
+
+    def test_it_is_above_the_id(self):
+        """Otherwise it is not a tiebreak at all."""
+        high_clean, low_burnt = self._c(99, 0), self._c(1, 2)
+        assert rank.rank(high_clean) < rank.rank(low_burnt)
+
+    def test_a_missing_count_is_zero_and_not_a_crash(self):
+        """`rank()` is pure and reads the row. A row built without the column
+        -- every fixture in this file before today -- must still sort."""
+        assert rank.rank({"id": 1, "band": "daily", "probes": [self.MODIFY]}) \
+            == rank.rank(self._c(1, 0))
+
+    def test_the_keys_name_it_and_the_id_moved_to_five(self):
+        k = rank.key_values(self._c(63, 2))
+        assert k["key4_prior_failures"] == 2
+        assert k["key5_id"] == 63
+        assert k["sort_key"][3] == 2
+        assert k["sort_key"][4] == 63
+
+    def test_the_version_was_bumped(self):
+        """A key inserted without bumping this re-explains last week's
+        decisions with this week's ranking, silently."""
+        assert rank.RANK_VERSION >= 3
