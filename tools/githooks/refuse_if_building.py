@@ -34,6 +34,30 @@ first two and none for a fast-forward, so a hook can notice afterwards but
 never refuse. A write to an untracked path -- an editor, a build, a stray
 `tee` -- trips `Untouched` too and no hook sees it at all.
 
+`git add` IS THE GAP THAT COST A RUN, AND IT IS NAMED HERE BECAUSE THIS
+DOCSTRING ORIGINALLY DID NOT NAME IT. `Untouched` snapshots `status
+--porcelain` as well as HEAD, and staging a file that was already modified
+rewrites its porcelain entry from " M path" to "M  path". That is a change,
+the guard compares the whole string, and the run fails.
+
+**No hook can stop it.** `pre-commit` runs after `git add`, so by the time
+this file executes the state it exists to protect has already moved. On 14 Sep
+2026, four minutes after this guard was committed, its author staged two files
+during task 91's agent run: the agent exited 0, `draft_spec_shape.py` passed,
+the branch was pushed, and the run was then failed with "the fleet checkout
+has uncommitted changes it did not have before".
+
+The practical rule this file cannot enforce, therefore: while a build is in
+flight, do not touch the repository AT ALL -- not the index, not the working
+tree, not HEAD. Check first; the query is in `running_tasks()` below and
+`systemctl is-active fleet-chain.service` answers the rest.
+
+AND ONE CONSEQUENCE THAT IS EASY TO GET BACKWARDS: once a run has started with
+a dirty tree, UNSTAGING is also a change. A later run snapshots whatever it
+finds, so `git reset` mid-flight fails that run exactly as `git add` failed the
+previous one. The safe move is to leave the index alone until nothing is
+building, not to tidy it.
+
 So this enforces the habit at the point it is usually broken. It is not a
 boundary, and the thing that would actually fix the class is the runner
 checking its snapshot EARLY and often rather than once at the end: a run that
