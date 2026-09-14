@@ -469,3 +469,190 @@ def test_the_migration_is_the_one_the_database_is_running(dsns, console):
     text = (Path(__file__).resolve().parent.parent
             / "038_a_verified_branch_can_be_adopted.sql").read_text()
     assert "FAILED' AND NEW.status = 'READY_FOR_REVIEW'" in text
+
+
+# ---- 042: a check that fails identically on the base ------------------------
+
+def base_step(conn, task_id: int, *, base, checks, patch="") -> int:
+    """The evidence `console.adopt.corroborate` writes, as the console writes it.
+
+    Inserted rather than produced, because what is under test here is the
+    JUDGEMENT of the evidence -- 042's clause and _corroboration_for, which
+    have to agree. Producing it would mean running a suite inside a unit test
+    to assert something about SQL.
+    """
+    run = conn.execute("SELECT id FROM runs WHERE task_id=%s ORDER BY id DESC",
+                       (task_id,)).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
+        " VALUES (%s, 9, 'BASE_CHECK_RUN', 'fleet-console/adopt', %s)",
+        (run, Jsonb({"base_commit_sha": base, "patch_commit_sha": patch,
+                     "checks": checks})))
+    conn.commit()
+    return run
+
+
+class TestACheckThatFailsOnTheBaseIsNotEvidence:
+    """042, at the database. Task 100: five checks green, one failing on a
+    migration tally the BASE had already broken, branch touching neither.
+
+    Every test here moves the row by hand, for the reason the class above
+    gives: console/adopt.py refuses first and refuses better, but the wall has
+    to be in the database or the rule is advice.
+    """
+
+    def test_a_corroborated_failure_can_be_adopted(
+            self, dsns, console, runner, verifier_conn, repo):
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("ruff"), check("pytest", exit_code=1)]))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("pytest", exit_code=1)])
+        move_to_ready(console, task)
+        assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                               (task,)).fetchone()["status"] == "READY_FOR_REVIEW"
+
+    def test_a_different_exit_code_does_not_corroborate(
+            self, dsns, console, runner, verifier_conn, repo):
+        """The base fails, but not the same way. That is two failures, not one
+        fact about the branch."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1)]))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("pytest", exit_code=2)])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+    def test_a_different_command_does_not_corroborate(
+            self, dsns, console, runner, verifier_conn, repo):
+        """Matched on the command, never on position: a contract edited between
+        the run and now would otherwise excuse one check with another's
+        evidence."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1)]))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("ruff", exit_code=1)])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+    def test_evidence_against_another_base_does_not_corroborate(
+            self, dsns, console, runner, verifier_conn, repo):
+        """Corroboration is against the base the RUN recorded. A base check run
+        somewhere else answers a question nobody asked."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1)]))
+        base_step(console, task, base="0" * 40,
+                  checks=[check("pytest", exit_code=1)])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+    def test_a_timeout_is_excused_by_nothing(
+            self, dsns, console, runner, verifier_conn, repo):
+        """A timeout corroborated by a timeout is how a busy box adopts a
+        branch nobody judged."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1, timed_out=True)]))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("pytest", exit_code=1, timed_out=True)])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+    @pytest.mark.parametrize("reason", ["unresolved_reason", "undecided_reason"])
+    def test_a_check_that_never_answered_is_excused_by_nothing(
+            self, dsns, console, runner, verifier_conn, repo, reason):
+        """It did not judge the tree here, so nothing about another tree can
+        rescue it."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1, **{reason: "SIGKILL"})]))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("pytest", exit_code=1, **{reason: "SIGKILL"})])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+    @pytest.mark.parametrize("reason", ["skipped_reason", "unresolved_reason",
+                                        "undecided_reason"])
+    def test_a_base_check_that_did_not_run_is_not_evidence(
+            self, dsns, console, runner, verifier_conn, repo, reason):
+        """The base run has to have LOOKED. A base check that was skipped
+        because the clone had no node_modules says nothing about the base."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1)]))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("pytest", exit_code=1, **{reason: "no deps"})])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+    def test_a_protected_path_is_still_refused_however_corroborated(
+            self, dsns, console, runner, verifier_conn, repo):
+        """042 widened one clause and no other. A run that wrote to the suite
+        that judges it cannot have its checks believed, corroborated or not."""
+        task = failed_task(console, runner, verifier_conn, repo, pay=payload(
+            repo, checks=[check("pytest", exit_code=1)],
+            violations={"protected": {"api/tests/**": ["api/tests/x.py"]},
+                        "outside_writable": [], "over_diff_limit": False}))
+        base_step(console, task, base=base_sha(repo),
+                  checks=[check("pytest", exit_code=1)])
+        with pytest.raises(psycopg.errors.RaiseException):
+            move_to_ready(console, task)
+
+
+class TestTheModuleAndTheDatabaseAgreeOnCorroboration:
+    """_corroboration_for mirrors 042's clause. Two places decide this, and the
+    module can only ever be the more conservative of the two."""
+
+    BASE = "a" * 40
+
+    def _payload(self, **over):
+        p = {"base_commit_sha": self.BASE, "checks": [check("pytest", exit_code=1)],
+             "boundary_violations": {"protected": {}, "outside_writable": []}}
+        p.update(over)
+        return p
+
+    def _evidence(self, **over):
+        c = check("pytest", exit_code=1)
+        c.update(over)
+        return {"base_commit_sha": self.BASE, "checks": [c]}
+
+    def test_it_excuses_the_same_failure(self):
+        p = self._payload()
+        assert adopt._verification_is_green(p, [self._evidence()]) is True
+
+    def test_it_excuses_nothing_without_evidence(self):
+        assert adopt._verification_is_green(self._payload(), []) is False
+
+    def test_a_green_check_needs_no_evidence_and_gets_none(self):
+        p = self._payload(checks=[check("pytest", exit_code=0)])
+        assert adopt._verification_is_green(p, []) is True
+
+    def test_a_payload_of_skips_is_still_not_a_pass(self):
+        """042 left the ran-at-all half alone, and this is the half people
+        drop when they widen the other one."""
+        p = self._payload(checks=[check("tsc", skipped_reason="no .ts files")])
+        assert adopt._verification_is_green(p, [self._evidence()]) is False
+
+    @pytest.mark.parametrize("over,why", [
+        ({"exit_code": 2}, "a different exit code"),
+        ({"timed_out": True}, "a timeout"),
+        ({"skipped_reason": "no deps"}, "a skipped base check"),
+        ({"unresolved_reason": "missing"}, "an unresolved base check"),
+        ({"undecided_reason": "SIGKILL"}, "an undecided base check"),
+    ])
+    def test_what_does_not_corroborate(self, over, why):
+        assert adopt._verification_is_green(
+            self._payload(), [self._evidence(**over)]) is False, why
+
+    def test_evidence_for_another_base_is_ignored(self):
+        ev = self._evidence()
+        ev["base_commit_sha"] = "b" * 40
+        assert adopt._verification_is_green(self._payload(), [ev]) is False
+
+    def test_the_refusal_names_the_remedy(self):
+        why = adopt._why_not_green(self._payload(), [])
+        assert "--corroborate-base" in why
+
+    def test_it_does_not_name_the_remedy_for_a_check_that_cannot_use_it(self):
+        """Offering --corroborate-base for a timeout would send someone to run
+        a suite for nothing."""
+        p = self._payload(checks=[check("pytest", exit_code=1, timed_out=True)])
+        why = adopt._why_not_green(p, [])
+        assert "--corroborate-base" not in why
+        assert "timed out" in why

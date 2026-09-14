@@ -35,6 +35,29 @@ branch, adopted or not. So a stale adoption cannot ship a broken merge; it can
 only waste the human who clicked Accept. Refusing here turns that into a
 sentence naming the two shas instead.
 
+WHEN THE CHECK WAS WHAT WAS WRONG (042, 14 Sep 2026)
+
+Everything above is about a branch refused by a GATE. Task 100 was refused by a
+CHECK -- `tests/analytics/test_migrations.py` asserting a hand-maintained step
+tally that a migration on the base had moved by one -- and the branch touched
+no migration and no test. The recorded FAIL was true about the tree and false
+about the branch, and nothing here could tell those apart.
+
+So: A CHECK THAT FAILS IDENTICALLY ON THE BASE IS NOT EVIDENCE ABOUT THE
+BRANCH. `corroborate()` re-runs the failing commands in a throwaway clone at
+the base the run recorded, writes a BASE_CHECK_RUN step against that same run,
+and `plan()` then excuses exactly the checks that failed the same way. 042
+enforces the same rule in the database, because 038's trigger requires green
+independently of anything Python decides.
+
+IT IS NARROW, AND THE NARROWNESS IS THE POINT. Only a check that RAN and
+exited non-zero can be excused. Unresolved, undecided and timed-out checks
+establish nothing at either end and stay failures. Matching exit codes are not
+matching causes -- pytest exits 1 for any failure at all -- so both output
+tails are recorded side by side for the human, and the real defence is the one
+named above: accept() re-runs the whole contract against the merged tree and
+requires green outright, consulting no corroboration at all.
+
 WHAT THIS DOES NOT DO. It does not merge, it does not push, and it does not
 record a verdict. It moves a row to READY_FOR_REVIEW, which is where a person
 decides -- the same place the runner's own branches arrive, reached by a
@@ -42,14 +65,24 @@ different edge.
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from psycopg.types.json import Jsonb
+
 from console import config, db
+# The deadline is IMPORTED rather than recomputed. _deadline_for's own
+# docstring is about what it cost to have two numbers for one question, and a
+# base run that timed out where the branch run did not is a corroboration that
+# silently is not one.
+from console.reverify import _deadline_for
+from runner import verify, worktree
 
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,120}$")
+TRIAL_PREFIX = "corroborate"
 
 
 class NotAdoptable(RuntimeError):
@@ -64,6 +97,16 @@ class Adoption:
     base_sha: str
     head_sha: str
     checks: list[str] = field(default_factory=list)
+    corroborated: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Corroboration:
+    task_id: int
+    run_id: int
+    base_sha: str
+    excused: list[str] = field(default_factory=list)
+    still_failing: list[str] = field(default_factory=list)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -93,11 +136,71 @@ def _check_is_green(c: dict) -> bool:
     return c.get("exit_code") == 0 and not c.get("timed_out")
 
 
-def _verification_is_green(payload: dict) -> bool:
+def _excusable(c: dict) -> str:
+    """Why this check could not be excused by a base run, or "" if it can.
+
+    A check is excusable only if it RAN and exited non-zero. Everything else
+    is a check that did not judge the tree, and re-running it somewhere else
+    judges nothing either. 042 refuses the same four cases in SQL.
+    """
+    if c.get("skipped_reason") is not None:
+        return "it was skipped, so it is not a failure to excuse"
+    if c.get("unresolved_reason") is not None:
+        return "unresolved: " + str(c["unresolved_reason"])
+    if c.get("undecided_reason") is not None:
+        return "undecided: " + str(c["undecided_reason"])
+    if c.get("timed_out"):
+        return ("it timed out, and a timeout corroborated by a timeout is how "
+                "a busy box adopts a branch nobody judged")
+    if c.get("exit_code") in (0, None):
+        return "it recorded no non-zero exit code"
+    return ""
+
+
+def _corroboration_for(check: dict, base_payloads: list[dict],
+                       recorded_base: str) -> dict | None:
+    """The BASE_CHECK_RUN entry that excuses `check`, or None.
+
+    THE SAME RULE AS 042, IN THE SAME ORDER, for the same reason
+    _check_is_green mirrors Check.passed: two places decide this and they must
+    decide it the same way. The database is the one that binds -- this can
+    only ever be the more conservative of the two.
+
+    Matched on the COMMAND as recorded, not on position: a contract whose
+    verification list changed between the run and now would otherwise excuse
+    one check with another check's evidence.
+    """
+    if _excusable(check):
+        return None
+    for payload in base_payloads:
+        if (payload.get("base_commit_sha") or "") != recorded_base:
+            continue
+        for bc in payload.get("checks") or []:
+            if bc.get("command") != check.get("command"):
+                continue
+            if bc.get("exit_code") != check.get("exit_code"):
+                continue
+            if bc.get("timed_out"):
+                continue
+            if (bc.get("skipped_reason") is not None
+                    or bc.get("unresolved_reason") is not None
+                    or bc.get("undecided_reason") is not None):
+                continue
+            return bc
+    return None
+
+
+def _verification_is_green(payload: dict,
+                           base_payloads: list[dict] | None = None) -> bool:
     """Verification.passed, likewise, including the half people forget.
 
     Every check passed AND at least one of them actually ran. A payload of
     skips establishes nothing, and nothing is not a pass.
+
+    042: a check that failed here and fails the same way at the base it was
+    verified against is not counted against the branch. The ran-at-all test
+    above is unchanged and deliberately so -- it asks whether anything looked
+    at the tree, and a corroborated failure DID look at the tree.
     """
     if payload.get("verification_skipped") is not None:
         return False
@@ -108,7 +211,11 @@ def _verification_is_green(payload: dict) -> bool:
                and c.get("unresolved_reason") is None
                and c.get("undecided_reason") is None for c in checks):
         return False
-    return all(_check_is_green(c) for c in checks)
+    base = base_payloads or []
+    recorded_base = payload.get("base_commit_sha") or ""
+    return all(_check_is_green(c)
+               or _corroboration_for(c, base, recorded_base) is not None
+               for c in checks)
 
 
 def _boundary_was_size_only(payload: dict) -> bool:
@@ -143,6 +250,12 @@ def plan(task_id: int, branch: str) -> Adoption:
             " JOIN runs r ON r.id = s.run_id"
             " WHERE r.task_id = %s AND s.step_type = 'VERIFICATION_RUN'"
             " ORDER BY s.run_id DESC", (task_id,)).fetchall()
+        # 042's evidence, read in the same breath as the thing it excuses.
+        base_steps = conn.execute(
+            "SELECT s.run_id, s.payload FROM run_steps s"
+            " JOIN runs r ON r.id = s.run_id"
+            " WHERE r.task_id = %s AND s.step_type = 'BASE_CHECK_RUN'"
+            " ORDER BY s.run_id DESC", (task_id,)).fetchall()
 
     repo = config.repo_root() / task["repo"]
     head = _git(repo, "rev-parse", f"{branch}^{{commit}}")
@@ -155,16 +268,18 @@ def plan(task_id: int, branch: str) -> Adoption:
         payload = step["payload"] or {}
         if payload.get("patch_commit_sha") != head:
             continue
-        if not _verification_is_green(payload):
+        mine = [b["payload"] or {} for b in base_steps
+                if b["run_id"] == step["run_id"]]
+        recorded_base = payload.get("base_commit_sha") or ""
+        if not _verification_is_green(payload, mine):
             raise NotAdoptable(
                 f"run {step['run_id']} is the run that produced {branch}, and "
                 f"its checks are not green: "
-                f"{payload.get('verification_skipped') or _why_not_green(payload)}")
+                f"{payload.get('verification_skipped') or _why_not_green(payload, mine)}")
         if not _boundary_was_size_only(payload):
             raise NotAdoptable(
                 f"run {step['run_id']} broke the boundary on something other "
                 f"than size, so its checks cannot be believed")
-        recorded_base = payload.get("base_commit_sha") or ""
         if recorded_base != base_now:
             raise NotAdoptable(
                 f"the base has moved. {branch} was verified against "
@@ -174,21 +289,35 @@ def plan(task_id: int, branch: str) -> Adoption:
         return Adoption(
             task_id=task_id, branch=branch, run_id=step["run_id"],
             base_sha=recorded_base, head_sha=head,
-            checks=[c.get("command", "") for c in (payload.get("checks") or [])])
+            checks=[c.get("command", "") for c in (payload.get("checks") or [])],
+            corroborated=[c.get("command", "")
+                          for c in (payload.get("checks") or [])
+                          if not _check_is_green(c)])
 
     raise NotAdoptable(
         f"no run of task {task_id} verified {branch} at {head[:12]}. The "
         f"branch has moved since it was checked, or it was never this task's.")
 
 
-def _why_not_green(payload: dict) -> str:
+def _why_not_green(payload: dict, base_payloads: list[dict] | None = None) -> str:
     checks = payload.get("checks") or []
     if not checks:
         return "the run recorded no checks at all"
-    bad = [c.get("command", "?") for c in checks if not _check_is_green(c)]
-    if bad:
-        return "failed: " + "; ".join(bad)
-    return "no check actually ran, so nothing was established"
+    base = base_payloads or []
+    recorded_base = payload.get("base_commit_sha") or ""
+    bad = [c for c in checks if not _check_is_green(c)
+           and _corroboration_for(c, base, recorded_base) is None]
+    if not bad:
+        return "no check actually ran, so nothing was established"
+    parts = []
+    for c in bad:
+        why = _excusable(c)
+        parts.append(c.get("command", "?") + (f" ({why})" if why else ""))
+    out = "failed: " + "; ".join(parts)
+    if any(not _excusable(c) for c in bad):
+        out += (". If these fail on the base too, they are not evidence about "
+                "the branch -- corroborate them with --corroborate-base")
+    return out
 
 
 def adopt(task_id: int, branch: str) -> Adoption:
@@ -214,8 +343,171 @@ def adopt(task_id: int, branch: str) -> Adoption:
     return decided
 
 
+def _has_commit(repo: Path, sha: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+                          capture_output=True, timeout=30).returncode == 0
+
+
+def corroborate(task_id: int, branch: str) -> Corroboration:
+    """Re-run this run's failing checks AT THE BASE IT RECORDED, and write it down.
+
+    THE BASE THE RUN RECORDED, not the base as it is now. Those are different
+    questions and the second one is asked in git, by plan(), a few lines up.
+    Corroborating against a moved base would answer "does this fail today"
+    when what was asked is "did the branch cause the failure that was
+    recorded".
+
+    THE COMMAND AS RECORDED, not as the contract now lists it. The recorded
+    string is the one that failed; re-deriving it from a contract that may
+    have been edited since would run something else and call it the same
+    check. `changed` is the run's own file list for the same reason -- a
+    command carrying the changed-files placeholder must expand identically or
+    it is not the same command, and at the base those paths may not exist, in
+    which case verify.run reports it unresolved and 042 refuses it as
+    evidence. Failing closed there is the intended behaviour.
+
+    IN A THROWAWAY CLONE, never the checkout. The checkout IS the deployment
+    and a build may be in flight; this module has no business moving it, and
+    the reasons are reverify.py's, which learned them the expensive way.
+
+    WRITES ONE STEP AND DECIDES NOTHING. The task's status is untouched. What
+    this produces is evidence, which plan() and 042 then judge separately --
+    so a corroboration that excuses nothing costs a suite run and changes no
+    row, which is the right price for being wrong.
+    """
+    if not BRANCH_RE.match(branch or ""):
+        raise NotAdoptable(f"{branch!r} is not a branch name this will pass to git")
+
+    with db.connect() as conn:
+        task = conn.execute("SELECT * FROM tasks WHERE id=%s",
+                            (task_id,)).fetchone()
+        if task is None:
+            raise NotAdoptable(f"there is no task {task_id}")
+        if task["status"] != "FAILED":
+            raise NotAdoptable(
+                f"task {task_id} is {task['status']}, not FAILED. There is "
+                f"nothing here to corroborate.")
+        rows = conn.execute(
+            "SELECT s.run_id, s.step_type, s.payload FROM run_steps s"
+            " JOIN runs r ON r.id = s.run_id"
+            " WHERE r.task_id = %s"
+            "   AND s.step_type IN ('VERIFICATION_RUN', 'PATCH_PROPOSED')"
+            " ORDER BY s.run_id DESC", (task_id,)).fetchall()
+
+    repo = config.repo_root() / task["repo"]
+    head = _git(repo, "rev-parse", f"{branch}^{{commit}}")
+
+    run_id, payload = None, None
+    for r in rows:
+        if r["step_type"] != "VERIFICATION_RUN":
+            continue
+        candidate = r["payload"] or {}
+        if candidate.get("patch_commit_sha") == head:
+            run_id, payload = r["run_id"], candidate
+            break
+    if payload is None:
+        raise NotAdoptable(
+            f"no run of task {task_id} verified {branch} at {head[:12]}. The "
+            f"branch has moved since it was checked, or it was never this "
+            f"task's.")
+
+    failing = [c for c in (payload.get("checks") or []) if not _check_is_green(c)]
+    if not failing:
+        raise NotAdoptable(
+            f"run {run_id}'s checks are already green; there is nothing to "
+            f"corroborate. Adopt it.")
+    blocked = [(c.get("command", "?"), _excusable(c)) for c in failing
+               if _excusable(c)]
+    if blocked:
+        raise NotAdoptable(
+            "these checks cannot be excused by any base run, so running one "
+            "would prove nothing: "
+            + "; ".join(f"{cmd} -- {why}" for cmd, why in blocked))
+
+    recorded_base = payload.get("base_commit_sha") or ""
+    if not recorded_base:
+        raise NotAdoptable(f"run {run_id} recorded no base commit to stand on")
+    if not _has_commit(repo, recorded_base):
+        raise NotAdoptable(
+            f"{repo.name} does not have {recorded_base[:12]}, the base run "
+            f"{run_id} was verified against, so it cannot be checked out")
+
+    patch = next((r["payload"] or {} for r in rows
+                  if r["step_type"] == "PATCH_PROPOSED" and r["run_id"] == run_id),
+                 {})
+    changed = [f for f in (patch.get("files_changed") or [])
+               if (patch.get("file_status") or {}).get(f) != "D"]
+    contract = task["acceptance_contract"] or {}
+    commands = [c.get("command", "") for c in failing]
+
+    trial_root = config.trial_root()
+    trial_root.mkdir(parents=True, exist_ok=True)
+    trial = None
+    try:
+        trial, at = worktree.create_trial_clone(
+            repo, trial_root, f"{TRIAL_PREFIX}-{task_id}", recorded_base)
+        # The dependency tree, for the reason reverify.run gives: a clone has
+        # no node_modules and no venv, and a check that cannot start reports
+        # could-not-run -- which 042 refuses as evidence, so this would fail
+        # closed rather than wrongly. Linked anyway, because "the base fails
+        # this too" is only worth asking when the base can run it.
+        worktree.link_dependencies(trial, contract.get("worktree_links", {}))
+        result = verify.run(
+            trial, commands, _deadline_for(task),
+            changed=changed,
+            links=worktree.writable_links(trial, contract),
+            # HEAD IS THE BASE HERE, and saying so is the point: the tree
+            # under test is the base with nothing applied to it.
+            facts={"FLEET_BASE_SHA": at, "FLEET_HEAD_SHA": at,
+                   "FLEET_TASK_ID": str(task_id),
+                   "FLEET_CONTRACT": json.dumps(contract),
+                   "FLEET_SPEC_MD": task.get("spec_md") or ""})
+    finally:
+        if trial is not None:
+            worktree.discard_trial_clone(trial)
+
+    branch_side = {c.get("command"): c for c in failing}
+    base_checks = []
+    for c in result.checks:
+        was = branch_side.get(c.command, {})
+        base_checks.append({
+            "command": c.command, "expanded": c.expanded,
+            "exit_code": c.exit_code, "duration_ms": c.duration_ms,
+            "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
+            "unresolved_reason": c.unresolved_reason,
+            "undecided_reason": c.undecided_reason,
+            "output_tail": c.output_tail[-800:],
+            # BOTH TAILS, SIDE BY SIDE. Equal exit codes are not equal causes
+            # and nothing here can tell them apart; the person who accepts
+            # can, and this is the only place they would ever see both.
+            "branch_exit_code": was.get("exit_code"),
+            "branch_output_tail": (was.get("output_tail") or "")[-800:]})
+
+    step_payload = {"base_commit_sha": recorded_base, "patch_commit_sha": head,
+                    "checks": base_checks}
+
+    with db.writer() as conn:
+        seq = conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 AS seq FROM run_steps"
+            " WHERE run_id = %s", (run_id,)).fetchone()["seq"]
+        conn.execute(
+            "INSERT INTO run_steps (run_id, sequence, step_type, actor, payload)"
+            " VALUES (%s, %s, 'BASE_CHECK_RUN', %s, %s)",
+            (run_id, seq, "fleet-console/adopt", Jsonb(step_payload)))
+        conn.commit()
+
+    excused, still = [], []
+    for c in failing:
+        target = (excused if _corroboration_for(c, [step_payload], recorded_base)
+                  else still)
+        target.append(c.get("command", "?"))
+    return Corroboration(task_id=task_id, run_id=run_id, base_sha=recorded_base,
+                         excused=excused, still_failing=still)
+
+
 def main(argv: list[str] | None = None) -> int:
     """    python -m console.adopt --task 69 --branch fleet/task-69.3
+    python -m console.adopt --task 100 --branch fleet/task-100 --corroborate-base
 
     --dry-run asks every question and writes nothing, which is the way to find
     out whether a branch is adoptable without deciding that it is.
@@ -228,7 +520,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--branch", required=True)
     p.add_argument("--dry-run", action="store_true",
                    help="check everything and change nothing")
+    p.add_argument("--corroborate-base", action="store_true",
+                   help="re-run this run's FAILING checks at the base it was "
+                        "verified against, and record what happened. Adopts "
+                        "nothing: a check that fails the same way on the base "
+                        "is then excused by plan() and by 042.")
     args = p.parse_args(argv)
+
+    if args.corroborate_base:
+        try:
+            found = corroborate(args.task, args.branch)
+        except NotAdoptable as exc:
+            print(f"REFUSED: {exc}")
+            return 1
+        print(f"ran task {found.task_id}'s failing checks at "
+              f"{found.base_sha[:12]}, the base run {found.run_id} recorded")
+        for c in found.excused:
+            print(f"  base fails too  {c}")
+        for c in found.still_failing:
+            print(f"  base is fine    {c}")
+        if found.still_failing:
+            print("  -> not adoptable. The base does not fail these, so the "
+                  "branch is what does.")
+            return 1
+        print("  -> recorded. `--dry-run` will now say whether it adopts.")
+        return 0
 
     try:
         decided = (plan if args.dry_run else adopt)(args.task, args.branch)
@@ -240,7 +556,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  run {decided.run_id}, {decided.head_sha[:12]} on "
           f"{decided.base_sha[:12]}")
     for c in decided.checks:
-        print(f"  ok  {c}")
+        print(f"  {'base' if c in decided.corroborated else '  ok'}  {c}")
+    if decided.corroborated:
+        print("  'base' means the check fails identically without this branch "
+              "applied, so it is not evidence about it. Both output tails are "
+              "on the run's BASE_CHECK_RUN step.")
     if not args.dry_run:
         print("  -> READY_FOR_REVIEW. Nothing merged: accept() re-verifies "
               "against the base before it does.")
