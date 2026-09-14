@@ -155,17 +155,40 @@ def load_contract(repo: str, path: Path | None = None) -> dict[str, Any]:
 
     # The database refuses this too. Catching it here means the message names
     # the file rather than the trigger.
+    #
+    # `floor_waiver` IS THE ONE EXCEPTION, AND IT IS NOT SELF-AUTHORISING.
+    #
+    # 040 lets exactly one floor row be waived for exactly one work_type, so
+    # that an index migration can be written where nothing else may write. The
+    # contract names the glob it is exempt from, HERE, so the hole is visible
+    # in the file that has it rather than only in a column of a table.
+    #
+    # Naming it grants nothing. `enforce_contract_floor()` refuses the contract
+    # unless `protected_path_floor` really does waive that glob for this
+    # work_type, so a contract that declares a waiver it was not given is
+    # refused at the database with the declaration as the evidence. This mirror
+    # exists to name the file, exactly as the comment above says; it is not the
+    # authority and must not be read as one.
+    waived = contract.get("floor_waiver")
     clashes = [
         f"{w} overlaps {p}"
         for w in contract["writable_paths"]
         for p in contract["protected_paths"]
-        if glob_prefix(w) and glob_prefix(p)
+        if p != waived
+        and glob_prefix(w) and glob_prefix(p)
         and (glob_prefix(w) == glob_prefix(p)
              or glob_prefix(p).startswith(glob_prefix(w) + "/")
              or glob_prefix(w).startswith(glob_prefix(p) + "/"))
     ]
     if clashes:
         raise RuntimeError(f"{path} contradicts itself: {'; '.join(clashes)}")
+
+    if waived and waived not in contract["protected_paths"]:
+        raise RuntimeError(
+            f"{path} declares floor_waiver {waived!r} and does not carry it in "
+            f"protected_paths. The waiver narrows a protected glob; dropping "
+            f"the glob would exempt the contract from everything under it "
+            f"rather than from the one path its writable_paths names.")
 
     return contract
 

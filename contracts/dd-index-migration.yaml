@@ -1,0 +1,175 @@
+# Task contract: one new index migration, and nothing else.
+#
+# THE FLOOR THIS OPENS, AND THE ONE CRACK IT OPENS IT BY
+#
+# `api/alembic/**` and `api/analytics/migrations/**` are on the protected floor
+# of every other contract for this repository -- seven of them -- and none makes
+# them writable. That floor is right: a task that can alter the schema can drop
+# a column.
+#
+# Its consequence was measured on 14 Sep 2026 and it is the reason this file
+# exists. The dashboard endpoint takes 21.3s. 85% of its SQL is one query whose
+# plan sequentially scans 2,887,010 orders to remove 2,063 of them, hash-joins
+# to 1,724,169 rows, and sorts those to disk -- a 50MB external merge under a
+# 4MB work_mem -- to produce 21,280. Every index on `orders` is a single-column
+# btree. The composite that would serve it could not be written by any task this
+# system has ever run, and the pool has been REFUSING the rows that say so:
+# candidates 27 and 35 are both schema work, both held as `protected_path`,
+# both correct to hold under the contracts that existed.
+#
+# So the loop had been shipping features onto a schema it structurally could not
+# make fast, and the mechanism that would have surfaced that was classifying it
+# as out of scope.
+#
+# WHY THIS IS AN INDEX CONTRACT AND NOT A MIGRATION CONTRACT
+#
+# "This migration is safe" is not a checkable property; a contract asserting it
+# would be a promise. "Every step of this migration is a CreateIndexStep" IS
+# checkable, structurally and totally -- `api/analytics/migrations/migration.py`
+# defines exactly three step types, and this admits one of them.
+#
+# That is a whitelist by TYPE, not a regex over SQL hoping to have remembered
+# every dangerous statement. There is no SQL here for a blacklist to miss.
+#
+# WHAT `CreateIndexStep` GIVES FOR FREE, so the agent cannot omit it:
+# CONCURRENTLY on a live schema (an ACCESS EXCLUSIVE lock on a 2.9M-row table
+# for the length of a build is an outage), IF NOT EXISTS, the drop of an invalid
+# leftover from a failed concurrent build, and a per-step predicate requiring
+# `indisvalid` -- which is what lets one migration meet tenant schemas that are
+# at different states. analytics_1 holds 679,917 orders and analytics_2 holds
+# 2,887,844; migration.py's own header records analytics_12 sitting half through
+# a change.
+#
+# WHAT THIS DELIBERATELY DOES NOT CHANGE: THE DEPLOY GATE
+#
+# `console/autodeploy` refuses to deploy any range containing a migration,
+# because `deploy.sh` migrates BEFORE the code swap and a migration is the one
+# action reverting a commit does not undo. That refusal stays exactly as it is.
+# The loop writes and merges the index migration; a PERSON runs the deploy that
+# applies it. The human gate sits where the irreversibility lives rather than
+# three steps upstream, where it was preventing the fleet from even noticing.
+#
+# WHAT THIS GIVES UP, STATED PLAINLY
+#
+# Until now "no unattended task can alter the schema" was a structural fact,
+# verifiable with one grep across every contract, needing no judgement. It is
+# now a VERIFIED fact, and its truth rests on index_migration_only.py being
+# correct and on nobody widening `writable_paths` below. That is the whole cost
+# and it is worth paying only because the check is total rather than advisory.
+
+work_type: dd_index_migration
+repo: deadly-digital-platform
+base_branch: main
+contract_version: 1
+
+# ONE GLOB, MATCHING NEW FILES ONLY IN SPIRIT -- the check enforces the "new"
+# half, because a path glob cannot express it. `api/alembic/**` is NOT here and
+# must never be: that is the shared schema, and nothing an index needs lives in
+# it.
+writable_paths:
+  - api/analytics/migrations/versions/v*.py
+
+# THE HOLE, DECLARED IN THE FILE THAT HAS IT.
+#
+# 040 waives this one floor row for this one work_type. Naming it here grants
+# nothing -- enforce_contract_floor() refuses this contract unless
+# protected_path_floor really does waive that glob for `dd_index_migration`,
+# with this declaration as the evidence. It is written down so the exception is
+# visible where somebody reads the contract, rather than only in a column of a
+# table they would have to know to query.
+floor_waiver: api/analytics/migrations/**
+
+protected_paths:
+  # THE WHOLE FLOOR, INCLUDING THE GLOB THIS CONTRACT IS EXEMPT FROM.
+  #
+  # `enforce_contract_floor()` requires every row of `protected_path_floor` to
+  # appear here, and 040 waives this contract from ONE of them rather than
+  # letting it drop the glob. Dropping it would exempt the contract from the
+  # migration MACHINERY too -- migration.py, runner.py, predicates.py -- and a
+  # task that can edit migration.py can redefine CreateIndexStep, which turns
+  # the check's whitelist into a whitelist of a word.
+  - api/alembic/**
+  - api/analytics/migrations/**
+  - api/analytics/routes/interventions.py
+  - api/analytics/services/gdpr.py
+  - api/analytics/services/trigger_router.py
+  - api/app.py
+  - api/pytest.ini
+  - api/ruff.toml
+  - api/services/email_sender.py
+  - api/services/gdpr_identity.py
+  - api/services/gdpr_replay_scrub.py
+  - api/tests/**
+  - api/worker.py
+  - platform/__tests__/**
+  - platform/app/(dashboard)/analytics/interventions/**
+  - platform/app/(dashboard)/campaigns/**
+  - platform/app/(dashboard)/flows/**
+  - platform/app/(dashboard)/settings/billing/**
+  - platform/app/(dashboard)/settings/domains/**
+  - platform/app/(dashboard)/settings/privacy/**
+  - platform/app/api/admin/billing/**
+  - platform/app/api/analytics/churn/intervene/**
+  - platform/app/api/analytics/interventions/**
+  - platform/app/api/auth/**
+  - platform/app/api/billing/**
+  - platform/app/api/campaigns/**
+  - platform/app/api/domains/**
+  - platform/app/api/flows/**
+  - platform/app/api/gdpr/**
+  - platform/app/api/inline-css/**
+  - platform/app/api/listmonk/**
+  - platform/app/api/scheduled-campaigns/**
+  - platform/app/api/suppression/**
+  - platform/app/api/track/**
+  - platform/lib/api-auth.ts
+  - platform/lib/auth.ts
+  - platform/lib/csrf.ts
+  - platform/lib/roles.ts
+  - platform/middleware.ts
+  - platform/playwright.config.ts
+  - platform/vitest.config.ts
+  # The migration MACHINERY, floored by this contract even though the
+  # directory above is waived for it. A task that can edit migration.py
+  # can redefine CreateIndexStep, and the check's whitelist becomes a
+  # whitelist of a word.
+  - api/analytics/migrations/migration.py
+  - api/analytics/migrations/runner.py
+  - api/analytics/migrations/predicates.py
+
+readable_repos:
+  - deadly-digital-platform
+
+# No Bash. The migration is a data structure, not a script, and a shell is the
+# route by which "add an index" becomes "run this SQL".
+agent_tools:
+  - Read
+  - Grep
+  - Glob
+  - Write
+  - Edit
+
+verification:
+  # Every requirement the spec numbers is cited by an added line.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/spec_requirements_cited.py
+  # It parses.
+  - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
+  # AND IT IS AN INDEX MIGRATION AND NOTHING ELSE. This is the check the whole
+  # contract rests on; see its header.
+  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/index_migration_only.py
+  # The migration system's own tests still pass, because this file is the one
+  # thing that could break the runner that applies it.
+  - /home/ubuntu/fleet/contracts/checks/pytest_unit_per_file.sh api tests/unit
+
+# One file, one Migration, a handful of steps. A diff larger than this is not
+# an index migration.
+max_diff_lines: 120
+
+# NOT auto_merge. An index migration is read by a person before it merges, and
+# it cannot deploy unattended in any case -- console/autodeploy refuses a range
+# containing one. Making it auto_merge would buy nothing and remove the one
+# review this path has.
+auto_merge: false
+
+max_cost_gbp: 4.00
+timeout_seconds: 1800
