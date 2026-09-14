@@ -32,7 +32,7 @@ import json
 import logging
 import sys
 
-from console import approve, autoapprove
+from console import approve, autoapprove, retire
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -45,6 +45,24 @@ def main() -> int:
     ap.add_argument("--json", action="store_true",
                     help="emit the whole plan as JSON, for a machine or a diff")
     args = ap.parse_args()
+
+    # RETIREMENT FIRST, AND IN THE SAME UNIT.
+    #
+    # A candidate the tree has already answered must not be ranked: it is not
+    # a backlog row, it is history, and on 14 Sep 2026 a third of the pool was
+    # that. Ahead of the sweep so the night's ranking is over live work, and
+    # inside this entrypoint rather than behind a timer of its own because a
+    # second unit is a second thing to have forgotten to enable -- the cost of
+    # getting it wrong is that nothing is retired, which is where this started.
+    #
+    # It never refuses: a night with nothing to retire is the ordinary case,
+    # and a failure to classify one row must not cost the night its approval.
+    r = retire.retire(dry_run=args.dry_run)
+    if r["would_retire"]:
+        verb = "would retire" if args.dry_run else "retired"
+        print(f"{verb} {len(r['would_retire'])} candidate(s) the tree has "
+              f"already answered: "
+              + ", ".join(f"c{i}" for i in r["would_retire"]))
 
     try:
         p = autoapprove.sweep(dry_run=args.dry_run)

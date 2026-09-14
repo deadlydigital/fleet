@@ -505,7 +505,7 @@ approval and a brief line saying why. That is the right answer: "it was first"
 is not a reason, and a system that will not say why it chose is the one thing
 §4 was written to prevent.
 
-### 2.4 The pace — **DECIDED: 1**
+### 2.4 The pace — **DECIDED: 1, raised to 2 on 14 Sep 2026 by 044**
 
     --: The most candidates auto-approval may tick in one night. NOT the queue
     --: depth: specs/unattended-operation.md §8 costs three paces against the
@@ -532,6 +532,40 @@ what it was chosen *over*, and a cap whose alternatives are not written down
 next to it reads as the only number anyone considered. Raising it is a
 migration — one line, one commit — and this table is the argument that has to
 be answered to justify one, not a menu.
+
+**Answered, 14 September 2026 — `044_the_pace_goes_to_two.sql`.** The table
+above was priced against £139.09 and a pool whose drain rate nobody had
+measured. Both numbers now exist. Against £44.06 on the unattended line and
+the pool as it stands once 043 retires the rows the tree has already answered:
+
+| per_night | eligible rows | nights to drain | nights of credit |
+|---|---|---|---|
+| 1 — the number in force until tonight | 5 | 5 | 10 |
+| **2 — in force** | 5 | **3** | **5** |
+| 4 | 5 | 2 | 2 |
+
+2 is where the two columns meet. At 1 the credit outlives the pool twice over,
+and a person reads a brief every morning for a working week to spend money that
+is sitting there — which is the complaint that produced this change, in the
+form *"that's the one that decides whether the pool drains or I'm back
+tomorrow"*. At 4 the credit binds and runs out mid-week, which is what §5.1's
+line exists to prevent; 4 was `depth-fill` besides, chosen for one night rather
+than as a pace.
+
+**What it gives up.** Every ceiling under this one binds twice as often, and a
+bad night costs twice as much. What makes a bad night cheap is unchanged:
+`console/undo.py`, one command, complete only before the runner claims the
+task.
+
+**And it multiplies whatever else is wrong.** The gate fixes made the same
+evening — 042's matcher and the dropped waiver column — made candidate 66
+reachable for the first time, a row asking to *price* an index before writing a
+migration. So the first night at the new pace is also the first night the
+migration contract is reachable unattended. That is an argument for reading the
+first two briefs, not for the pace being wrong.
+
+**This table is now the one to answer.** Raising it again is another migration,
+and these are the numbers to beat.
 
 **And §5.1's 60% pool stop does not exist.** The spec sets it — *"At 60% the
 fleet stops queuing and the brief says why, leaving £63 for work a person
