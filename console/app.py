@@ -571,7 +571,19 @@ def accept(request: Request, task_id: int,
                 recorded_base=recorded_base,
                 changed_files=[p for p in (patch or {}).get("files_changed", [])
                                if (patch or {}).get("file_status", {}).get(p) != "D"],
-                keep_on_success=True)
+                keep_on_success=True,
+                # The base the push will land on, read from the remote by the
+                # preflight above. This is the Accept button's half of the
+                # same fix: without it, pressing Accept rebuilt the trial at
+                # this checkout's base -- which nothing fast-forwards -- and
+                # was refused at the push with a message telling the reader to
+                # press Accept again.
+                base_sha=check.remote_base_sha,
+                # And the URL, so the trial can FETCH that base rather than
+                # needing this checkout to already hold it. The checkout is a
+                # follower by design; the trial clone is where writing is
+                # allowed.
+                base_remote_url=merge.remote_url(repo))
 
         result = merge.merge_and_push(
             repo, task, branch,

@@ -470,7 +470,17 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
                 recorded_base=patch.get("base_commit_sha", ""),
                 changed_files=[p for p in (patch.get("files_changed") or [])
                                if (patch.get("file_status") or {}).get(p) != "D"],
-                keep_on_success=True)
+                keep_on_success=True,
+                # The base as the REMOTE has it, read by preflight a moment
+                # ago. Without this the trial is a merge into whatever this
+                # checkout happens to hold, which is not what gets pushed --
+                # see reverify.run's own docstring.
+                base_sha=check.remote_base_sha,
+                # And the URL, so the trial can FETCH that base rather than
+                # needing this checkout to already hold it. The checkout is a
+                # follower by design; the trial clone is where writing is
+                # allowed.
+                base_remote_url=merge.remote_url(repo))
 
             verdict = eligible(task, again, chain)
             if not verdict.ok:

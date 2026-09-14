@@ -71,6 +71,10 @@ class MergeOutcome:
     base_sha_before: str = ""
     base_sha_after: str = ""
     remote_sha: str = ""
+    #: The base as the REMOTE has it, read by `ls-remote` in preflight. It is
+    #: the base the trial must be built at, because it is the base the push
+    #: lands on. Empty when there is no remote, or no base on it yet.
+    remote_base_sha: str = ""
     branch_tip: str = ""
     detail: list[str] = field(default_factory=list)
 
@@ -163,18 +167,97 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     # forced a production checkout to be switched to a task's base branch
     # before Accept could be pressed.
     #
-    # The remote-agreement check has MOVED rather than gone: it now runs in
-    # the clone, against a remote that has just been fetched, immediately
-    # before the push. Here it could only ever compare against a
-    # remote-tracking ref this module may no longer refresh -- the fetch was
-    # itself a write to the checkout -- and a stale answer to that question is
-    # what it exists to prevent.
+    # The remote-agreement check has MOVED rather than gone: it runs in the
+    # clone, against a remote that has just been fetched, immediately before
+    # the push. Here it could only ever compare against a remote-tracking ref
+    # this module may no longer refresh -- the fetch was itself a write to the
+    # checkout -- and a stale answer to that question is what it exists to
+    # prevent.
+    #
+    # SINCE 13 Sep 2026 IT ALSO RUNS HERE, and the objection above is met
+    # rather than ignored: the end of this function reads the base with
+    # `ls-remote`, which refreshes nothing and writes nothing. The check at
+    # the push is kept, because it is the only one that can catch a base that
+    # moves while the trial runs.
 
     tip = _sha(repo, branch)
     if not tip:
         return MergeOutcome(False, f"branch {branch} is not in this checkout")
     r.branch_tip = tip
     r.base_sha_before = _sha(repo, base)
+
+    # THE BASE THE PUSH WILL LAND ON, READ HERE RATHER THAN DISCOVERED AT THE
+    # PUSH, and `ls-remote` is what makes that possible.
+    #
+    # The comment further up this function records why this check was moved
+    # OUT of preflight on 9 Sep 2026: here it could only compare against a
+    # remote-tracking ref that nothing refreshed, because refreshing it was a
+    # write to the checkout. `ls-remote` answers the same question without
+    # writing anything at all -- the already-merged path above has used it for
+    # exactly that reason since the day the check moved.
+    #
+    # WHAT IT COSTS TO LEARN THIS LATE. On 13 Sep 2026 tasks 83, 85 and 86
+    # each built a trial clone and ran a full contract verification -- two
+    # minutes, eighteen minutes, two and a half minutes -- and were then
+    # refused by `publish` because the remote base had moved before any of
+    # them was cut. One second of network read, before the clone, says the
+    # same thing.
+    #
+    # IT IS NO LONGER A REFUSAL, WHICH IS THE POINT. The sha read here is
+    # handed to `reverify.run`, which builds the trial AT IT. A base that has
+    # moved is then something the re-verification is about rather than
+    # something it is invalidated by -- and the only refusal left is the one
+    # this checkout genuinely cannot answer: a base commit it does not have.
+    url = remote_url(repo, remote)
+    if not url:
+        r.note(f"no {remote} remote, so the base is this checkout's {base}")
+    else:
+        ls = _git(repo, "ls-remote", url, f"refs/heads/{base}")
+        remote_base = ls.stdout.split()[0] if ls.returncode == 0 and ls.stdout.strip() else ""
+        if not remote_base:
+            r.note(f"{base} is not on {remote} yet, so the trial is built at "
+                   f"this checkout's {base}")
+        else:
+            # NOT A REFUSAL, AND DELIBERATELY NOT ONE EVEN WHEN THIS CHECKOUT
+            # DOES NOT HAVE THE COMMIT.
+            #
+            # The first version of this block refused there, and named the
+            # fetch as the remedy. That is the old defect wearing a faster
+            # hat: it still ends with a human typing a git command before any
+            # merge can happen, and this system is supposed to run overnight.
+            #
+            # The trial clone is the one place the console MAY write, and
+            # `publish` has always fetched the real remote into it. So the
+            # trial fetches the base too and stands on it -- see
+            # `reverify.run`'s `base_remote_url`. A base that moved is then
+            # something the re-verification is ABOUT, not something it is
+            # invalidated by, and nothing here needs the checkout to be
+            # current ever again.
+            r.remote_base_sha = remote_base
+            if remote_base != r.base_sha_before:
+                r.note(f"{remote}/{base} is {remote_base[:12]} and this "
+                       f"checkout's {base} is "
+                       f"{(r.base_sha_before or 'unknown')[:12]}; the trial is "
+                       f"built at the remote's, which is what the push lands on")
+            else:
+                r.note(f"{remote}/{base} agrees with this checkout at "
+                       f"{remote_base[:12]}")
+
+    # THE BASE EVERY GUARD BELOW REASONS ABOUT.
+    #
+    # The remote's when this checkout can see it, this checkout's otherwise.
+    # It is not a preference: since 13 Sep 2026 `runner.worktree.create` cuts
+    # branches from the remote's base, so a branch point can be AHEAD of the
+    # local ref -- and the merge-base guard below, reading the local ref,
+    # would have called that "the branch was rebased or main was rewritten"
+    # and refused every branch this system builds. The `ancestor` check has
+    # the same exposure one step earlier: a branch already merged on the
+    # remote is not an ancestor of a local ref that never heard about it.
+    effective_base = (r.remote_base_sha
+                      if r.remote_base_sha
+                      and _git(repo, "cat-file", "-e",
+                               f"{r.remote_base_sha}^{{commit}}").returncode == 0
+                      else base)
 
     # THE PRIMARY GUARD: the branch is the commit that was verified.
     #
@@ -198,6 +281,15 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
             f"Something has been committed to the branch since it was verified, "
             f"so what would merge is not what was checked.")
 
+    # AGAINST THE LOCAL BASE, DELIBERATELY, AND NOT `effective_base`.
+    #
+    # "Is this branch already in the base I have?" is the question this asks,
+    # and the already-merged path below then asks the remote SEPARATELY --
+    # refusing to record MERGED when the remote lacks the commit. Pointing
+    # this at the remote collapses the two questions into one and loses the
+    # answer that matters: a branch merged here but never pushed stopped being
+    # detected as already merged at all, and fell through to a trial that has
+    # nothing to build.
     ancestor = _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
     if ancestor:
         # The merge would be a no-op, so the merge-base check cannot apply:
@@ -228,7 +320,7 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     # this is skipped rather than guessed at. The tip check above already
     # establishes what is being merged, and the re-verification establishes
     # that it works there.
-    merge_base = _git(repo, "merge-base", base, branch).stdout.strip()
+    merge_base = _git(repo, "merge-base", effective_base, branch).stdout.strip()
     if branch_point:
         if merge_base != branch_point:
             return MergeOutcome(
@@ -241,6 +333,7 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     else:
         r.note("this run recorded no branch point, so the merge base was not "
                "checked; the tip and the re-verification carry the argument")
+
     r.ok = True
     return r
 
@@ -294,15 +387,42 @@ def publish(clone: Path, base: str, url: str, commit: str,
                         remote_ref, commit).returncode == 0
         if not descends:
             behind = _count(clone, f"{commit}..{remote_ref}")
+            # A RACE NOW, RATHER THAN THE ORDINARY CASE.
+            #
+            # `preflight` reads this same base with `ls-remote` before the
+            # trial is built, and `reverify.run` builds the trial AT it. So a
+            # base that moved before the trial started is already accounted
+            # for, and reaching here means it moved during the trial itself --
+            # between that read and this push.
+            #
+            # THE REMEDY USED TO BE UNTRUE AND IS THE REASON THIS COMMENT IS
+            # LONG. It read "Re-run Accept: re-verification will rebuild the
+            # trial against the base as it now stands", and until 13 Sep 2026
+            # it did not: `reverify.run` resolved `main` in the LOCAL
+            # checkout, which nothing fast-forwards, so every re-run rebuilt
+            # against the same stale sha and was refused in the same words.
+            # Two days of following that instruction round a loop.
+            #
+            # It is true now, and only because the base is read from the
+            # remote. What is NOT promised is that a re-run succeeds: if this
+            # checkout does not have the new base commit, preflight refuses
+            # first and names the fetch. Both sentences are here so the reader
+            # is not told a remedy that depends on a condition nobody stated.
             return MergeOutcome(
                 False,
-                f"{remote_name}/{base} has moved: it holds "
+                f"{remote_name}/{base} has moved since this merge was "
+                f"verified: it now holds "
                 f"{behind if behind is not None else 'some'} commit(s) the "
                 f"verified merge does not, so what was tested is a merge into "
                 f"a base that no longer exists. Nothing was pushed and nothing "
                 f"was recorded.",
-                detail=["Re-run Accept: re-verification will rebuild the trial "
-                        "against the base as it now stands."])
+                detail=[f"Re-run: the trial fetches {base} from the remote and "
+                        f"is built on it, so a re-run verifies the merge into "
+                        f"{base} as it now stands -- this checkout does not "
+                        f"need to have been fetched and is not touched.",
+                        f"If it moves again during that trial, this refuses "
+                        f"again: that is a race with whoever is pushing, not a "
+                        f"loop, and it ends when they stop."])
     elif fetched.returncode != 0:
         r.note(f"there is no {base} on the remote yet, so this push creates it")
 

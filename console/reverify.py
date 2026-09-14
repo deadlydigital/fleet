@@ -93,6 +93,44 @@ class Reverification:
                 "could_not_run": self.could_not_run}
 
 
+def _has_commit(repo: Path, sha: str) -> bool:
+    """Whether this checkout holds `sha`, asked without writing anything."""
+    return subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+        capture_output=True).returncode == 0
+
+
+def _stand_on_remote_base(trial: Path, base: str, url: str) -> str:
+    """Move the trial onto `base` AS THE REMOTE HAS IT. Returns the new sha.
+
+    Fetched by URL rather than by adding a remote: `publish` adds one called
+    `publish` later, and a name added twice is an error on the path that
+    matters. FETCH_HEAD is read straight back, so nothing is left behind in
+    the trial's ref namespace either.
+
+    Returns "" and changes nothing when the fetch fails -- no network, no such
+    branch, a remote that is down. The caller then verifies against the base
+    it already had, exactly as it did before this existed, and `publish` still
+    refuses a merge that does not descend from the remote. A degraded answer
+    here must not become a refusal, because "the network blinked" and "this
+    branch is bad" are not the same sentence.
+    """
+    fetched = subprocess.run(
+        ["git", "-C", str(trial), "fetch", "--quiet", url, base],
+        capture_output=True, text=True, timeout=120)
+    if fetched.returncode != 0:
+        return ""
+    head = subprocess.run(
+        ["git", "-C", str(trial), "rev-parse", "FETCH_HEAD"],
+        capture_output=True, text=True).stdout.strip()
+    if not head:
+        return ""
+    out = subprocess.run(
+        ["git", "-C", str(trial), "checkout", "--quiet", "--detach", head],
+        capture_output=True, text=True)
+    return head if out.returncode == 0 else ""
+
+
 def _deadline_for(task: dict[str, Any]) -> float:
     """How long the contract's verification may take here.
 
@@ -127,8 +165,36 @@ def _deadline_for(task: dict[str, Any]) -> float:
 def run(repo: Path, trial_root: Path, task: dict[str, Any],
         contract: dict[str, Any], branch: str, *,
         recorded_base: str, changed_files: list[str],
-        keep_on_success: bool = False) -> Reverification:
+        keep_on_success: bool = False,
+        base_sha: str = "", base_remote_url: str = "") -> Reverification:
     """Trial-merge into a scratch clone, verify there, throw it away.
+
+    `base_sha` IS THE BASE THE PUSH WILL LAND ON, read from the remote by
+    `merge.preflight`. It is not an optimisation and it is not optional in
+    practice: without it this resolved `task["base_branch"]` in the LOCAL
+    checkout, and specs/merge-outside-the-checkout.md §2.2 makes that
+    checkout a follower that nothing fast-forwards. So the trial verified a
+    merge into a base that had not existed since the last time this system
+    published one, and `publish` refused every such merge at the push.
+
+    On 13 Sep 2026 that cost tasks 83, 85 and 86 a combined 22 minutes of
+    verification for a refusal that was decided before any of them was cut --
+    and the refusal's own remedy, "re-run and it will rebuild against the
+    base as it now stands", was false for precisely this reason. It is true
+    with this argument and was not without it.
+
+    `base_remote_url` IS WHAT MAKES THAT POSSIBLE WITHOUT A HUMAN. The
+    checkout cannot be relied on to have the remote's base -- nothing
+    fast-forwards it -- and the console may not fetch into it. The trial
+    clone is the one place this module MAY write, which is where `publish`
+    has always fetched the real remote, so the trial fetches the base there
+    too and stands on it. Refusing instead, and naming `git fetch` as the
+    remedy, was the first version of this and it is the same defect wearing a
+    faster hat: it still ends with somebody typing a command before anything
+    can merge.
+
+    Both empty falls back to the local ref, which is what every fixture with
+    no remote has.
 
     `keep_on_success` leaves the clone in place and names it in
     `trial_path`, so the caller can PUBLISH THE COMMIT THAT WAS TESTED
@@ -154,7 +220,22 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
     # and indistinguishable to the reviewer from the app being broken.
     try:
         trial_root.mkdir(parents=True, exist_ok=True)
-        trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, base)
+        # `at` is what this CHECKOUT can be cloned at -- the remote's base
+        # when it happens to have it, the local ref otherwise. It is a
+        # starting point and not the answer: the fetch below moves the trial
+        # onto the base the push will really land on. Named `at` rather than
+        # reusing `base` so the two cannot be confused three lines later.
+        at = base_sha if (base_sha and _has_commit(repo, base_sha)) else base
+        trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, at)
+        if base_remote_url:
+            # BEFORE THE MERGE AND BEFORE EVERYTHING DOWNSTREAM READS
+            # `base_sha`. The boundary is derived against it, the facts carry
+            # it, and the refusal messages compare it with what the run
+            # recorded -- so moving the trial after any of those had run would
+            # be verifying one tree and describing another.
+            fetched = _stand_on_remote_base(trial, base, base_remote_url)
+            if fetched:
+                base_sha = fetched
     except (boundary.GitError, OSError) as exc:
         return Reverification(
             ok=False, could_not_run=True,

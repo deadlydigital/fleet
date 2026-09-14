@@ -183,14 +183,50 @@ def branch_name(task_id: int, attempt: int) -> str:
     return f"fleet/task-{task_id}" + (f".{attempt}" if attempt > 1 else "")
 
 
-def create(repo: Path, root: Path, branch: str, base_branch: str) -> tuple[Path, str]:
+def create(repo: Path, root: Path, branch: str, base_branch: str,
+           remote: str = "origin") -> tuple[Path, str]:
     """A fresh branch off the base, in its own worktree.
 
     The base sha is resolved once and returned. Everything downstream compares
     against that sha rather than against the branch name, so a base that moves
     mid-run cannot silently change what "the diff" means.
+
+    FROM THE REMOTE'S BASE, NOT THE CHECKOUT'S, and 13 Sep 2026 is why.
+
+    `console.merge.publish` pushes the merge to the REMOTE, and
+    specs/merge-outside-the-checkout.md §2.2 makes the checkout a follower
+    that nothing fast-forwards -- the console cannot write there at all. So
+    every merge this system makes leaves the local base one merge behind, and
+    the next branch was cut from that stale ref. Measured that night: task 76
+    was published at 09:10, nobody pulled, and tasks 83, 85 and 86 were each
+    cut from a base two commits behind, verified for a combined 22 minutes,
+    and refused at the push for a divergence that was true before the first
+    branch existed.
+
+    A FETCH AND NOT A FAST-FORWARD. Moving the local `main` would rewrite the
+    checkout's working tree, and `console/autodeploy.py` reads that tree's
+    HEAD as the deploy target -- so fast-forwarding it here would make every
+    build tick a deployment decision. Fetching touches remote-tracking refs
+    only: not HEAD, not the working tree, not `git status`, which is what
+    keeps `Untouched` (taken before this runs) from reporting tampering.
+
+    THE FALLBACK IS SAFE RATHER THAN SILENT. With no remote, or with the
+    network down, this cuts from the local ref exactly as it always did. That
+    is no longer fatal: `console.reverify` now builds its trial at the base
+    read from the remote, so a branch cut from a stale base is verified
+    against the base it will really land on, and a moved base is a
+    re-verification rather than a refusal.
     """
-    base_sha = git(repo, "rev-parse", base_branch).strip()
+    base_sha = ""
+    if has_remote(repo, remote):
+        try:
+            git(repo, "fetch", "--quiet", remote, base_branch)
+            base_sha = git(repo, "rev-parse",
+                           f"refs/remotes/{remote}/{base_branch}").strip()
+        except GitError:
+            base_sha = ""
+    if not base_sha:
+        base_sha = git(repo, "rev-parse", base_branch).strip()
     path = root / branch.replace("/", "-")
     if path.exists():
         shutil.rmtree(path)
