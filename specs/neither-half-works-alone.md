@@ -2,6 +2,11 @@
 
 **Measured 14 September 2026, on `analytics_2` — 2,887,010 orders.**
 
+**EVERY FIGURE IN THIS DOCUMENT IS THE 30-DAY WINDOW** (`2026-08-15..2026-09-14`,
+tenant 2) unless it says otherwise. That sentence was missing until the evening
+of the 14th and its absence cost two wrong conclusions in one day — see "State
+the window" at the end.
+
 The dashboard endpoint took 21.3s. 85% of its SQL is one query, run twice, and
 its plan sequentially scans every order to remove 2,063 of them, hash-joins to
 1,724,169 rows, and sorts those to disk under a 4MB `work_mem` to produce
@@ -11,7 +16,7 @@ The obvious fix is a composite index on `(customer_id, created_at, id)`. **It
 does nothing.** That is the finding, and it was one approval away from being
 shipped as a 112MB index per tenant schema that changed no plan at all.
 
-## What was measured, with `hypopg`
+## What was measured, with `hypopg` — 30-day window
 
 | | planner cost |
 |---|---|
@@ -24,7 +29,7 @@ shipped as a 112MB index per tenant schema that changed no plan at all.
 Each half alone is neutral or negative. Together the estimate falls 5.4× and
 the sort disappears.
 
-## Confirmed by execution, 14 September 2026
+## Confirmed by execution, 14 September 2026 — 30-day window
 
 The index was built — 1s on `analytics_1`, 5s on `analytics_2`, 26 MB and
 112 MB, the planner's size estimate exact. Both halves are now measured against
@@ -45,6 +50,11 @@ right**, by estimate and then by execution.
 The rewrite with the index is a **14× reduction, executed**: no seq scan, no
 sort, no spill, and a per-customer `Limit` costing 0.007 ms across 21,532
 loops.
+
+**Superseded 14 Sep 19:30 — see "State the window". The paragraph below
+compares two endpoint timings whose windows were never recorded, so its
+conclusion is not supported by its evidence. Kept because the reasoning is the
+thing worth seeing.**
 
 **And the dashboard's improvement in the same window was not this.** It went
 21.3s to 9.1s while the index changed no plan, which resolves a gap this
@@ -111,3 +121,98 @@ live in production", and the information needed to express it
 Queue them one at a time, index first, and deploy between. See
 `040_an_index_is_not_a_schema_change.sql` for why the index needs a migration
 at all.
+
+## In production, 14 September 2026, 19:30
+
+The rewrite merged as task 100 and the image was built at 19:19:57Z. Measured
+after that, on a box at load 0.23–0.72, against the running API.
+
+**The query, isolated, old form against new, same connection, medians of three:**
+
+| window | `DISTINCT ON` | `LATERAL` |
+|---|---|---|
+| 30 days (`2026-08-15..2026-09-14`) | 2,711 ms | **260 ms** |
+| 180 days (`2026-03-18..2026-09-14`) | 4,081 ms | 719 ms |
+
+**252 ms was right.** The endpoint's own copy carries all nine output columns
+rather than the two this comparison selects, so inside `dashboard_overview` it
+runs 300–330 ms per call at 30 days and ~1,303 ms at 180.
+
+**The endpoint, and where its time goes.** Every statement timed in process,
+48 of them per request. **Medians of three warm passes**, which is not what the
+first version of this table carried — it was one pass per window, and the
+180-day column moved by up to 9% when repeated:
+
+| | 30 days | 180 days |
+|---|---|---|
+| `_query_period_stats` × 2 | 622 ms | 2,675 ms |
+| `top_products` | 619 ms | 1,251 ms |
+| `_feed_health` | 115 ms | 147 ms |
+| trends | 102 ms | 451 ms |
+| customers totals | 84 ms | 83 ms |
+| 36 × reconciliation breakdown | 89 ms | 96 ms |
+| six others | 10 ms | 4 ms |
+| **SQL** | **1,666 ms** | **4,717 ms** |
+| **not SQL** | **25 ms** | **23 ms** |
+| wall | 1,689 ms | 4,740 ms |
+
+`top_products` is the largest single statement at the 30-day window: 619 ms in
+one statement against 622 ms across the two `_query_period_stats` calls.
+
+End to end over HTTP, warm: 30 days **1.71 s**, 90 days 2.88 s, 180 days
+4.72 s. The public HTTPS route adds 50–130 ms. Independently: 1.77, 1.73,
+1.69 s.
+
+**So there is no non-SQL residue.** It is 24–26 ms at every window measured.
+The "~2.6 s of the 9.1 s is not SQL" this document carried earlier was an
+artefact of the same mistake as everything else here, and is withdrawn.
+
+## State the window
+
+The number that matters is a function of the window, and this document spent a
+day quoting it without one. It cost two wrong conclusions:
+
+* **"The dashboard improved 21.3 s → 9.1 s while the index changed no plan, so
+  the remainder was contention."** Partly true at best. 9.12 s is the 30-day
+  window with the old query; what window the 21.3 s was taken on was never
+  recorded, so the two were never comparable and the contention story cannot be
+  checked. It stands as unresolved rather than explained.
+
+* **"The rewrite is deployed and the endpoint moved 0.34 s, so ~7 s of it has
+  never been SQL."** The 8.78 s was taken before the image existed, and against
+  a 30-day endpoint whose SQL I had been quoting from the same window all along
+  without saying so. The rewrite saves 4.9 s of query time at that window, and
+  the endpoint is 1.7 s.
+
+Both readings were reasonable from the evidence as written. Neither survived
+the window being stated. **A timing without its window is not a measurement.**
+
+## What the day cost, and what it bought
+
+One index, one query rewrite, and the machinery that turned out to be in the
+way of both:
+
+* **`api/analytics/migrations/**` was on the protected floor of every
+  contract**, so no task this system had ever run could add an index. 040 made
+  an index migration expressible; 041 made a declared waiver insufficient
+  unless the database had granted it; `contracts/dd-index-migration.yaml` and
+  `contracts/checks/index_migration_only.py` are the narrow hole the floor now
+  has, and `api/alembic/**` stays floored entirely.
+
+* **Eight places enforce that floor, and all eight were found by hitting
+  them** — the boundary check, `rank.gate` gate 6, autodeploy's migration
+  refusal, three refusals inside `enforce_contract_floor()`, the Python mirror
+  in `runner/config.load_contract`, and `boundary.enforce` through two callers.
+  The last two were found by a branch being refused by a gate it had already
+  passed. They were found one at a time, each by a failure, which is the
+  expensive way and was the only way available.
+
+* **A ninth thing, in a different wall.** Task 100 was refused by a CHECK
+  rather than a gate — a hand-maintained step tally in
+  `test_migrations.py` that the index migration had moved and that had already
+  been stale twice. 042 and `console/adopt.corroborate` are the answer: a check
+  that fails identically on the base is not evidence about the branch.
+
+Net: the dashboard's dominant query went 3,602 ms to 260 ms at the 30-day
+window, and the system can now write a migration at all.
+

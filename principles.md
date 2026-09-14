@@ -69,6 +69,20 @@ migrations behind, a test-suite baseline three weeks stale when it was filed.
 by reverting them. Rehearse migrations against data that exercises the path. A
 green result from a check that could not have gone red says nothing.
 
+**A timing without its window is not a measurement.** A query's cost is a
+function of what it was asked for, so a figure quoted without the parameter
+that produced it cannot be compared with anything — including a later quote of
+the same figure. On 14 Sep 2026 a dashboard query was measured at 3,602 ms and
+rewritten to 252 ms, both on a 30-day window and neither saying so. The
+endpoint was then measured at 8.78 s on a window nobody recorded, the two
+numbers were compared, and the conclusion drawn was that seven seconds of the
+endpoint had never been SQL. It was 24 ms. The same omission had already
+produced a contention story for a 21.3 s reading that can no longer be checked,
+because the window is gone. State the parameter beside the number, in the
+document and in the commit message, or the number expires the moment it is
+quoted a second time. This is `Derive, do not store` wearing different clothes:
+what is not written down is inferred, and the inference is confident.
+
 **Rebuild a function body from the live definition, by patch, never by
 retyping.** `CREATE OR REPLACE FUNCTION` restates the whole body, so a
 migration that adds one condition also rewrites every line it did not mean to
