@@ -126,20 +126,43 @@ DO $$ DECLARE ok bool := false; BEGIN
 RAISE NOTICE 'Q7 pass  010s UNRECORDED sentinel is still backfill-only'; END $$;
 
 -- ---------------------------------------------------------------- Q8
--- The pace is 1, and it is a function so raising it costs a migration.
+-- The pace is a function, so raising it costs a migration.
+--
+-- THIS PINNED 1 AND HAD BEEN FAILING SINCE 032, which raised the pace to 4 on
+-- purpose (029 to 3, 032 to 4). Found on 13 Sep 2026 while moving the
+-- fraction, and it is the same defect Q9 had: an assertion that pins a value a
+-- later migration is expected to move stops testing anything and starts being
+-- an alarm for the change going right. Worse than useless here -- Q8 aborts
+-- the file, so Q9 through Q12 had not run since 032 either.
+--
+-- WHAT IT ASSERTS NOW is what 026 can actually speak for: that the pace is a
+-- FUNCTION and a positive one, which is the property "raising it costs a
+-- migration" depends on. The value lives in the migration that set it.
 DO $$ DECLARE n int; BEGIN
     SELECT fleet_autoapprove_per_night() INTO n;
-    IF n <> 1 THEN
-        RAISE EXCEPTION 'Q8 FAIL: the pace is %, and specs/unattended-'
-                        'operation.md §8 costed 1', n;
+    IF n IS NULL OR n < 1 THEN
+        RAISE EXCEPTION 'Q8 FAIL: the pace is %, which approves nothing on any '
+                        'night; that may be wanted but it is a decision, not a '
+                        'default', n;
     END IF;
-RAISE NOTICE 'Q8 pass  the pace is one chain a night'; END $$;
+RAISE NOTICE 'Q8 pass  the pace is % chain(s) a night, set by migration', n; END $$;
 
 -- ---------------------------------------------------------------- Q9
--- THE 60% STOP EXISTS AND IS BELOW THE 100% CEILING.
+-- THE UNATTENDED STOP EXISTS AND IS BELOW THE 100% CEILING.
 --
 -- The defect this replaces was not a wrong number, it was an ABSENT one: the
 -- spec said 60% and approve.py checked 100%, and nothing compared the two.
+--
+-- READS THE FRACTION RATHER THAN 0.60, SINCE 039 MOVED THE LINE TO 0.85. What
+-- this assertion is about survives the move and is checked here: that
+-- fleet_month_credit() applies the fraction function rather than arithmetic of
+-- its own, and that the result sits below the human ceiling. What does NOT
+-- survive the move is the VALUE, and it is not weakened by being dropped from
+-- here -- each migration that moves the line pins its own value in its own
+-- file, which is where a reader looking for today's number should find it.
+-- Deriving both sides from one function would be tautological; these are two
+-- code paths -- the fraction function and fleet_month_credit()'s body -- and
+-- the check is that they still agree.
 DO $$ DECLARE k record; want numeric; BEGIN
     IF NOT EXISTS (SELECT 1 FROM model_credit_pool
                     WHERE period_month = date_trunc('month', now())::date) THEN
