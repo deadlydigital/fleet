@@ -14,7 +14,7 @@ cheap it is to build.
 
 ## How to read this
 
-**DD status** is one of three, and every one of them was established by reading
+**DD status** is one of four, and every one of them was established by reading
 code or querying the production database on 2026-08-28, not by reading DD's own
 documentation. Sources are named per row.
 
@@ -23,6 +23,15 @@ documentation. Sources are named per row.
 | **Has** | Reachable in the product today: an endpoint that is mounted *and* a page that reaches it. |
 | **Partial** | Some of it exists — a column that is populated, an endpoint with no page, a report with one dimension where Metorik has ten. The row says which. |
 | **Missing** | Nothing. In several rows a *column* exists and is empty in production; that is recorded as missing with the count, because a report over an empty column is not a feature. |
+| **Not applicable to this tenant** | The feature is real and the data it would report on is absent from this store — tax and shipping are both non-zero on 0 of 2,844,177 orders. Two rows carry it. |
+
+**The fourth status was undeclared until 14 Sep 2026, and the summary below
+folds it into "missing".** This section said "one of three" while the table used
+a fourth, and *Summary*'s "28 missing" is 26 outright plus those 2 — which is
+how it reaches 48. Both readings are defensible and only one of them was
+written down, so the count could not be reproduced from the table without
+guessing at it. Corrected here rather than by restating the totals, because the
+totals are right.
 
 **Agency use** is Daily / Weekly / Rarely / Never. **This column is an estimate
 and nothing else.** No agency was asked, no usage was measured, and DD has no
@@ -40,7 +49,8 @@ first.
 
 The table holds 50 rows: 48 Metorik features, plus 2 DD capabilities with no
 Metorik counterpart, marked as such. Of the 48 Metorik features:
-**28 missing, 8 partial, 12 has.**
+**28 missing, 8 partial, 12 has** — where the 28 is 26 outright plus the 2
+marked *not applicable to this tenant*, per *How to read this*.
 
 By band — 14 Daily, 21 Weekly, 13 Rarely, 2 Never.
 
