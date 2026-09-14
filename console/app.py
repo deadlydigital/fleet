@@ -583,7 +583,13 @@ def accept(request: Request, task_id: int,
                 # needing this checkout to already hold it. The checkout is a
                 # follower by design; the trial clone is where writing is
                 # allowed.
-                base_remote_url=merge.remote_url(repo))
+                base_remote_url=merge.remote_url(repo),
+                # The floor, fetched here and passed in --
+                # console/rank.gate's argument. reverify resolves a
+                # waived glob before its boundary check; without
+                # this it refuses the one path the contract exists
+                # to write. Task 98, 14 Sep 2026.
+                floor=queries.protected_floor(task["repo"]))
 
         result = merge.merge_and_push(
             repo, task, branch,

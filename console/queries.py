@@ -995,3 +995,25 @@ MORNING_UNREAD_SPECS = """
 
 def morning_unread_specs(since) -> list[dict[str, Any]]:
     return db.rows(MORNING_UNREAD_SPECS, {"since": since})
+
+
+def protected_floor(repo: str) -> list[tuple[str, str, str | None]]:
+    """The floor rows for a repo, as `runner.config.effective_contract` wants.
+
+    THE FLOOR IS FETCHED BY CALLERS AND PASSED IN, never reached for by the
+    thing that checks against it. console/rank.gate takes `writables` and
+    `floor` as arguments and says why; runner/boundary.enforce and
+    console/reverify.run are both kept free of a connection for the same
+    reason -- a checker that opens one decides what it can see, and cannot
+    then be exercised without one.
+
+    Added 14 Sep 2026, when accepting task 98 was refused by the console's
+    boundary check: the runner had learned to resolve a floor waiver and the
+    accept path had not, because they are different callers of the same pure
+    function.
+    """
+    with db.connect() as conn:
+        return [(r["repo"], r["glob"], r["except_work_type"])
+                for r in conn.execute(
+                    "SELECT repo, glob, except_work_type"
+                    "  FROM protected_path_floor WHERE repo = %s", (repo,))]

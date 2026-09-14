@@ -414,7 +414,7 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
     """
     from pathlib import Path
 
-    from . import autoqueue, config, db, decide, merge, reverify
+    from . import autoqueue, config, db, decide, merge, queries, reverify
     from runner import worktree
 
     out: list[dict[str, Any]] = []
@@ -516,7 +516,13 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
                 # needing this checkout to already hold it. The checkout is a
                 # follower by design; the trial clone is where writing is
                 # allowed.
-                base_remote_url=merge.remote_url(repo))
+                base_remote_url=merge.remote_url(repo),
+                # The floor, fetched here and passed in --
+                # console/rank.gate's argument. reverify resolves a
+                # waived glob before its boundary check; without
+                # this it refuses the one path the contract exists
+                # to write. Task 98, 14 Sep 2026.
+                floor=queries.protected_floor(task["repo"]))
 
             verdict = eligible(task, again, chain)
             if not verdict.ok:

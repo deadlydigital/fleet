@@ -156,6 +156,32 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
     if not (repo / ".git").exists():
         raise RuntimeError(f"no git repository at {repo}")
 
+    # THE EFFECTIVE CONTRACT, RESOLVED ONCE AND BEFORE ANYTHING READS IT.
+    #
+    # 040 waives one floor glob for one work_type, and a waived contract still
+    # CARRIES that glob -- dropping it would exempt the task from everything
+    # under the tree rather than from the one path writable_paths names. So the
+    # waiver has to be resolved before any consumer of `protected_paths`.
+    #
+    # IT IS DONE HERE, NOT AT THE BOUNDARY CALL, and that is the fix for a
+    # second gap: agent.build_prompt lists `protected_paths` to the agent, and
+    # it runs long before the boundary does. Resolving at the check left the
+    # PROMPT telling the agent that the one tree it must write is protected.
+    # Every downstream reader -- the prompt, the boundary, suite_digest, the
+    # recorded FLEET_CONTRACT -- now sees the same contract.
+    #
+    # The floor is fetched here and passed in, on console/rank.gate's argument:
+    # a checker that opens a connection decides what it can see. `runner` is
+    # the task-runner connection opened in tick().
+    floor = [(r["repo"], r["glob"], r["except_work_type"])
+             for r in runner.execute(
+                 "SELECT repo, glob, except_work_type FROM protected_path_floor"
+                 " WHERE repo = %s", (task["repo"],)).fetchall()]
+    contract = config.effective_contract(contract, floor)
+    if contract.get("floor_waiver_applied"):
+        log(f"  floor waiver applied: {contract['floor_waiver_applied']} "
+            f"(granted to {contract.get('work_type')})")
+
     # "The working tree is never touched" is asserted, not assumed. The
     # snapshot covers every file, not only tracked ones -- see
     # worktree.Untouched.
@@ -381,28 +407,6 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                     f"-{div['claimed_but_untouched']}")
 
         # ---- the boundary, before anything is run ----
-        #
-        # THE FLOOR IS FETCHED HERE AND PASSED IN, never reached for inside the
-        # checker. console/rank.gate takes `writables` and `floor` as arguments
-        # for this reason and this follows it: a checker that opens a
-        # connection decides what it can see, and then cannot be exercised
-        # without one.
-        #
-        # `effective_contract` removes a floor glob the contract is WAIVED from
-        # -- 040, one row, one work_type -- and raises if the contract declares
-        # a waiver the floor does not grant. The contract carries the glob on
-        # purpose, so without this the boundary refuses the one path the
-        # contract exists to write. That was task 98.
-        floor = [(r["repo"], r["glob"], r["except_work_type"])
-                 for r in runner.execute(
-                     "SELECT repo, glob, except_work_type FROM "
-                     "protected_path_floor WHERE repo = %s",
-                     (task["repo"],)).fetchall()]
-        contract = config.effective_contract(contract, floor)
-        if contract.get("floor_waiver_applied"):
-            log(f"  floor waiver applied: {contract['floor_waiver_applied']} "
-                f"(granted to {contract.get('work_type')})")
-
         verdict = boundary.enforce(change, contract)
         result.verdict = verdict
         if verdict.max_test_diff_lines:

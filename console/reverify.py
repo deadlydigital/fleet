@@ -44,11 +44,11 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import subprocess
 
-from runner import boundary, verify, worktree
+from runner import boundary, config, verify, worktree
 
 TRIAL_PREFIX = "fleet-accept-trial"
 
@@ -166,7 +166,8 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         contract: dict[str, Any], branch: str, *,
         recorded_base: str, changed_files: list[str],
         keep_on_success: bool = False,
-        base_sha: str = "", base_remote_url: str = "") -> Reverification:
+        base_sha: str = "", base_remote_url: str = "",
+        floor: Sequence[tuple[str, str, str | None]] = ()) -> Reverification:
     """Trial-merge into a scratch clone, verify there, throw it away.
 
     `base_sha` IS THE BASE THE PUSH WILL LAND ON, read from the remote by
@@ -280,6 +281,22 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         # diff(base, merged) is what this merge adds to the base, and it must
         # still land only where the contract allows.
         change = boundary.derive(trial, base_sha)
+        # THE SAME RESOLUTION THE RUNNER DOES, BECAUSE THIS IS THE SAME CHECK.
+        #
+        # `boundary.enforce` reads only `contract["protected_paths"]`, and a
+        # contract waived from a floor glob still CARRIES that glob -- dropping
+        # it would exempt the task from everything under the tree rather than
+        # from the one path its writable_paths names. So the waiver has to be
+        # resolved before the check, here as in runner/cycle._execute.
+        #
+        # It was not, and accepting task 98 was refused on 14 Sep 2026 by the
+        # very path the run had already passed. The runner had learned this and
+        # the accept path had not, because they are two callers of one pure
+        # function -- which is exactly the shape of defect that keeps arriving
+        # here. `floor` is passed in rather than fetched for the reason
+        # console/rank.gate gives; console/queries.protected_floor is what the
+        # callers use.
+        contract = config.effective_contract(contract, floor)
         verdict = boundary.enforce(change, contract)
 
         # THE DEPENDENCY TREE, LINKED IN AS THE RUNNER LINKS IT.
