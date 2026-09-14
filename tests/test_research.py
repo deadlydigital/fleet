@@ -387,3 +387,112 @@ def test_a_non_markdown_file_in_the_diff_fails(gold):
     r = run_check(gold, "research/gold.md\nresearch/x.py")
     assert r.returncode == 1
     assert "non-markdown" in r.stdout
+
+
+# ---- the index is not the tree --------------------------------------------
+
+
+class TestStagingIsNotAWrite:
+    """14 Sep 2026, task 91, and the whole of why porcelain is not compared.
+
+    `git status --porcelain` describes the INDEX as well as the working tree.
+    Staging an already-modified file rewrites its entry from " M path" to
+    "M  path" without moving a byte, and the run was failed over that one
+    space: the agent had exited 0, the check had passed, and the branch was
+    already on the remote.
+
+    These assert the boundary in both directions -- what must now pass, and
+    every class of real write that must still fail -- because a guard loosened
+    without the second half is a guard nobody can trust afterwards.
+    """
+
+    def _repo(self, tmp_path):
+        repo = tmp_path / "r"
+        repo.mkdir()
+        sh(repo, "git", "init", "-q", "-b", "main")
+        sh(repo, "git", "config", "user.email", "t@t")
+        sh(repo, "git", "config", "user.name", "t")
+        (repo / ".gitignore").write_text("ignored/\n")
+        (repo / "tracked.txt").write_text("x = 1\n")
+        sh(repo, "git", "add", "-A")
+        sh(repo, "git", "commit", "-q", "-m", "base")
+        return repo
+
+    # ---- what must now pass
+
+    def test_staging_an_already_modified_file_passes(self, tmp_path):
+        """Task 91 exactly: dirty at snapshot time, then staged."""
+        repo = self._repo(tmp_path)
+        (repo / "tracked.txt").write_text("x = 2\n")
+        snap = worktree.Untouched.of(repo)
+        sh(repo, "git", "add", "tracked.txt")
+        snap.assert_unchanged(repo, "repo")
+
+    def test_staging_a_clean_tree_passes(self, tmp_path):
+        repo = self._repo(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        (repo / "tracked.txt").write_text("x = 2\n")
+        content_changed = worktree.Untouched.of(repo)
+        assert content_changed.tree_digest != snap.tree_digest, (
+            "the write itself must move the digest, or this test proves nothing")
+        # ... and from THAT state, staging changes nothing further.
+        staged = worktree.Untouched.of(repo)
+        sh(repo, "git", "add", "tracked.txt")
+        staged.assert_unchanged(repo, "repo")
+
+    def test_unstaging_passes_too(self, tmp_path):
+        """The case that is easy to get backwards: a run that snapshots a
+        staged tree must not be failed by someone tidying the index."""
+        repo = self._repo(tmp_path)
+        (repo / "tracked.txt").write_text("x = 2\n")
+        sh(repo, "git", "add", "tracked.txt")
+        snap = worktree.Untouched.of(repo)
+        sh(repo, "git", "reset", "-q")
+        snap.assert_unchanged(repo, "repo")
+
+    # ---- what must still fail
+
+    def test_a_tracked_file_modified_is_still_caught(self, tmp_path):
+        repo = self._repo(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        (repo / "tracked.txt").write_text("x = 999\n")
+        with pytest.raises(Exception, match="without git seeing it"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_an_untracked_file_appearing_is_still_caught(self, tmp_path):
+        """The brief landing in briefs/ mid-run is this case, and it SHOULD
+        fire: that is one unit writing into a tree another is watching."""
+        repo = self._repo(tmp_path)
+        snap = worktree.Untouched.of(repo)
+        (repo / "2026-09-14.md").write_text("# a brief\n")
+        with pytest.raises(Exception, match="without git seeing it"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_a_write_into_an_ignored_path_is_still_caught(self, tmp_path):
+        """The class porcelain never saw, which is why the walk exists."""
+        repo = self._repo(tmp_path)
+        (repo / "ignored").mkdir()
+        (repo / "ignored" / "dep.js").write_text("original")
+        snap = worktree.Untouched.of(repo)
+        (repo / "ignored" / "dep.js").write_text("tampered with")
+        with pytest.raises(Exception, match="without git seeing it"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_a_commit_is_still_caught_by_head(self, tmp_path):
+        """Committing moves HEAD, and HEAD is compared on its own."""
+        repo = self._repo(tmp_path)
+        (repo / "tracked.txt").write_text("x = 2\n")
+        sh(repo, "git", "add", "tracked.txt")
+        snap = worktree.Untouched.of(repo)
+        sh(repo, "git", "commit", "-q", "-m", "committed mid-run")
+        with pytest.raises(Exception, match="moved from"):
+            snap.assert_unchanged(repo, "repo")
+
+    def test_porcelain_is_still_recorded_even_though_it_is_not_compared(
+            self, tmp_path):
+        """Kept for the reader: when the digest fires it is worth knowing what
+        git thought at the time."""
+        repo = self._repo(tmp_path)
+        (repo / "tracked.txt").write_text("x = 2\n")
+        snap = worktree.Untouched.of(repo)
+        assert "tracked.txt" in snap.porcelain

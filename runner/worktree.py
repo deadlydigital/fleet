@@ -32,17 +32,65 @@ class PushRefused(RuntimeError):
 class Untouched:
     """A checkout's state, so that "the runner did not touch it" is checkable.
 
-    The snapshot covers EVERY file, not only tracked ones. A write to an
-    untracked path -- inside node_modules, into a gitignored directory, a new
-    file nobody added -- shows in neither `rev-parse HEAD` nor `status
-    --porcelain`, so a comparison built on those two would report a repository
-    as untouched while something had been written into it.
+    WHAT EACH COMPARISON IS FOR
+    ---------------------------
+    Two are made, and a third thing is recorded and deliberately not compared.
 
+    `head` -- THE DEPLOYMENT POINTER. specs/deploy-from-a-ref.md: the units run
+    from this working tree, so a moved HEAD means the run's tree is not the
+    tree it started on.
+
+    `tree_digest` and `entries` -- EVERY FILE, whether tracked, untracked or
+    IGNORED. This is the guard's real job. A write into a gitignored directory
+    shows in neither `rev-parse HEAD` nor `status --porcelain` -- measured: a
+    file planted under an ignored `build/` leaves porcelain byte-identical and
+    changes the digest -- so a check built on git's own view would report a
+    repository as untouched while something had been written into it.
+
+    `porcelain` -- RECORDED FOR THE READER, NOT COMPARED, SINCE 14 Sep 2026.
+
+    IT USED TO BE COMPARED AND IT COST A RUN. `git status --porcelain`
+    describes the INDEX as well as the tree, and staging is not a write: `git
+    add` on an already-modified file rewrites its entry from " M path" to
+    "M  path" while every byte of the tree stays where it was. On 14 Sep task
+    91's agent exited 0, its check passed, its branch was pushed, and the run
+    was then failed over that one space -- with `tree_digest` identical either
+    side, which is to say the comparison that was right said nothing had
+    happened and the comparison that was wrong overruled it.
+
+    It contributed no class of true positive the walk lacks. A write is a
+    write: the walk sees it in tracked, untracked and ignored paths alike,
+    where porcelain is blind to the third. What porcelain alone could see was
+    index state -- `git add`, `git reset`, `git rm --cached`, `git stash` --
+    and none of those is the thing this class exists to catch. It is still
+    recorded, because when the digest fires it is worth knowing what git
+    thought at the time, and it costs 9ms to ask.
+
+    THE RESIDUE, STATED RATHER THAN DISCOVERED LATER: git re-hashes entries
+    whose mtime matches the index's own, so in that narrow window porcelain
+    could catch a write that preserved both size and nanosecond mtime. The
+    walk cannot. That gap was already accepted below and is not closed by
+    either check; closing it means hashing contents.
+
+    WHAT IT COSTS, MEASURED 14 Sep 2026 ON THIS HOST
+    ------------------------------------------------
     It records (path, size, mtime_ns) per file rather than hashing contents:
-    63,395 files and 1.3 GB in the platform checkout, walked in 0.65s, where
-    hashing the bytes would take minutes on every tick. A write that preserved
-    a file's size AND its nanosecond mtime would slip through; that is a
-    deliberate trade and it is written down rather than left to be discovered.
+
+                                          files     size   walk    hash
+        ~/fleet                            6,388  0.13 GB  0.09s   4.26s
+        platform, node_modules excluded   17,883  0.44 GB  0.26s  13.90s
+        platform, everything              63,420  1.13 GB  0.74s      --
+
+    THE FIGURE THIS REPLACED WAS WRONG BY TWO ORDERS OF MAGNITUDE. It read
+    "hashing the bytes would take minutes on every tick", which predates the
+    `worktree_links` exclusion below: during a run node_modules is not walked
+    at all, and hashing what remains is 14s, not minutes. The trade still
+    stands -- ~50x for a gap the racy case above describes -- but it should be
+    argued from 14s rather than from a number nobody re-measured.
+
+    A write that preserved a file's size AND its nanosecond mtime slips
+    through; that is a deliberate trade and it is written down rather than
+    left to be discovered.
 
     WHAT IS DELIBERATELY NOT WATCHED, AND WHY IT HAD TO BECOME AN ARGUMENT
     ----------------------------------------------------------------------
@@ -102,9 +150,9 @@ class Untouched:
             # .git is excluded, and not as an optimisation. Taking a snapshot
             # runs `git status`, which refreshes .git/index and changes its
             # mtime -- so two consecutive snapshots of an untouched repository
-            # would differ and every tick would report tampering. Git's own
-            # state is already covered by HEAD and porcelain; this digest is
-            # about the working tree.
+            # would differ and every tick would report tampering. HEAD is
+            # compared separately and is the part of git's own state that
+            # decides anything here; this digest is about the working tree.
             if ".git" in dirnames:
                 dirnames.remove(".git")
             # Pruned by full path, and only ever a CHILD -- os.walk yields the
@@ -164,8 +212,8 @@ class Untouched:
         now = Untouched.of(repo, self.excluded)
         if now.head != self.head:
             raise GitError(f"{what} moved from {self.head[:12]} to {now.head[:12]}")
-        if now.porcelain != self.porcelain:
-            raise GitError(f"{what} has uncommitted changes it did not have before")
+        # NO PORCELAIN COMPARISON. It described the index as well as the tree,
+        # and staging is not a write -- see the class docstring and task 91.
         if now.tree_digest != self.tree_digest:
             # NAMED, not counted. The count is incidental to a digest over size
             # and mtime, and printing it as though it were the evidence is what
