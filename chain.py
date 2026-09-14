@@ -11,10 +11,27 @@ here, and there must never be one: a loop that reimplemented a gate would
 disagree with the unit that still runs it by hand, and the disagreement would
 surface at 3am.
 
-It is NOT a merger and NOT a deployer. `accept` and `deploy` stay the
-operator's. The loop reaches `automerge`, which has its own gates and refuses
-by default for everything except contracts that opt in, and it never calls
-`autodeploy` at all.
+It is NOT a merger. `accept` stays the operator's. The loop reaches
+`automerge`, which has its own gates and refuses by default for everything
+except contracts that opt in.
+
+IT DEPLOYS SINCE 14 Sep 2026, AND THIS PARAGRAPH SAID IT NEVER WOULD.
+Recorded rather than quietly replaced, because the old sentence was right for
+its time. `fleet-autodeploy.timer` fires once a day at 04:15; a person deploys
+several times a day; so on three of its six runs the timer refused with
+"already running main" and it had never once deployed. A clock that loses a
+race to a human is not a trigger.
+
+What changed underneath is that the checkout became movable by a program. Until
+`console/pull.py` existed there was no way to know a build was in flight, so a
+pull could fail a run after the spend -- task 96, 14 Sep, £3.29 -- and the tree
+was therefore a person's to move. With that check, the merge can cause the
+deploy.
+
+The refusals did not move: `console.autodeploy` keeps every one of them, and
+the deploy runs AFTER the loop rather than between passes, because this loop is
+itself the thing building and would otherwise refuse itself. See
+`_deploy_what_merged`.
 
 DRAIN BEFORE YOU ADD
 --------------------
@@ -367,7 +384,52 @@ def run(*, dry_run: bool = False, config_path: Path | None = None,
 
     result.failed_task_ids = sorted(failed)
     result.duration_s = round(clock() - started, 1)
+
+    # ---- and deploy what was merged, if anything was -------------------
+    #
+    # THE TRIGGER IS THE MERGE, NOT A CLOCK. fleet-autodeploy.timer fires once
+    # a day at 04:15 while a person deploys several times a day, so on three of
+    # its six runs the refusal was "already running main" -- it only ever saw
+    # leftovers. Deploying what merged should be caused by the merge.
+    #
+    # AFTER THE LOOP AND NOT INSIDE IT, AND THIS IS THE LOAD-BEARING PART. The
+    # chain is itself the thing building, and `console.pull` refuses to move a
+    # checkout while a task is RUNNING -- rightly, since that is how task 96
+    # died. A deploy between passes would therefore refuse for the same class
+    # of reason the timer did, and the trigger would be decorative. Here, the
+    # loop has finished and nothing of the chain's is in flight.
+    #
+    # NOTHING IS LOST BY WAITING. `deploy.sh` ships the whole range ahead of
+    # production either way -- refusal 5 in console/autodeploy -- so one deploy
+    # at the end carries every merge this run made. What it costs is latency: a
+    # merge in pass 2 of an 80-minute run waits for the run to finish.
+    if any(s.stage == "merge" and s.acted for s in result.steps):
+        _deploy_what_merged(dry_run=dry_run, emit=emit)
+
     return result
+
+
+def _deploy_what_merged(*, dry_run: bool, emit) -> None:
+    """Hand off to console.autodeploy, which keeps all of its own refusals.
+
+    IN-PROCESS BECAUSE IT HAS TO BE: fleet-chain.service sets
+    NoNewPrivileges=true, so this cannot `systemctl start
+    fleet-autodeploy.service` and get the unit's own confinement. The cost is
+    that deploy.sh runs inside the chain's unit and against its wall clock;
+    docker does the building in its own daemon, so the 2G MemoryMax applies to
+    a shell and this process rather than to the build.
+
+    Never fatal. A chain that merged successfully and could not deploy has
+    still done the thing it was asked to do, and the deploy is retried by the
+    04:15 timer, which is kept for exactly that reason.
+    """
+    from console import autodeploy
+
+    emit("deploy: something merged, so the merge is asking for one")
+    try:
+        autodeploy.run(dry_run=dry_run, log=lambda m: emit(f"  {m}"))
+    except Exception as exc:                       # noqa: BLE001 -- see above
+        emit(f"  deploy did not run: {type(exc).__name__}: {exc}")
 
 
 def describe(result: ChainResult) -> list[str]:
