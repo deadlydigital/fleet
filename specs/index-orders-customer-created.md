@@ -66,6 +66,36 @@ predicate is what lets one migration meet tenant schemas at different states —
 `migration.py`'s own header records `analytics_12` sitting half through a
 change, which is why per-step predicates exist at all.
 
+## The index is NOT partial, and that is three things at once
+
+**It carries no `WHERE status IN ('completed','processing')`.** An earlier
+recommendation did, with a stated reason: the predicate would satisfy the
+status filter inside the index and remove the sequential scan. That reason
+belonged to the query as it stands, and the query is being rewritten.
+
+**Why it would be marginal rather than structural under the rewrite.** In the
+original shape the predicate was the point — it was what stopped Postgres
+reading all 2,887,010 rows to discard 2,063. Under `LATERAL ... LIMIT 1` the
+scan is already bounded to one customer's entries, so the predicate would only
+save reading `status` from the heap to check it. **2,884,947 of 2,887,010 rows
+are revenue-status**, so the first entry passes almost always: roughly 21,500
+heap fetches across the window, against a structural change to the plan before.
+
+**And `CreateIndexStep` cannot express one regardless.** Its fields are
+`table`, `index`, `columns`, `unique`, `requires_autocommit`, and
+`_create_sql` renders `CREATE [UNIQUE] INDEX [CONCURRENTLY] IF NOT EXISTS ...
+ON schema.table (columns)` — there is no `WHERE` in it anywhere. (The
+`predicate` set in `__post_init__` is `IndexValid`, the step's applicability
+test, not a SQL predicate; it is easy to misread as support.) A partial index
+would need `SQLStep`, which `index_migration_only.py` refuses by type — so it
+would need `migration.py` opened first, which this contract protects
+deliberately.
+
+**So do not add one, and if a later measurement says it is wanted, that is a
+decision needing `migration.py` changed before any task can write it.** The
+honest order is: build this, land the rewrite, then measure whether those heap
+fetches show up at all.
+
 ## What no check verifies, and a reviewer must
 
 **The column order.** `index_migration_only.py` proves the step is a
