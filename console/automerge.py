@@ -359,6 +359,42 @@ def eligible(task: dict, reverification: Any,
 # The run
 # ---------------------------------------------------------------------------
 
+def log_failing_checks(reverification: Any, log) -> None:
+    """Put the failing checks' own output where the refusal is read.
+
+    `Reverification.checks` has carried `output_tail` since the day it was
+    written, and every caller threw it away: the sweep logged `reason`, which
+    names the failing COMMAND and nothing it said. So the one line an operator
+    gets is "the branch FAILS when merged", and the thing that would tell them
+    which test, and why, was built and discarded in the same function.
+
+    On 13 Sep 2026 that cost a full re-run of task 84's suite in a hand-made
+    clone to learn a fact the refused run already had in memory: the failing
+    test was one the branch does not touch, and it fails about one run in
+    three on any tree. Thirty seconds of reading, turned into an
+    investigation.
+
+    THIS RECORDS NOTHING AND CHANGES NOTHING. `reverify.run`'s "a failure
+    records nothing and leaves nothing" is about verdicts and trials, not
+    about the journal -- no row is written here, no trial is kept, and the
+    refusal is the same refusal. The only difference is that it says what
+    happened.
+    """
+    for c in (getattr(reverification, "checks", None) or []):
+        exit_code = c.get("exit_code")
+        failed = (c.get("timed_out") or c.get("unresolved_reason")
+                  or c.get("undecided_reason")
+                  or (exit_code is not None and exit_code != 0))
+        if not failed:
+            continue
+        why = (c.get("unresolved_reason") or c.get("undecided_reason")
+               or ("timed out" if c.get("timed_out") else f"exit {exit_code}"))
+        log(f"    {why}: {c.get('command', '?')}")
+        tail = (c.get("output_tail") or "").strip()
+        for line in tail.splitlines():
+            log(f"      {line}")
+
+
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -485,6 +521,7 @@ def sweep(*, dry_run: bool = False, log=_log) -> list[dict[str, Any]]:
             verdict = eligible(task, again, chain)
             if not verdict.ok:
                 log(f"task {tid}: left for review — {verdict.reason}")
+                log_failing_checks(again, log)
                 out.append({"task_id": tid, "merged": False,
                             "reason": verdict.reason})
                 continue
