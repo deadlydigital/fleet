@@ -249,7 +249,8 @@ def record_unattended_refusal(*, reason: str, mechanics: Dict[str, Any],
     last brief" for both.
 
     Refusing IS the designed behaviour: §2.3 approves nothing when the top two
-    are indistinguishable, the pace is 1, and the pool has a 60% line. A
+    are indistinguishable, the pace is 1, and the pool has an unattended line
+    below the ceiling (60% until 039, 85% since). A
     correct refusal happening every night for a week is a fact about the POOL
     -- the keys are exhausted -- and it is only legible if each night leaves a
     row. Silence cannot be counted.

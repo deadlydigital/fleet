@@ -86,7 +86,9 @@ class TestWhatTheReaderSees:
                 if key == "fleet:decision_log/approvals":
                     return rows
                 # fleet_month_credit(): a TUPLE, read positionally, with the
-                # 60% figure appended at index 8 by 026.
+                # unattended figure appended at index 8 by 026. The value is
+                # the fixture's own -- this test is about the brief printing
+                # what it is handed, not about what the fraction is.
                 return (None, "COMPUTED", 158.0, "s", NOW, 18.91, 139.09,
                         None, 75.89)
 
@@ -109,12 +111,12 @@ class TestWhatTheReaderSees:
         md = _render(self._claims(monkeypatch, self._rows(signal=None)))
         assert "none stated in the source document" in md
 
-    def test_the_reserved_spend_and_the_60_percent_line_are_both_shown(
+    def test_the_reserved_spend_and_the_unattended_line_are_both_shown(
             self, monkeypatch):
         md = _render(self._claims(monkeypatch, self._rows()))
         assert "GBP 2.00 reserved" in md
         assert "GBP 139.09 remains" in md
-        assert "GBP 75.89" in md and "60% stop" in md
+        assert "GBP 75.89" in md and "before the unattended path stops" in md
 
     def test_the_top_row_it_passed_over_is_named_with_the_rule(
             self, monkeypatch):

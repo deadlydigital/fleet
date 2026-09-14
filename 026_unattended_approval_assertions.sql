@@ -174,18 +174,20 @@ DO $$ DECLARE k record; want numeric; BEGIN
     IF k.status <> 'COMPUTED' THEN
         RAISE EXCEPTION 'Q9 FAIL: the fixture pool did not compute';
     END IF;
-    want := (k.pool_gbp * 0.60) - k.committed_gbp;
+    want := (k.pool_gbp * fleet_autonomous_pool_fraction()) - k.committed_gbp;
     IF k.autonomous_remaining_gbp IS DISTINCT FROM want THEN
         RAISE EXCEPTION 'Q9 FAIL: autonomous_remaining_gbp is %, expected %',
                         k.autonomous_remaining_gbp, want;
     END IF;
     IF k.autonomous_remaining_gbp >= k.remaining_gbp THEN
         RAISE EXCEPTION 'Q9 FAIL: the unattended line (%) is not below the '
-                        'human ceiling (%). "Leaving £63 for work a person '
-                        'chooses" requires the person to have the larger number',
+                        'human ceiling (%). Leaving room "for work a person '
+                        'chooses" requires the person to have the larger '
+                        'number, whatever the fraction is today',
                         k.autonomous_remaining_gbp, k.remaining_gbp;
     END IF;
-RAISE NOTICE 'Q9 pass  the 60%% stop exists and sits below the 100%% ceiling'; END $$;
+RAISE NOTICE 'Q9 pass  the unattended stop is % and sits below the 100%% ceiling',
+             fleet_autonomous_pool_fraction(); END $$;
 
 -- ---------------------------------------------------------------- Q10
 -- UNCOMPUTED carries NO numbers, and the new column obeys that rule. A caller

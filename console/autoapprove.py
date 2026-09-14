@@ -585,7 +585,7 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
     c = p["credit"]
     if c["status"] == "COMPUTED":
         print(f"credit: GBP {c['remaining']:.2f} remains of GBP {c['pool']:.2f}; "
-              f"the unattended 60% line leaves GBP {c['autonomous_remaining']:.2f}")
+              f"the unattended line leaves GBP {c['autonomous_remaining']:.2f}")
     else:
         print("credit: UNCOMPUTED -- nothing may be approved")
     print(f"cut: {p['cut']['n']}, bound by {', '.join(p['cut']['bound_by'])} "

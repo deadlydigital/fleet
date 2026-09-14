@@ -20,8 +20,8 @@ implementation that agrees with the real one only until somebody edits it.
 EXIT CODES, AND WHY NOTHING-APPROVED IS ZERO
 
 Approving nothing is an ORDINARY NIGHT and often the designed answer: the pace
-is one, the pool has a 60% line, and §2.3 refuses outright when no key
-separates the top two candidates. A non-zero exit there would page somebody for
+is one, the pool has an unattended line below its ceiling, and §2.3 refuses
+outright when no key separates the top two candidates. A non-zero exit there would page somebody for
 the system working. Only a refusal from approve_batch -- a ceiling that was hit
 in a way the caller did not anticipate -- is an error.
 """

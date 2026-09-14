@@ -117,11 +117,34 @@ def _pace(admin, n: int = 1):
     admin.commit()
 
 
-def _pool(admin, gbp="158.00"):
-    # Pace pinned with the pool: both are ceilings a test inherits from the
-    # deployed database unless it says otherwise, and 029 proved that inheriting
-    # them silently is how twenty-four tests change meaning under a migration.
+def _fraction(admin, f="0.60"):
+    """Pin the unattended line this test means, rather than inheriting it.
+
+    THE THIRD CEILING, AND IT WAS THE ONE STILL INHERITED. 029 taught this for
+    the pace and _pool() applied it to the pool; the fraction went on being
+    read from the deployed database until 039 moved it from 0.60 to 0.85. It
+    survived that move by luck -- one test arranges a pool of GBP 3.00 where
+    the line binds at both values -- and luck is not the property being
+    asserted.
+
+    DEFAULTS TO 0.60, WHICH IS NO LONGER PRODUCTION, on _pace()'s precedent:
+    the default is what the 44 tests below were written against, so their
+    arithmetic keeps meaning what its author meant. A test that is ABOUT the
+    line passes the value it is about, and the one that is passes both.
+    """
+    admin.execute(
+        f"CREATE OR REPLACE FUNCTION fleet_autonomous_pool_fraction()"
+        f" RETURNS numeric LANGUAGE sql IMMUTABLE AS $$ SELECT {float(f)}::numeric $$")
+    admin.commit()
+
+
+def _pool(admin, gbp="158.00", fraction="0.60"):
+    # Pace and fraction pinned with the pool: all three are ceilings a test
+    # inherits from the deployed database unless it says otherwise, and 029
+    # proved that inheriting them silently is how twenty-four tests change
+    # meaning under a migration.
     _pace(admin, 1)
+    _fraction(admin, fraction)
     admin.execute("DELETE FROM model_credit_pool"
                   " WHERE period_month = date_trunc('month', now())::date")
     admin.execute(
@@ -514,20 +537,35 @@ class TestTheCut:
         assert "per_night" in p["cut"]["bound_by"]
         assert len(p["approve_ids"]) == 1
 
-    def test_the_60_percent_stop_binds_before_the_100_percent_ceiling(
-            self, dsns, console, admin):
+    @pytest.mark.parametrize("fraction", ["0.60", "0.85"])
+    def test_the_unattended_stop_binds_before_the_100_percent_ceiling(
+            self, dsns, console, admin, fraction):
         """specs/unattended-operation.md §5.1, which nothing built until 026.
 
-        A pool with £3 left has room for a £2 draft spec at 100% and none at
-        60%. A person keeps the larger number -- that is what "leaving £63 for
-        work a person chooses" means.
+        A pool of £3 -- £1 of it committed to the producer task the batch
+        points at -- has room for a £2 draft spec at 100% and none at the
+        unattended line. A person keeps the larger number, which is what
+        "leaving room for work a person chooses" means.
+
+        RUN AT BOTH FRACTIONS, because this is the test the move in 039 could
+        have broken and did not. Green at 0.60 alone would not have shown that:
+        a lower fraction binds more easily, so the old value is the permissive
+        direction for this assertion and passing there proves nothing about
+        production. The arrangement is asserted before the behaviour is, so a
+        future fraction that makes a £3 pool stop producing this situation
+        fails saying the fixture no longer sets up the case -- rather than
+        going green because nothing was approved for some other reason.
         """
-        _pool(admin, "3.00")
+        _pool(admin, "3.00", fraction=fraction)
         b = _batch(console)
         _cand(console, b)
         p = autoapprove.plan()
-        assert p["credit"]["remaining"] >= 2.00, "a person could still tick this"
-        assert p["credit"]["autonomous_remaining"] < 2.00
+        c = p["credit"]
+        assert c["remaining"] >= 2.00, "a person could still tick this"
+        assert c["autonomous_remaining"] < 2.00, (
+            f"at a fraction of {fraction} a £3.00 pool no longer puts the "
+            f"unattended line below a £2.00 draft, so this arrangement is not "
+            f"the one the test is about; resize the pool deliberately")
         assert p["cut"]["n"] == 0
         assert p["approve_ids"] == []
         assert "autonomous_credit" in p["cut"]["bound_by"]

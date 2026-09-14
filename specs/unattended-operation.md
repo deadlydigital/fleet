@@ -201,12 +201,44 @@ brief and the first thing an autonomous system would be tempted to drop.
 | repropose suppression | 14 days | 14 days |
 | `max_attempts` | 1 | 1 |
 | per task | £3.00 | £3.00 |
-| monthly pool | £158, stop at 100% | **stop at 60%** |
+| monthly pool | £158, stop at 100% | **stop below 100%** (60%; 85% since 039 — §5.1) |
 | repeated failure of the same finding | *nothing* | **§5.2** |
 
-**5.1 The pool stops at 60%, not 100%.** Stopping at the ceiling means finding
-out when the month's work is already spent. At 60% the fleet stops queuing and
-the brief says why, leaving £63 for work a person chooses.
+**5.1 The pool stops below 100%, not at it.** Stopping at the ceiling means
+finding out when the month's work is already spent. Below it the fleet stops
+queuing and the brief says why, leaving room for work a person chooses.
+
+**AMENDED 13 Sep 2026 by `039_the_loop_became_the_main_consumer.sql`. The line
+is 85%, and was 60%.** This section originally read *"The pool stops at 60%,
+not 100% … leaving £63 for work a person chooses"*, and the £63 was the point
+of the number: a reserve sized for a person who was choosing most of the work,
+set when the unattended path was new and had never run live.
+
+That premise stopped holding. Measured on 13 Sep 2026, the month had committed
+£159.00 of a £270.00 pool, and **every penny of the £129.00 actually spent was
+`purpose = task_runner_patch`** — one purpose, 48 calls, the loop writing
+patches. Nobody else was consuming the pool. The £108 the 60% line was holding
+back was reserved against a pattern of use the billing said had stopped, which
+is not caution but a stale reading kept in force.
+
+**It moved for that, and not because it refused.** It did refuse — task 83 sat
+QUEUED at £6.00 against £2.99 — and 039 records at length why the refusal is
+the occasion rather than the justification: *"the control refused, so we raised
+the control"* would have justified 70%, 90% and 100% equally well. **The
+reason expires if the split goes back.** If a person is choosing the work
+again, the line comes back down, by another migration, with another
+measurement in front of it.
+
+**What the amendment costs, stated because the percentage hides it.** The
+reserve is £40.50 — 15% of £270 — which is *less* than the original £63 even
+though the pool is larger than the £158 this section was written against. It
+was chosen over 95% (£13.50, about two features: a reserve that cannot absorb
+one bad week) and over recording a larger pool, which would have worked and is
+refused because `pool_gbp` is a reading of the provider balance and not a lever.
+
+**Unchanged: a person keeps the 100% ceiling.** `enforce_credit_ceiling()`
+still refuses against `remaining_gbp`, and an UNCOMPUTED pool still refuses
+everything. 039 moves one fraction and asserts both of those survive it.
 
 **5.2 A candidate that has failed twice is not approved automatically.**
 

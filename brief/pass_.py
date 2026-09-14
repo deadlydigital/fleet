@@ -207,7 +207,7 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
 
     Four properties, each here for a reason:
 
-      1. THE RESERVED SPEND against the pool and the 60% line, in the shape the
+      1. THE RESERVED SPEND against the pool and the unattended line, in the shape the
          runs section already uses -- "a number that only becomes alarming on
          the last day is not a control".
       2. hib_signal VERBATIM. §2.2 established the ranker cannot read it; this
@@ -267,8 +267,11 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
 
     credit = r.probe("fleet:model_credit_pool",
                      S.row("SELECT * FROM fleet_month_credit()"))
-    # Positional: `row` returns a tuple. remaining_gbp is 6 and the 60% figure
-    # is 8, appended by 026 at the END precisely so these indexes did not move.
+    # Positional: `row` returns a tuple. remaining_gbp is 6 and the unattended
+    # figure is 8, appended by 026 at the END precisely so these indexes did not
+    # move. The FIGURE is read; the fraction behind it is not named in the
+    # sentence, because 039 moved it and a brief that hardcodes a percentage
+    # starts lying on the morning somebody changes it.
     remaining = credit[6] if credit and credit[1] == "COMPUTED" else None
     autonomous = credit[8] if credit and credit[1] == "COMPUTED" else None
 
@@ -280,7 +283,7 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
         statement += f", GBP {remaining:.2f} remains of the pool"
         if autonomous is not None:
             statement += (f", of which GBP {autonomous:.2f} is reachable "
-                          f"unattended before the 60% stop")
+                          f"before the unattended path stops")
     out.append(Claim.overnight(
         key, statement, source="fleet:decision_log", as_of=now,
         value_num=approved_total, query_key="overnight_approvals",
