@@ -381,6 +381,28 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                     f"-{div['claimed_but_untouched']}")
 
         # ---- the boundary, before anything is run ----
+        #
+        # THE FLOOR IS FETCHED HERE AND PASSED IN, never reached for inside the
+        # checker. console/rank.gate takes `writables` and `floor` as arguments
+        # for this reason and this follows it: a checker that opens a
+        # connection decides what it can see, and then cannot be exercised
+        # without one.
+        #
+        # `effective_contract` removes a floor glob the contract is WAIVED from
+        # -- 040, one row, one work_type -- and raises if the contract declares
+        # a waiver the floor does not grant. The contract carries the glob on
+        # purpose, so without this the boundary refuses the one path the
+        # contract exists to write. That was task 98.
+        floor = [(r["repo"], r["glob"], r["except_work_type"])
+                 for r in runner.execute(
+                     "SELECT repo, glob, except_work_type FROM "
+                     "protected_path_floor WHERE repo = %s",
+                     (task["repo"],)).fetchall()]
+        contract = config.effective_contract(contract, floor)
+        if contract.get("floor_waiver_applied"):
+            log(f"  floor waiver applied: {contract['floor_waiver_applied']} "
+                f"(granted to {contract.get('work_type')})")
+
         verdict = boundary.enforce(change, contract)
         result.verdict = verdict
         if verdict.max_test_diff_lines:
@@ -452,6 +474,14 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 # yaml on disk. A check that read contracts/*.yaml would be
                 # judging this task against whatever that file says now, which
                 # is the drift guard_task_immutability exists to remove.
+                #
+                # AND IT IS THE EFFECTIVE ONE, since 14 Sep 2026: the floor
+                # waiver has already been applied above, so `protected_paths`
+                # here is what the boundary actually judged against and carries
+                # `floor_waiver_applied` saying why it differs from the row.
+                # The declared contract is still on the task; recording the
+                # declared one HERE would leave a verdict that turned on a
+                # table nothing read and nothing wrote down.
                 facts={"FLEET_BASE_SHA": base_sha,
                        "FLEET_HEAD_SHA": change.head_sha,
                        "FLEET_TASK_ID": str(task["id"]),

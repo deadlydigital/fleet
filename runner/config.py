@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -216,3 +216,72 @@ def load_runner_config(path: Path | None = None) -> dict[str, Any]:
         if key not in loaded:
             raise RuntimeError(f"{path} is missing {key}")
     return loaded
+
+
+class WaiverNotGranted(RuntimeError):
+    """A contract named a floor waiver the floor did not grant it."""
+
+
+def effective_contract(contract: dict[str, Any],
+                       floor: Sequence[tuple[str, str, str | None]]) -> dict[str, Any]:
+    """The contract as the boundary check must see it, given the floor.
+
+    `floor` is (repo, glob, except_work_type) rows from `protected_path_floor`,
+    passed in rather than fetched. This is console/rank.gate's argument, and
+    the same one: a checker that reaches for a table decides what it can reach,
+    and it cannot then be exercised without one.
+
+    WHAT THIS RESOLVES. 040 lets one floor row be waived for one work_type, so
+    that an index migration can be written where nothing else may. The contract
+    still CARRIES that glob in `protected_paths` -- dropping it would exempt
+    the task from everything under the tree rather than from the one path its
+    `writable_paths` names -- so `boundary.enforce`, which reads only the
+    contract, sees a protected path and refuses. That was task 98.
+
+    So the waived glob is removed HERE, once, and `boundary.enforce` stays a
+    pure function over (change, contract) that needs to know nothing about any
+    of this.
+
+    WHAT STILL BOUNDS IT, because removing a protected glob sounds wider than
+    it is: `writable_paths`. The index contract may write
+    `api/analytics/migrations/versions/v*.py` and nothing else, so a write to
+    `migrations/__init__.py` falls through to `outside_writable` and is
+    refused. The machinery -- migration.py, runner.py, predicates.py -- is
+    listed in `protected_paths` in its own right, not inherited from the glob,
+    so it stays protected after the glob is gone. A contract that relied on the
+    glob to protect the machinery would be widened by this; that is why the
+    index contract does not.
+
+    BOTH QUESTIONS, NEITHER ASSUMED. Is this row waived for this work_type, and
+    does the contract name it. A declaration the floor does not grant raises
+    rather than being ignored: ignoring it would mean a contract could be
+    stored declaring one thing and judged under another, and the difference
+    would be invisible in both places.
+    """
+    declared = contract.get("floor_waiver")
+    if not declared:
+        return contract
+
+    wtype = contract.get("work_type")
+    repo = contract.get("repo")
+    granted = any(f_repo == repo and glob == declared
+                  and except_wt is not None and except_wt == wtype
+                  for f_repo, glob, except_wt in floor)
+    if not granted:
+        raise WaiverNotGranted(
+            f"contract for {repo} declares floor_waiver {declared!r}, which the "
+            f"floor does not grant to work_type {wtype!r}. A waiver is granted "
+            f"by protected_path_floor and named by the contract, and both must "
+            f"be true. The database refuses this too since 041; reaching here "
+            f"means the row predates it or the floor has changed under a task "
+            f"already queued.")
+
+    effective = dict(contract)
+    effective["protected_paths"] = [p for p in contract.get("protected_paths", [])
+                                    if p != declared]
+    #: Recorded so a verdict that depended on the floor can be reconstructed
+    #: from the run alone. A check whose answer turns on a table it did not
+    #: read, and did not record reading, is a check nobody can audit
+    #: afterwards -- see principles.md.
+    effective["floor_waiver_applied"] = declared
+    return effective
