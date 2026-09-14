@@ -399,5 +399,24 @@ class TestTheRefusalDoesNotAssertACauseItHasNotChecked:
         assert not r.ok
         assert "has NOT moved" in r.reason, r.reason
         assert "moved from" not in r.reason
-        # and it points at the environment rather than at the change
-        assert "not at the diff" in r.reason
+        # It says the tree is not the suspect -- that much IS checked, because
+        # the two shas are equal.
+        assert "not about the diff" in r.reason
+
+        # AND IT STOPS THERE, which is the 13 Sep 2026 half of this class.
+        #
+        # It used to finish "look at what differs about where it ran, not at
+        # the diff" -- a cause, asserted flatly, in the one branch where the
+        # tree is known to be identical. Task 84 is the counter-example: the
+        # merged tree WAS the branch tree, nothing about where it ran
+        # differed, and `vitest run` simply was not a function of the tree. It
+        # failed four times in six runs in ONE directory on one commit, and on
+        # the box it passed task 83's trial at 21:05, failed task 84's at
+        # 21:07 and passed task 86's at 21:28.
+        #
+        # So the same rule this class already applies to "the base moved"
+        # applies one level in: name the candidates, rank them by what is
+        # cheap to test, assert neither.
+        assert "not a function of the tree" in r.reason
+        assert "differs about where it ran" in r.reason
+        assert "Re-run it in one place" in r.reason

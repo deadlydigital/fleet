@@ -417,11 +417,30 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
             # and a check that passed in the run and fails here cannot be
             # about the diff -- which is the fact worth handing the reader.
             if base_sha == recorded_base:
+                # THE THIRD CAUSE THIS SENTENCE ASSERTED AND DID NOT HAVE.
+                #
+                # It read "so look at what differs about where it ran, not at
+                # the diff" until 13 Sep 2026 -- which is a cause, stated
+                # flatly, in the one branch where the tree is known to be
+                # identical. Task 84 that night: the tree WAS identical, the
+                # verified merge WAS the branch tree, and nothing about where
+                # it ran differed. `vitest run` simply is not a function of
+                # the tree. Measured in one directory, same command, same
+                # commit: four failures and two passes in six runs; and on the
+                # box itself the same suite passed task 83's trial at 21:05,
+                # failed task 84's at 21:07 and passed task 86's at 21:28.
+                #
+                # That is the same mistake as the unconditional "the base
+                # moved under it" this branch replaced, one level in: a reader
+                # given a cause goes looking for it, and the cause was not
+                # there. So this names the two candidates and ranks them by
+                # what is cheap to test, and asserts neither.
                 moved = (f"{base} has NOT moved since the branch was cut -- it "
                          f"is still {base_sha[:12]} -- so the merged tree is "
-                         f"the branch tree. This check passed when the runner "
-                         f"ran it against the same tree, so look at what "
-                         f"differs about where it ran, not at the diff")
+                         f"the branch tree and this is not about the diff. "
+                         f"Either the check is not a function of the tree, or "
+                         f"something differs about where it ran. Re-run it in "
+                         f"one place a few times before believing the second")
             else:
                 moved = (f"{base} moved from {recorded_base[:12]} to "
                          f"{base_sha[:12]} since the branch was cut, so this "
