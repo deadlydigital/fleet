@@ -150,8 +150,36 @@ agent_tools:
   - Edit
 
 verification:
-  # Every requirement the spec numbers is cited by an added line.
-  - /home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/contracts/checks/spec_requirements_cited.py
+  # NO spec_requirements_cited.py, AND THIS IS AN ARGUMENT RATHER THAN A
+  # CONVENIENCE.
+  #
+  # It was here, and task 98 failed on it with exit 2 -- could not run. The
+  # spec numbered its requirements as `**1. One new migration file**`, which
+  # console/requirements.py deliberately does not read: the id must be dotted
+  # there, because `**1. Something**` is how ordinary emphasis begins a
+  # paragraph and promoting those would fill the checklist with things nobody
+  # numbered. The check was right and the spec was written in a shape the
+  # convention does not use.
+  #
+  # It is removed anyway, because its failure mode cannot arise here. It exists
+  # because task 53 shipped section 2.5 of its own spec unbuilt and nothing
+  # read the spec -- which needs a multi-requirement spec, a diff that might
+  # implement only some of it, and no human between. This contract has ONE
+  # file, whose entire structure index_migration_only.py verifies
+  # mechanically, and auto_merge: false, so a person reads it before it merges.
+  #
+  # And what it would buy is nothing. Its own docstring: it establishes "that a
+  # claim was made, not that it was met". A `# spec:2` comment in a twenty-line
+  # migration proves a comment exists.
+  #
+  # WHAT IS THEREFORE NOT VERIFIED BY ANY CHECK, said plainly because removing
+  # a gate without naming the gap is how gaps are made: THE COLUMN ORDER.
+  # index_migration_only.py proves the step is a CreateIndexStep and nothing
+  # else; it does not prove the index is on (customer_id, created_at, id), and
+  # the order is the entire reason this index exists -- it is what makes the
+  # DISTINCT ON readable from the index rather than sorted. A citation would
+  # not have proven it either. The reviewer proves it, which is what
+  # auto_merge: false is for, and the spec says so.
   # It parses.
   - /home/ubuntu/deadly-digital-platform/api/.venv/bin/python -m compileall -q {changed_files:.py}
   # AND IT IS AN INDEX MIGRATION AND NOTHING ELSE. This is the check the whole

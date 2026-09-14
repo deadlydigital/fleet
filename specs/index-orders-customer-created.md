@@ -66,6 +66,19 @@ predicate is what lets one migration meet tenant schemas at different states —
 `migration.py`'s own header records `analytics_12` sitting half through a
 change, which is why per-step predicates exist at all.
 
+## What no check verifies, and a reviewer must
+
+**The column order.** `index_migration_only.py` proves the step is a
+`CreateIndexStep` and nothing else; it does not read the columns. The order
+`(customer_id, created_at, id)` is the entire reason this index exists — it is
+what lets the `DISTINCT ON (customer_id) ... ORDER BY customer_id, created_at,
+id` be read from the index rather than sorted — and an index on the same three
+columns in any other order is a 112 MB no-op.
+
+This contract does not carry `spec_requirements_cited.py`; see the argument in
+`contracts/dd-index-migration.yaml`. It does not auto-merge, and this is the
+thing the person accepting it is accepting.
+
 ## What you cannot check from here, and must not claim
 
 Whether Postgres will use the index. It will not, for the query as it stands —
