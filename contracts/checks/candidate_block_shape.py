@@ -278,6 +278,59 @@ def check_coverage(where: str, sig: dict) -> list[str]:
     return problems
 
 
+class BandUncheckable(RuntimeError):
+    """The band rule could not be asked, which is not the same as passing."""
+
+
+def check_band(c) -> str | None:
+    """One frequency per candidate, asked of the loader's own function.
+
+    WHY THIS IS HERE AT ALL. `console.load_candidates.band_of` has always
+    refused a candidate whose evidence sections name two bands, and nothing
+    this producer must pass asked the same question. So a block could clear
+    every gate in its contract, be verified, be merged -- and then be
+    unloadable, which is what happened to batch 15 on 14 Sep 2026: candidates
+    2 and 3 each cited two bands, the run cost GBP 5.50, and the refusal
+    arrived after the merge with no way back except editing the document by
+    hand.
+
+    That is the shape of defect this file's own header warns about one level
+    down: a gate that establishes less than the reader assumes. A producer's
+    contract should refuse what the loader will refuse, at the point where
+    refusing is free.
+
+    AN IMPORT AND NOT A SECOND COPY, on spec_requirements_cited.py's
+    precedent. The rule, the band vocabulary and the heading grammar all live
+    in the loader; restating them here is how the gate and the loader start
+    disagreeing, and a producer told one rule while judged by another is worse
+    off than one told nothing.
+
+    IMPORTED INSIDE THE FUNCTION, WHICH IS LOAD-BEARING. `load_candidates`
+    already imports THIS module, by path, to avoid restating its constants --
+    see its `_shape_check()`. Importing it back at module scope would close
+    that loop at import time. Deferring to call time keeps the existing
+    direction intact: the loader owns the rule, this file asks it.
+
+    Returns the problem as a sentence, or None. Raises `BandUncheckable` when
+    the loader cannot be imported at all -- a rule that cannot be asked must
+    not read as a rule that passed.
+    """
+    sys.path.insert(0, str(FLEET))
+    try:
+        from console.load_candidates import LoadRefused, band_of
+    except Exception as exc:                       # noqa: BLE001
+        raise BandUncheckable(
+            f"cannot import console.load_candidates ({exc}), so the band rule "
+            f"could not be checked. This check refuses rather than passing: "
+            f"the whole point of it is that the loader and this gate agree, "
+            f"and a gate that cannot reach the loader knows nothing.") from exc
+    try:
+        band_of(c)
+    except LoadRefused as exc:
+        return str(exc)
+    return None
+
+
 def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> list[str]:
     problems: list[str] = []
     where = f"candidate {n}"
@@ -327,6 +380,9 @@ def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> l
                     f"{where} has an evidence entry without a document and the "
                     f"sha it was read at; a candidate that cannot be traced "
                     f"back to its finding is an assertion")
+        band_problem = check_band(c)
+        if band_problem:
+            problems.append(f"{where} {band_problem}")
 
     # The sha this row was verified at, per row.
     sha = c.get(PER_CANDIDATE_SHA)
@@ -566,7 +622,16 @@ def main(argv=None) -> int:
         problems.append(f"{rel} emits duplicate titles: {sorted(dupes)}")
 
     for n, c in enumerate(candidates, start=1):
-        problems += check_candidate(n, c, REPOS, objectives, None)
+        try:
+            problems += check_candidate(n, c, REPOS, objectives, None)
+        except BandUncheckable as exc:
+            # EXIT 2, WHICH IS NOT EXIT 1. runner/verify.py reads 2 as COULD
+            # NOT RUN, and the distinction is the one this whole file is built
+            # on: "the loader is unreachable" and "this block is wrong" send a
+            # reader to different places, and only the second is about the
+            # producer's work.
+            print(f"COULD NOT RUN: {exc}")
+            return 2
 
     if problems:
         print(f"FAIL: {rel} -- {len(problems)} problem(s):")

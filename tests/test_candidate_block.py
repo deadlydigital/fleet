@@ -564,3 +564,73 @@ class TestTheDocument:
         code, out = run(tmp_path, block(
             source={"document": "specs/metorik-gap.md"}))
         assert code == 1 and "sha it was read at" in out
+
+
+# ---- one band per candidate ------------------------------------------------
+
+
+class TestOneBandPerCandidate:
+    """The rule the loader has always had, asked where refusing is free.
+
+    `console.load_candidates.band_of` refuses a candidate whose evidence
+    sections name two bands, and until 14 Sep 2026 nothing a producer had to
+    pass asked the same question. Batch 15 cleared every gate in its contract,
+    was verified, was merged -- and then would not load, because candidates 2
+    and 3 each cited two. £5.50, and a refusal that arrived after the merge
+    with no way back except editing the document by hand.
+
+    The check imports the loader's function rather than restating the rule:
+    a producer told one rule and judged by another is worse off than one told
+    nothing.
+    """
+
+    DAILY = "Daily — Net revenue (gross less refunds) on the main figures"
+    RARELY = "Rarely — Payment method breakdown"
+
+    def _ev(self, *sections):
+        return [{"document": "specs/metorik-gap.md", "sha": GAP_SHA,
+                 "section": s} for s in sections]
+
+    def test_two_bands_on_one_candidate_are_refused(self, tmp_path):
+        code, out = run(tmp_path, block(
+            [candidate(evidence=self._ev(self.DAILY, self.RARELY))]))
+        assert code == 1, out
+        assert "more than one band" in out
+        assert "daily" in out and "rarely" in out
+
+    def test_one_band_cited_twice_is_fine(self, tmp_path):
+        """Two citations, one frequency. The rule is about disagreement."""
+        code, out = run(tmp_path, block(
+            [candidate(evidence=self._ev(self.DAILY,
+                                         "Daily — CSV export of orders / customers / products"))]))
+        assert code == 0, out
+
+    def test_a_heading_from_another_document_names_no_band(self, tmp_path):
+        """Batch 11's candidate 6: a cited heading whose lead is two words is
+        a document with other conventions, not a band this must recognise."""
+        code, out = run(tmp_path, block(
+            [candidate(evidence=self._ev(
+                self.DAILY,
+                "Reading 1 — the store's refund total against the platform's"))]))
+        assert code == 0, out
+
+    def test_an_unrecognised_single_word_band_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block(
+            [candidate(evidence=self._ev("Fortnightly — something"))]))
+        assert code == 1, out
+        assert "Fortnightly" in out
+
+    def test_the_gate_refuses_exactly_what_the_loader_refuses(self, tmp_path):
+        """The property this change exists for, asserted directly rather than
+        inferred from the two messages happening to match today."""
+        from console.load_candidates import LoadRefused, band_of
+
+        c = candidate(evidence=self._ev(self.DAILY, self.RARELY))
+        with pytest.raises(LoadRefused) as exc:
+            band_of(c)
+
+        code, out = run(tmp_path, block([c]))
+        assert code == 1
+        assert str(exc.value) in out, (
+            "the gate must report the loader's own sentence, or a producer is "
+            "reading one rule and being judged by another")
