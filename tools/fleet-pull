@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Catch a checkout up, and refuse to do it while the runner is building.
+
+    tools/fleet-pull                 both checkouts
+    tools/fleet-pull fleet           just ~/fleet
+    tools/fleet-pull platform        just ~/deadly-digital-platform
+    tools/fleet-pull --wait          block until nothing is building, then pull
+    tools/fleet-pull --what          print what each checkout is on, change nothing
+
+WHY THIS EXISTS RATHER THAN `git pull --ff-only`
+
+specs/deploy-from-a-ref.md §0 is about a `git checkout` that took out three
+timers: "a production action that looks like a git command is the thing to
+design out". §3.2 asks for "one command that says it is deploying". This is
+that command at the scale available today -- it does not build the immutable
+deployment path §3.1 wants, and it is not a substitute for it.
+
+WHAT IT PREVENTS, MEASURED. `runner/worktree.Untouched` snapshots every watched
+checkout when a run starts and compares HEAD afterwards. A fast-forward moves
+HEAD, so a pull during a build fails that build -- after the agent has been
+paid for, after the checks have run, after the branch is pushed.
+
+On 14 Sep 2026 task 96 died exactly that way: claimed 12:00:13, five checks
+green including 963s of analytics pytest, branch pushed at 12:26:07, and failed
+2 seconds later with
+
+    GitError: the deadly-digital-platform checkout moved from ab65311 to 706ec56
+
+The reflog puts a `pull --ff-only` at 12:15:28, in the middle of the run. £3.29,
+26 minutes, and a correct branch recovered afterwards by console.adopt.
+
+NO GIT HOOK CAN DO THIS. A fast-forward creates no commit, so `pre-merge-commit`
+never fires and there is no `pre-pull` hook at all. The check has to live in the
+command, which means the command has to be the one that gets typed.
+
+IT REFUSES RATHER THAN WAITING, BY DEFAULT. A pull that silently blocks for
+twenty minutes is a command that looks hung, and the operator is left deciding
+whether to interrupt it. `--wait` is there when that is what you want.
+
+A FAILURE TO ASK ALLOWS THE PULL, on the same argument the commit guard makes:
+a run cannot be in flight without the database, because `claim_task()` is what
+makes a task RUNNING. It says so loudly rather than failing open in silence.
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, "/home/ubuntu/fleet")
+from console import pull as pull_mod                              # noqa: E402
+
+# THE DECISION LIVES IN console/pull.py, not here. This file is the command a
+# person types; `console/autodeploy` needs the same rule before it can read
+# HEAD and mean it, and two copies would disagree the first time one learned
+# something.
+FLEET = pull_mod.FLEET
+PLATFORM = pull_mod.PLATFORM
+CHECKOUTS = pull_mod.CHECKOUTS
+building = pull_mod.building
+git, head, branch = pull_mod.git, pull_mod.head, pull_mod.branch
+
+
+def report_busy(tasks: list[dict]) -> None:
+    print("REFUSED: the runner is building, and a pull moves HEAD.",
+          file=sys.stderr)
+    for t in tasks:
+        print(f"  task {t['id']}  claimed {t['claimed_at']:%H:%M:%S}  "
+              f"{(t['title'] or '')[:60]}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  runner/worktree.Untouched fails a run whose checkout moved, after "
+          "the spend and after the push. Task 96 cost £3.29 that way on "
+          "14 Sep 2026.", file=sys.stderr)
+    print("  Re-run with --wait to pull as soon as it finishes.",
+          file=sys.stderr)
+
+
+def pull(repo: Path, name: str) -> int:
+    """One checkout. The decision lives in console.pull, not here."""
+    out = pull_mod.catch_up(repo, log=lambda m: print(f"[{name}] {m}",
+                                                      file=sys.stderr))
+    if not out.ok:
+        print(f"{name}: {out.reason}", file=sys.stderr)
+        return 1
+    if out.already_current:
+        print(f"{name}: already current at {out.now} ({branch(repo)})")
+        return 0
+    print(f"{name}: {out.was} -> {out.now} ({out.commits} commit(s) on "
+          f"{branch(repo)})")
+    if repo == pull_mod.FLEET:
+        print("        this checkout IS the fleet: the units now run "
+              "this code. See specs/deploy-from-a-ref.md §1.")
+    return 0
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        prog="fleet-pull", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("which", nargs="?", default="both",
+                   choices=["both", "fleet", "platform"])
+    p.add_argument("--wait", action="store_true",
+                   help="block until nothing is building, then pull")
+    p.add_argument("--what", action="store_true",
+                   help="print what each checkout is on and change nothing")
+    args = p.parse_args(argv)
+
+    targets = ([("fleet", FLEET), ("platform", PLATFORM)]
+               if args.which == "both" else
+               [(args.which, CHECKOUTS[args.which])])
+
+    if args.what:
+        for name, repo in targets:
+            local = head(repo)
+            url = git(repo, "remote", "get-url", "origin")[1]
+            br = branch(repo)
+            remote = git(repo, "ls-remote", url, f"refs/heads/{br}")[1].split("\t")[0]
+            behind = "current" if remote.startswith(local) or local in remote \
+                else f"remote is {remote[:7]}"
+            print(f"{name:<9} {local}  {br:<10} {behind}")
+        return 0
+
+    while True:
+        tasks = building()
+        if not tasks:
+            break
+        if not args.wait:
+            report_busy(tasks)
+            return 1
+        print(f"waiting: task {tasks[0]['id']} is building "
+              f"({len(tasks)} in flight)", flush=True)
+        time.sleep(30)
+
+    return max(pull(repo, name) for name, repo in targets)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -126,10 +126,20 @@ def test_a_fleet_merge_carries_the_human_commits_with_it(repo):
 
 # ---- nothing to do ---------------------------------------------------------
 
-def test_production_already_on_main_is_not_an_error(repo):
+def test_production_already_on_the_checkouts_head_is_not_an_error(repo):
+    """It said "already running main" until 14 Sep 2026, and `target` is the
+    CHECKOUT's HEAD -- nothing in should_deploy reads the remote. On a stale
+    checkout that reported the fleet's work as shipped while it sat unbuilt on
+    the remote, and it was the reason given on three of the six nights this
+    ran. The refusal now names what it compared; `run()` fast-forwards first,
+    which is what makes the two the same thing rather than the sentence
+    asserting it."""
     d = autodeploy.should_deploy(repo, _dep(sha=_sha(repo)), set())
     assert not d.ok
-    assert "already running main" in d.reason
+    assert "already running" in d.reason
+    assert "this checkout's HEAD" in d.reason
+    assert "main" not in d.reason, (
+        "the refusal must not claim main -- it compared the working tree")
 
 
 def test_every_refusal_says_why_in_a_sentence(repo):

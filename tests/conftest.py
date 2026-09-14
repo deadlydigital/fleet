@@ -37,6 +37,40 @@ import subprocess
 import sys
 from pathlib import Path
 
+# RUNNING THE SUITE IS A WRITE INTO A WATCHED CHECKOUT.
+#
+#     PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q
+#
+# `runner/worktree.Untouched` walks EVERY file under ~/fleet, ignored paths
+# included -- that is the class it exists to catch -- so the `.pyc` pytest
+# leaves under `__pycache__` fail whatever task the runner is building. It
+# fails it at the END, after the agent has been paid for and the branch pushed.
+#
+# THIS LINE IS A BACKSTOP AND NOT THE FIX, and the difference is measured.
+# 14 Sep 2026, same tree, one changed module:
+#
+#     plain run                                  3 .pyc written
+#     PYTHONDONTWRITEBYTECODE=1                  0
+#     this line, env var not set                 1   <- conftest's own
+#
+# Its own bytecode is written before it can run, so a first run after this
+# file changes still writes one file, and one file is enough to fail a build.
+# Steady state is 0. Set the environment variable; this only narrows the
+# damage for a run that forgot.
+#
+# AND `python -m py_compile` IGNORES BOTH OF THESE. The variable and the flag
+# govern the IMPORT system; explicit compilation is a request to write, and it
+# writes. Using it as a syntax check -- which is the obvious thing to reach for
+# -- puts a .pyc in the tree while a build is watching. Measured here on
+# 14 Sep 2026 with the variable exported. `python -c "import ast, pathlib;
+# ast.parse(pathlib.Path(p).read_text())"` checks syntax and writes nothing.
+#
+# COUNTING .pyc FILES IS THE WRONG MEASURE, which is how this was nearly
+# reported as fixed when it was not: an overwrite leaves the count identical
+# and changes the mtime, and the digest is over (path, size, mtime_ns). Check
+# with `find . -name '*.pyc' -newermt <when>`.
+sys.dont_write_bytecode = True
+
 import psycopg
 import pytest
 from psycopg.rows import dict_row

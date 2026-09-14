@@ -16,7 +16,7 @@ WHY THIS EXISTS
     ReadOnlySqlTransaction as well as InsufficientPrivilege, so the session
     flag masked whether the ROLE was read-only at all.
 """
-import subprocess, sys
+import os, subprocess, sys
 from pathlib import Path
 
 ROOT = Path("/home/ubuntu/fleet")
@@ -642,8 +642,19 @@ CASES = [
 
 
 def run(test: str) -> bool:
+    # PYTHONDONTWRITEBYTECODE, because running the suite is a WRITE INTO A
+    # WATCHED CHECKOUT. `runner/worktree.Untouched` walks every file including
+    # ignored ones -- that is the class it exists for -- so the .pyc pytest
+    # leaves under __pycache__ fail any task the runner is building. Measured
+    # 14 Sep 2026: a plain run writes 3 per changed module, this writes 0.
+    #
+    # It is set here rather than left to whoever runs the script, because this
+    # file edits the source tree and therefore rewrites a .pyc on every guard
+    # it reverts and restores -- the one invocation in the repository that is
+    # certain to do it.
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     r = subprocess.run([".venv/bin/python", "-m", "pytest", test, "-q",
-                        "--no-header", "-x"], cwd=ROOT,
+                        "--no-header", "-x"], cwd=ROOT, env=env,
                        capture_output=True, text=True)
     return r.returncode == 0
 

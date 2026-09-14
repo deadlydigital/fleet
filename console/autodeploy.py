@@ -12,6 +12,26 @@ somebody paid for. A second deploy path would relearn them.
 
 So this module decides WHETHER, and `deploy.sh` decides HOW.
 
+IT CATCHES THE CHECKOUT UP FIRST, SINCE 14 Sep 2026
+----------------------------------------------------
+`should_deploy` reads `rev-parse HEAD` and `deploy.sh` builds images from the
+working tree without moving it, so the checkout is this module's INPUT and
+nothing here used to supply it. "Deploy what the fleet merged" was therefore
+true only when a person had pulled, and that person was the only thing moving
+the tree -- several times a day. On three of the six nights this has run, the
+refusal was "already running main": the human had won the race to a job this
+was supposed to be doing.
+
+Automating the pull was not possible until now. A pull during a build moves
+HEAD and fails that build AFTER the agent has been paid for and the branch
+pushed -- task 96 on 14 Sep 2026, £3.29, self-inflicted at 12:15:28 and
+recovered afterwards with `console.adopt`. There was no way for a program to
+know a build was in flight. `console/pull.py` is that check, and it is the
+whole reason the checkout can now be moved by something other than a person.
+
+A checkout that could NOT be caught up refuses the deploy rather than shipping
+the stale one -- the same argument as refusing on drift.
+
 THE FIVE REFUSALS
 ------------------
 1. drift-check must be GREEN BEFORE STARTING. Deploying onto a production that
@@ -104,8 +124,20 @@ def should_deploy(repo: Path, deployment: Any, unattended_shas: set[str]
     if not target:
         return DeployDecision(False, "could not read HEAD in the checkout")
     if running == target:
-        return DeployDecision(False, "production is already running main",
-                              running=running, target=target)
+        # NAMES WHAT WAS COMPARED. This said "production is already running
+        # main" until 14 Sep 2026, and `target` is the CHECKOUT's HEAD --
+        # nothing here reads the remote. On a checkout behind origin/main the
+        # sentence was false in the direction that matters: it reported the
+        # fleet's work as shipped while it sat unbuilt on the remote, and it
+        # was the reason given on three of the six nights this has run.
+        #
+        # `run()` fast-forwards before calling this, so the two are usually the
+        # same thing now -- but "usually" is exactly what a refusal must not
+        # assert. The catch-up line in the log above says whether the checkout
+        # moved; this says only what it compared.
+        return DeployDecision(False, (
+            f"production is already running {target[:12]}, which is this "
+            f"checkout's HEAD"), running=running, target=target)
 
     rng = f"{running}..{target}"
     commits = (_git(repo, "log", "--oneline", rng) or "").splitlines()
@@ -158,9 +190,44 @@ def unattended_merges(conn) -> set[str]:
 
 def run(*, dry_run: bool = False, log=print) -> DeployDecision:
     """Decide, then hand off to deploy.sh. Never raises."""
-    from . import config, db, deploys
+    from . import config, db, deploys, pull
 
     repo = config.repo_root() / "deadly-digital-platform"
+
+    # THE CHECKOUT IS THE INPUT, AND NOTHING USED TO MOVE IT.
+    #
+    # `should_deploy` reads `rev-parse HEAD` and `deploy.sh` builds images from
+    # the working tree without touching it, so "deploy what the fleet merged"
+    # was true only when a person had pulled first. That person was the only
+    # thing moving the tree, several times a day, and on three of the six
+    # nights this has run the refusal was "already running main" -- the human
+    # had won the race to a job this was supposed to do.
+    #
+    # It could not be automated before 14 Sep 2026: a pull during a build fails
+    # that build after the spend, and there was no way for a program to know a
+    # build was in flight. `console.pull` is that check, and it is the whole
+    # reason this call can exist. See its docstring for task 96, which is the
+    # worked example and was self-inflicted.
+    caught = pull.catch_up(repo, log=lambda m: log(f"  {m}"), dry_run=dry_run)
+    if not caught.ok:
+        # A checkout that could not be moved is not a reason to deploy the
+        # stale one. Refusing here is the same argument as refusing on drift:
+        # proceeding would ship something nobody asked for.
+        log(f"not deploying: the checkout could not be caught up -- "
+            f"{caught.reason}")
+        return DeployDecision(False, caught.reason)
+    if caught.already_current:
+        log(f"checkout: already current at {caught.now}")
+    elif dry_run:
+        # Said plainly, because the decision below is made against a checkout
+        # a real run would have moved first: everything after this is what
+        # WOULD be decided about the tree as it stands, not about the tree the
+        # deploy would build.
+        log(f"checkout: {caught.was}, and a real run {caught.reason} first")
+    else:
+        log(f"checkout: {caught.was} -> {caught.now} "
+            f"({caught.commits} commit(s))")
+
     found = deploys.all_deployments()
     with db.connect() as conn:
         shas = unattended_merges(conn)
