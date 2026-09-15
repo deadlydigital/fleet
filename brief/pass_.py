@@ -893,6 +893,77 @@ def _age(delta) -> str:
 
 
 
+#: An index big enough that paying for it and not using it is a decision
+#: somebody should make on purpose. 50 MB is a floor, not a threshold with an
+#: argument behind it -- below that the storage is noise and the write cost is
+#: smaller than the noise.
+_UNUSED_INDEX_FLOOR_MB = 50
+
+#: Constraint-backing indexes are excluded: a primary key that is never scanned
+#: is still doing its job, and reporting one as waste would train the reader to
+#: skip this line.
+_UNUSED_INDEXES_SQL = """
+    SELECT i.schemaname,
+           i.indexrelname                              AS index,
+           pg_relation_size(i.indexrelid) / 1048576    AS mb
+      FROM pg_stat_user_indexes i
+      JOIN pg_index x ON x.indexrelid = i.indexrelid
+     WHERE i.schemaname ~ '^analytics_[0-9]+$'
+       AND i.idx_scan = 0
+       AND NOT x.indisprimary
+       AND NOT x.indisunique
+       AND pg_relation_size(i.indexrelid) >= %(floor)s
+     ORDER BY mb DESC, i.schemaname
+"""
+
+
+def _unused_index_claims(r: S.Reader) -> List[Claim]:
+    """Large indexes nothing has ever scanned.
+
+    WHY THIS IS A BRIEF LINE AND NOT A NOTE IN A DOCUMENT. On 15 Sep 2026 the
+    covering index v0015 added was measured: 1,000,398 scans on `analytics_2`
+    and ZERO on `analytics_1`, where it carries 75 MB and pays a write cost on
+    every sync for a query nothing has run. That is a true fact which will
+    still be true in six months, and the thing about facts like it is that
+    nobody goes back to look. `research/top-products-gate-c-2026-09-15.md`
+    records it and is read once.
+
+    So it is asked again every morning instead. The line is SILENT while there
+    is nothing to say, which is what keeps it worth reading when it speaks --
+    and a line that has been there for a month is itself the signal, because
+    the day it appeared is in that morning's brief and every one since.
+
+    WHAT IT CANNOT SAY, and it matters for how the line is read: there is no
+    index creation time in PostgreSQL and `schema_migrations` is not readable
+    by this role -- deliberately, since dd_048 narrowed it. So this reports
+    that an index has never been scanned, NOT how long it has been that way. An
+    index built an hour ago appears here until something uses it. Age is the
+    reader's to supply, from when the line first showed up.
+    """
+    got = r.probe("deadly_digital:pg_stat_user_indexes",
+                  S.rows(_UNUSED_INDEXES_SQL,
+                         {"floor": _UNUSED_INDEX_FLOOR_MB * 1048576}))
+    if got is None:
+        return [Claim.uncomputed(
+            "dd.indexes.unused", "whether any large index is unused",
+            reason=(r.failed("deadly_digital:pg_stat_user_indexes")
+                    or "index statistics could not be read"))]
+    if not got:
+        return []
+    total = sum(int(x["mb"]) for x in got)
+    named = "; ".join(f"{x['schemaname']}.{x['index']} ({x['mb']} MB)"
+                      for x in got)
+    return [Claim.computed(
+        "dd.indexes.unused",
+        f"{len(got)} index(es) over {_UNUSED_INDEX_FLOOR_MB} MB have never "
+        f"been scanned, {total} MB in total: {named}. Each is written on every "
+        f"sync that touches its table and read by nothing. This says never, "
+        f"not recently -- there is no creation time to compare against, so how "
+        f"long it has been true is the date this line first appeared.",
+        source="deadly_digital:pg_stat_user_indexes", as_of=_utcnow(),
+        value_num=total, query_key="unused_indexes", query_version=1)]
+
+
 def _business_claims(r: S.Reader) -> List[Claim]:
     """What the platform looks like. Three tables and orders, per the grants."""
     out: List[Claim] = []
@@ -1116,6 +1187,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
             dc.read_only = True
             dd_reader = S.Reader(dc, "dd_detector_login@deadly_digital")
             claims += _business_claims(dd_reader)
+            claims += _unused_index_claims(dd_reader)
             results += dd_reader.results
     except Exception as exc:
         detail = str(exc).strip().split("\n")[0][:200]

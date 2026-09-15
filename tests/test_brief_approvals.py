@@ -400,3 +400,76 @@ class TestTheDeployUnitIsVisibleInTheBrief:
                 return "connection refused"
         claims = P._deploy_decision_claims(_R(), NOW - timedelta(days=1))
         assert claims and claims[0].uncomputed
+
+
+class TestALargeIndexNobodyScansIsSaidOutLoud:
+    """15 Sep 2026. The figure this exists for:
+
+        analytics_2.ix_analytics_order_items_order_covering  1,000,398 scans
+        analytics_1.ix_analytics_order_items_order_covering            0
+
+    The second carries 75 MB and pays a write cost on every sync for a query
+    nothing has run. `research/top-products-gate-c-2026-09-15.md` records it
+    and is read once; this asks again every morning, which is the difference
+    between a fact being written down and a fact being checked.
+
+    SILENT WHEN THERE IS NOTHING TO SAY, because a line that appears every
+    morning regardless is a line nobody reads by the third week.
+    """
+
+    def _rows(self, *rows):
+        return [{"schemaname": s, "index": i, "mb": m} for s, i, m in rows]
+
+    def _claims(self, rows):
+        class _R:
+            def probe(self, key, body):
+                return rows
+            def failed(self, key):
+                return None
+        return P._unused_index_claims(_R())
+
+    def test_nothing_unused_says_nothing(self):
+        assert self._claims([]) == []
+
+    def test_the_real_figure_is_reported_with_its_size(self):
+        c = self._claims(self._rows(
+            ("analytics_1", "ix_analytics_order_items_order_covering", 74)))
+        assert len(c) == 1
+        assert "analytics_1.ix_analytics_order_items_order_covering" in c[0].statement
+        assert "74 MB" in c[0].statement
+        assert c[0].value_num == 74
+
+    def test_several_are_totalled(self):
+        c = self._claims(self._rows(("analytics_1", "a", 74),
+                                    ("analytics_2", "b", 120)))
+        assert "2 index(es)" in c[0].statement
+        assert "194 MB in total" in c[0].statement
+        assert c[0].value_num == 194
+
+    def test_it_says_never_rather_than_recently(self):
+        """There is no index creation time in PostgreSQL and schema_migrations
+        is not readable by this role since dd_048 narrowed it. A reader who
+        took this as 'unused lately' would draw a stronger conclusion than the
+        data supports, so the line says which it means."""
+        c = self._claims(self._rows(("analytics_1", "a", 74)))
+        assert "never, not recently" in c[0].statement
+
+    def test_an_unreadable_stat_view_is_uncomputed_not_silent(self):
+        """Silence is what this claim exists to end, so the no-answer path must
+        not produce it."""
+        class _R:
+            def probe(self, key, body):
+                return None
+            def failed(self, key):
+                return "permission denied"
+        out = P._unused_index_claims(_R())
+        assert len(out) == 1 and out[0].uncomputed
+
+    def test_the_query_excludes_constraint_indexes_and_small_ones(self):
+        """A primary key nobody scans is still doing its job, and reporting one
+        would train the reader to skip this line. The floor keeps noise out."""
+        sql = P._UNUSED_INDEXES_SQL
+        assert "indisprimary" in sql and "indisunique" in sql
+        assert "idx_scan = 0" in sql
+        assert "^analytics_[0-9]+$" in sql
+        assert P._UNUSED_INDEX_FLOOR_MB == 50
