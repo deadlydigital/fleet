@@ -32,6 +32,64 @@
 # It is also how a stale or wrong file teaches it something untrue. The check
 # catches the first class and nothing catches the second, which is why this step
 # ends in a human review rather than a merge.
+#
+# AND THE AGENT THAT WILL READ WHAT YOU WRITE HAS NO SHELL EITHER
+#
+# Everything above is about the tools THIS task has. The three lines below are
+# about the tools the task you are writing FOR will have, and they were missing
+# from this file until 15 Sep 2026, which cost GBP 9.89 in two days:
+#
+#   Read  Edit  Write  Grep  Glob
+#
+# That is runner.yaml's default set and most contracts take it unchanged --
+# deadly-digital-platform-api.yaml does. It means the build agent CANNOT run
+# the code, query a database, time a request, take an EXPLAIN plan, or reach
+# anything outside its worktree. It can read files, search them, and edit them.
+#
+# SO A NUMBERED REQUIREMENT MUST BE SATISFIABLE BY EDITING A FILE. If a
+# requirement asks for a measurement, a production identity proof, a before-and-
+# after timing, or a named dataset the agent would have to go and observe, the
+# agent cannot do it and cannot honestly cite it -- and
+# contracts/checks/spec_requirements_cited.py refuses the branch for the missing
+# citation. The code can be perfect and the run still dies.
+#
+# TWICE, ON THE SAME MISTAKE:
+#
+#   task 102   GBP 4.74   requirements 5 and 6 asked for an identity proof on
+#              production data and a before/after EXPLAIN comparison. Five
+#              checks green including a 15.4-minute analytics suite. The agent
+#              tried python3, psql and docker exec, was refused at the
+#              permission layer, said so plainly in its reply, and left them
+#              uncited -- which is exactly what the citation check's own
+#              failure text asks for. FAILED at max_attempts 1.
+#
+#   task 109   GBP 5.15   requirements 6 and 7, written by THIS contract's
+#              agent five days later, asked for "the identity is proved on
+#              production data, per period, with the dataset named" and
+#              "report the statement count and the time, before and after".
+#              Five checks green. Same refusal, same dead run.
+#
+# WHAT TO DO INSTEAD, and task 104's spec
+# (specs/lateral-acquiring-order-in-three-call-sites.md) is the worked example
+# that shipped:
+#
+#   * STATE MEASUREMENTS AS GIVEN. Put the figures in a table near the top
+#     under a heading saying they are given and nothing is to be measured. The
+#     agent can then cite them truthfully because the claim is "I built what
+#     this number argues for", not "I measured this".
+#
+#   * PUT THE PROOF IN A SECTION THAT IS NOT A NUMBERED REQUIREMENT. Task 104
+#     used "What this task does NOT include", named the script a person runs,
+#     and told the agent not to cite it, not to claim it and not to write a
+#     token over it. The work still happens; it is simply not the branch's to
+#     do.
+#
+#   * IF YOU CANNOT STATE THE FIGURE, SAY SO AND STOP. A spec that needs a
+#     measurement nobody has taken is not ready to be queued. Write that in the
+#     draft rather than numbering a requirement to stand in for it.
+#
+# The rule in one line, and it is the one to keep: A SPEC MUST NOT NUMBER WORK
+# ITS OWN AGENT HAS NO TOOLS TO PERFORM.
 
 work_type: draft_spec
 repo: fleet
