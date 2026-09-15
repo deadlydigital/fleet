@@ -34,9 +34,18 @@ the stale one -- the same argument as refusing on drift.
 
 THE FIVE REFUSALS
 ------------------
-1. drift-check must be GREEN BEFORE STARTING. Deploying onto a production that
-   already disagrees with main compounds two problems into one incident, and
-   the second is much harder to read.
+1. drift-check must not say AHEAD. `api/drift-check.sh` writes OK, DRIFT
+   (production is BEHIND) and AHEAD (production runs a commit that is not on
+   origin/main -- DEPLOY-003). Deploying onto an AHEAD production buries
+   whatever is running rather than resolving it, and the second problem is much
+   harder to read than the first.
+
+   BEHIND IS NOT THAT CASE. It is the state that means there is something to
+   deploy, and refusing on it -- which this did until 15 Sep 2026 -- made the
+   unit refuse exactly when it had work. Seven runs, seven refusals, nothing
+   ever deployed; see the comment in `should_deploy` for what that cost. A
+   status that is neither OK nor DRIFT means the container could not be asked,
+   and that still refuses: nothing is known about what is running.
 
 2. THE STATE FILE MUST BE FRESH. `console/deploys.py` records `checked_at`
    because a file nobody has written for an hour is the answer from whenever
@@ -106,11 +115,58 @@ def should_deploy(repo: Path, deployment: Any, unattended_shas: set[str]
             "disagrees with main is unknown -- and deploying onto a drifted "
             "production is how two problems become one incident"))
 
-    if deployment.status != "OK":
+    # DRIFT IS NOT AHEAD, AND THIS REFUSED ON BOTH UNTIL 15 Sep 2026.
+    #
+    # api/drift-check.sh writes three statuses and its own header names what
+    # each is for:
+    #
+    #     OK      production is the commit origin/main says it should be
+    #     DRIFT   production is BEHIND -- origin/main ships code it does not
+    #             have                                            (exit 1)
+    #     AHEAD   production runs a commit that is NOT on origin/main, which
+    #             is DEPLOY-003                                    (exit 4)
+    #
+    # This read `deployment.status != "OK"`, so BEHIND and AHEAD were the same
+    # fact to it. They are opposite facts. Refusal 1's argument -- "deploying
+    # onto a production that already disagrees with main compounds two problems
+    # into one incident" -- is TRUE OF AHEAD and BACKWARDS FOR BEHIND, where
+    # deploying is the thing that ENDS the disagreement.
+    #
+    # BEHIND IS THE STATE THAT MEANS THERE IS SOMETHING TO DEPLOY. Refusing on
+    # it made this unit refuse precisely when it had work, and the next four
+    # refusals below never got to run.
+    #
+    # WHAT IT COST, AND IT IS THE WHOLE OF WHAT THIS UNIT HAS EVER DONE.
+    # `journalctl -u fleet-autodeploy.service`, 9-15 Sep 2026: seven runs,
+    # seven refusals, nothing deployed, ever. Two of those seven are this rule
+    # -- 14 Sep and 15 Sep -- and the trap closes on its own: any merge touching
+    # api/ puts production BEHIND, the drift check notices within 15 minutes,
+    # and the 04:15 timer then refuses. The only window in which this unit could
+    # ever have fired is between a merge and the next drift reading, which a
+    # once-daily timer will not hit. Task 104 merged at 11:05 on 15 Sep and was
+    # still unshipped at 12:30; deployed by hand it took /api/analytics/revenue
+    # from 7.86 s to 1.18 s.
+    #
+    # THE OTHER REFUSALS STILL RUN, which is why proceeding here is safe rather
+    # than merely correct. A BEHIND reading passes to the staleness check, the
+    # running-equals-target check, the migration check and the did-the-fleet-
+    # merge-it check, and any of them may still refuse. This branch decides one
+    # thing only: that being behind is not itself a reason to stay behind.
+    if deployment.status == "AHEAD":
         return DeployDecision(False, (
-            f"drift-check says {deployment.status} before this started. "
-            f"Production and main already disagree, and deploying now would "
-            f"compound that rather than resolve it: {deployment.detail or ''}"))
+            f"drift-check says AHEAD: production is running "
+            f"{deployment.detail or '?'}, which is NOT a commit on "
+            f"origin/main. That is DEPLOY-003, and it is the case this refusal "
+            f"was written for -- deploying over it would bury whatever is "
+            f"running rather than resolve it, and what is running needs "
+            f"identifying first"))
+
+    if deployment.status not in ("OK", "DRIFT"):
+        return DeployDecision(False, (
+            f"drift-check says {deployment.status}, which is neither OK nor a "
+            f"reading of how far production is behind -- the container is "
+            f"missing, stopped, or could not be asked. Nothing is known about "
+            f"what is running: {deployment.detail or ''}"))
 
     age = getattr(deployment, "age", None)
     if age is None or age > MAX_DRIFT_AGE:
@@ -232,7 +288,9 @@ def run(*, dry_run: bool = False, log=print) -> DeployDecision:
     with db.connect() as conn:
         shas = unattended_merges(conn)
 
-    decision = should_deploy(repo, found.get("api"), shas)
+    drift = found.get("api")
+    decision = should_deploy(repo, drift, shas)
+
     if not decision.ok:
         log(f"not deploying: {decision.reason}")
         return decision

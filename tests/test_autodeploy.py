@@ -62,12 +62,57 @@ def test_it_deploys_when_the_fleet_merged_something(repo):
 
 # ---- drift -----------------------------------------------------------------
 
-def test_a_drifted_production_is_not_deployed_onto(repo):
+def test_BEHIND_is_the_state_that_means_deploy(repo):
+    """15 Sep 2026, and it is why this unit had never deployed anything.
+
+    `DRIFT` means production is BEHIND origin/main. This refused on it until
+    today, so it refused precisely when it had work -- and since any merge
+    touching api/ puts production behind within 15 minutes of the next drift
+    check, the 04:15 timer could only ever have fired in a window it cannot
+    hit. journalctl for 9-15 Sep: seven runs, seven refusals, nothing deployed.
+    """
     base = _sha(repo)
     sha = _commit(repo, "api/x.py", "y\n", "fleet merge")
     d = autodeploy.should_deploy(repo, _dep(status="DRIFT", sha=base), {sha})
+    assert d.ok, d.reason
+    assert d.running == base and d.target == sha
+
+
+def test_AHEAD_is_the_case_refusal_one_was_written_for(repo):
+    """DEPLOY-003: production is running a commit that is not on origin/main.
+    Deploying over it buries whatever that is instead of identifying it."""
+    base = _sha(repo)
+    sha = _commit(repo, "api/x.py", "y\n", "fleet merge")
+    d = autodeploy.should_deploy(repo, _dep(status="AHEAD", sha=base), {sha})
     assert not d.ok
-    assert "already disagree" in d.reason
+    assert "AHEAD" in d.reason and "DEPLOY-003" in d.reason
+
+
+def test_a_status_that_is_neither_still_refuses(repo):
+    """UNKNOWN means the container is missing, stopped, or could not be asked.
+    Nothing is known about what is running, and not knowing is not permission
+    -- the same rule verify.py applies to a check that did not answer."""
+    base = _sha(repo)
+    sha = _commit(repo, "api/x.py", "y\n", "fleet merge")
+    d = autodeploy.should_deploy(repo, _dep(status="UNKNOWN", sha=base), {sha})
+    assert not d.ok
+    assert "neither OK nor" in d.reason
+
+
+def test_BEHIND_still_meets_every_other_refusal(repo):
+    """Proceeding past refusal 1 is not skipping the rest. A BEHIND reading
+    that is stale, or whose range carries a migration, or whose range is
+    entirely human work, still refuses -- which is what makes the change above
+    safe rather than merely correct."""
+    base = _sha(repo)
+    mig = _commit(repo, "api/alembic/versions/v1.py", "m\n", "a migration")
+    assert not autodeploy.should_deploy(
+        repo, _dep(status="DRIFT", sha=base), {mig}).ok
+    stale = _dep(status="DRIFT", sha=base, age_minutes=120)
+    assert not autodeploy.should_deploy(repo, stale, {mig}).ok
+    human = _commit(repo, "api/y.py", "h\n", "a person's commit")
+    assert not autodeploy.should_deploy(
+        repo, _dep(status="DRIFT", sha=base), set()).ok
 
 
 def test_no_drift_reading_at_all_is_a_refusal(repo):
@@ -153,3 +198,4 @@ def test_every_refusal_says_why_in_a_sentence(repo):
         d = autodeploy.should_deploy(repo, dep, shas)
         assert not d.ok
         assert len(d.reason.split()) >= 8, f"terse: {d.reason!r}"
+
