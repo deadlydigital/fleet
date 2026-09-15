@@ -66,6 +66,58 @@ ReadWritePaths=/home/ubuntu/.claude
 ReadWritePaths=/home/ubuntu/.claude.json
 ReadWritePaths=/home/ubuntu/.cache/claude-cli-nodejs
 
+# AND THE ONE THING DOCKER WANTS TO WRITE IN $HOME, MOVED RATHER THAN GRANTED.
+#
+# This unit runs api/deploy.sh, which runs `docker compose build`. Compose 2.40
+# defaults to Bake; buildx is NOT installed on this host (the only CLI plugins
+# are docker-compose and docker-trust), so compose warns, falls back to the
+# internal builder -- and initialises the buildx ref store anyway, under
+# $DOCKER_CONFIG/buildx, which is ~/.docker/buildx. ProtectHome=read-only makes
+# that unwritable and the deploy dies at [3/8]:
+#
+#     open /home/ubuntu/.docker/buildx/refs/default/default/.tmp-...:
+#     read-only file system
+#
+# Twice: 12:39 and 15:07 on 15 Sep 2026, each time after the build had already
+# started, and each time it was the last thing between a merge and a deploy
+# happening without anybody.
+#
+# BUILDX_CONFIG MOVES EXACTLY THAT DIRECTORY AND NOTHING ELSE. Measured: a real
+# `docker compose build` with it set wrote refs/default/default -- the failing
+# path -- under the new root, and ~/.docker was untouched.
+#
+# WHAT IT GIVES UP, which is close to nothing. PrivateTmp gives this unit its
+# own /tmp, destroyed when the unit stops, so the state does not persist
+# between runs. That costs no cache: the build cache is 5.9 GB in the DAEMON
+# (`docker system df`), not here -- ~/.docker/buildx is 1.3 MB of accumulated
+# activity and refs bookkeeping, and a fresh one after a fully cached build is
+# 40 KB. The probe build above ran fully cached from an empty state. What is
+# genuinely lost is the cross-run buildx .lock, and the daemon serialises the
+# builds themselves.
+#
+# WHY NOT THE OTHER THREE:
+#
+#   DOCKER_CONFIG=...   also works, buildx defaults under it -- but it also
+#                       relocates where docker looks for config.json, so
+#                       registry auth and credential helpers move with it.
+#                       Free today (there is no config.json; the dir holds
+#                       .token_seed and buildx/ and nothing else) and a trap
+#                       the first time anyone runs `docker login`.
+#   ReadWritePaths=     one line, and it spends ProtectHome on the user's real
+#     ~/.docker         home so a unit that has no business writing there can
+#                       accumulate state as a side effect.
+#   COMPOSE_BAKE=0      MEASURED AND IT DOES NOT WORK. The buildx state is
+#                       written regardless, and compose answers that the flag
+#                       is deprecated and "support for internal compose builder
+#                       will be removed in next release".
+#
+# fleet-autodeploy.service needs none of this: it carries no sandboxing beyond
+# NoNewPrivileges, so its home is writable and its 04:15 deploy was never the
+# one failing. This is the chain's problem alone, which is why the fix is here
+# and not in deploy.sh -- though deploy.sh is where it would belong if a third
+# caller ever appears.
+Environment=BUILDX_CONFIG=/tmp/buildx
+
 # THE SAME SOCKET POLICY AND THE SAME CEILING AS THE THREE UNITS THAT DECIDE A
 # PASS, because this unit now runs both of their verification paths in one
 # process. fleet-runner, fleet-console and fleet-automerge were found carrying
