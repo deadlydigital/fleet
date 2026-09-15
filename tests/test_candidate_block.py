@@ -354,7 +354,7 @@ class TestMeasuredImpactIsAStatedFigure:
     #: 660 ms the document corrects at 19:50.
     C66 = {"value": 619, "unit": "ms",
            "what": "the top_products statement, per dashboard request",
-           "dataset": ("tenant 166, dashboard at a 30-day window, median of "
+           "dataset": ("tenant 2 (analytics_2), dashboard at a 30-day window, median of "
                        "three warm passes on a quiet box"),
            "as_of": "2026-09-14"}
 
@@ -400,7 +400,7 @@ class TestMeasuredImpactIsAStatedFigure:
         code, out = run(tmp_path, block([candidate(measured_impact={
             "value": 4546466, "unit": "rows",
             "what": "order_items scanned by top_products",
-            "dataset": "tenant 166 at a 30-day window",
+            "dataset": "tenant 2 (analytics_2) at a 30-day window",
             "as_of": "2026-09-14"})]))
         assert code == 1 and "vocabulary is closed" in out
 

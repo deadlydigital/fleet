@@ -44,7 +44,7 @@ DO $$ BEGIN
     PERFORM pg_temp.q_insert('Q1', jsonb_build_object(
         'value', 619, 'unit', 'ms',
         'what', 'the top_products statement, per dashboard request',
-        'dataset', 'tenant 166, dashboard at a 30-day window, median of three '
+        'dataset', 'tenant 2 (analytics_2), dashboard at a 30-day window, median of three '
                    'warm passes on a quiet box',
         'as_of', '2026-09-14'));
 RAISE NOTICE 'Q1 pass  a well-formed figure inserts'; END $$;
@@ -83,7 +83,7 @@ DO $$ DECLARE ok bool := false; BEGIN
     BEGIN
         PERFORM pg_temp.q_insert('Q4', jsonb_build_object(
             'value', 619, 'unit', 'ms', 'what', 'top_products',
-            'dataset', 'tenant 166 at 30 days'));
+            'dataset', 'tenant 2 at 30 days'));
     EXCEPTION WHEN check_violation THEN ok := true;
     END;
     IF NOT ok THEN
@@ -98,7 +98,7 @@ DO $$ DECLARE ok bool := false; BEGIN
     BEGIN
         PERFORM pg_temp.q_insert('Q5', jsonb_build_object(
             'value', 619, 'unit', 'ms', 'what', 'top_products',
-            'dataset', 'tenant 166 at 30 days', 'as_of', 'recently'));
+            'dataset', 'tenant 2 at 30 days', 'as_of', 'recently'));
     EXCEPTION WHEN check_violation THEN ok := true;
     END;
     IF NOT ok THEN
@@ -116,7 +116,7 @@ DO $$ DECLARE ok bool := false; BEGIN
         PERFORM pg_temp.q_insert('Q6', jsonb_build_object(
             'value', 4546466, 'unit', 'rows',
             'what', 'order_items scanned by top_products',
-            'dataset', 'tenant 166 at 30 days', 'as_of', '2026-09-14'));
+            'dataset', 'tenant 2 at 30 days', 'as_of', '2026-09-14'));
     EXCEPTION WHEN check_violation THEN ok := true;
     END;
     IF NOT ok THEN
@@ -133,7 +133,7 @@ DO $$ DECLARE ok bool := false; BEGIN
     BEGIN
         PERFORM pg_temp.q_insert('Q7', jsonb_build_object(
             'value', 0, 'unit', 'ms', 'what', 'nothing measurable',
-            'dataset', 'tenant 166 at 30 days', 'as_of', '2026-09-14'));
+            'dataset', 'tenant 2 at 30 days', 'as_of', '2026-09-14'));
     EXCEPTION WHEN check_violation THEN ok := true;
     END;
     IF NOT ok THEN
@@ -147,7 +147,7 @@ DO $$ DECLARE ok bool := false; BEGIN
     BEGIN
         PERFORM pg_temp.q_insert('Q8', jsonb_build_object(
             'value', '619', 'unit', 'ms', 'what', 'top_products',
-            'dataset', 'tenant 166 at 30 days', 'as_of', '2026-09-14'));
+            'dataset', 'tenant 2 at 30 days', 'as_of', '2026-09-14'));
     EXCEPTION WHEN check_violation THEN ok := true;
     END;
     IF NOT ok THEN

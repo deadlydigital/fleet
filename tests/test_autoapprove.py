@@ -1468,7 +1468,7 @@ class TestKeyFiveIsMeasuredImpact:
 
     def _fig(self, value, as_of="2026-09-14"):
         return {"value": value, "unit": "ms", "what": "a statement",
-                "dataset": "tenant 166, 30-day window", "as_of": as_of}
+                "dataset": "tenant 2 (analytics_2), 2026-08-15..2026-09-14", "as_of": as_of}
 
     def _c(self, cid, value=None, prior=0, band="daily"):
         row = {"id": cid, "band": band, "prior_failures": prior,
@@ -1568,7 +1568,7 @@ class TestKeyFiveIsMeasuredImpact:
         the ordering's word for it."""
         k = rank.key_values(self._c(66, 619))
         assert k["key5_impact"]["value"] == 619
-        assert k["key5_impact"]["dataset"] == "tenant 166, 30-day window"
+        assert k["key5_impact"]["dataset"] == "tenant 2 (analytics_2), 2026-08-15..2026-09-14"
         assert k["key5_impact"]["as_of"] == "2026-09-14"
         assert rank.key_values(self._c(1))["key5_impact"] is None
 
