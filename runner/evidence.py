@@ -22,6 +22,7 @@ import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any
 
 import psycopg
@@ -37,6 +38,11 @@ READERS = {
 }
 
 MAX_ROWS = 200
+
+#: Task-authored packs are capped harder than contract ones: a contract is a
+#: considered, reviewed file and a task's block is written by an agent in one
+#: pass.
+MAX_TASK_QUERIES = 12
 STATEMENT_TIMEOUT_MS = 30_000
 
 
@@ -54,6 +60,116 @@ class QueryResult:
     @property
     def ok(self) -> bool:
         return not self.error
+
+
+#: Tables a TASK-AUTHORED query may not touch, matched on the query text.
+#:
+#: WHY THERE IS A DENYLIST AT ALL, AND WHY IT IS ONE NAME. Contract-level
+#: queries are written by a person into contracts/**, which is on the fleet
+#: floor for every task -- editing one is a human act. Task-level queries are
+#: written by the draft-spec AGENT, and a draft-spec task merges unattended, so
+#: the SQL reaches production with nobody in the loop.
+#:
+#: The containment is already strong: the session is read-only, the role holds
+#: SELECT and nothing else, the statement timeout is 30 s and the pack keeps
+#: 200 rows. What that does not stop is READING something it should not, and
+#: the pack is written INTO the worktree at a path the contract declares --
+#: research-metorik-gap.yaml points it at `research/EVIDENCE-metorik.md`, which
+#: is inside writable_paths and therefore COMMITTED.
+#:
+#: Measured 15 Sep 2026, `dd_detector_login` can SELECT exactly nine tables:
+#: analytics_{1,2}.orders, analytics_{1,2}.order_items,
+#: analytics_{1,2}.reconciliation_manifests, public.orders, public.tenants and
+#: public.utm_source_alias. Of those, ONE carries a secret: `public.tenants`
+#: has `api_key` and `api_key_hash`. So the denylist is one name, and it covers
+#: the whole of the sensitive surface rather than guessing at it.
+#:
+#: A contract-level query may still read tenants -- research-metorik-gap.yaml's
+#: `dd_tenants` reads id, name and created_at and is the reason the grant
+#: exists. This rule is about who WROTE the query, not about what the role can
+#: reach.
+TASK_QUERY_DENIED_TABLES = ("tenants",)
+
+#: Belt and braces, because the rule above depends on a list of what is
+#: sensitive staying current and lists go stale. Values shaped like a tenant
+#: API key are replaced in the RESULT of a task-authored query, whatever table
+#: they came from -- so a table granted to this role next month, carrying a
+#: secret nobody thought to add above, does not reach a committed file.
+_SECRET_SHAPED = re.compile(r"\bdd_[A-Za-z0-9_-]{20,}\b")
+
+REDACTED = "[redacted by runner/evidence.py: shaped like a credential]"
+
+
+class QueryRefused(ValueError):
+    """A declared query this will not run, with the reason."""
+
+
+def validate_task_queries(queries: Any) -> list[dict[str, Any]]:
+    """Check a TASK-AUTHORED `evidence_queries` block and return it.
+
+    Raises QueryRefused with a sentence. One definition, three readers: the
+    draft check refuses the block at draft time, console/autoqueue refuses it
+    at queue time, and this module is where both of them ask -- the same
+    arrangement spec_requirements_cited.py has with console.requirements, and
+    for the same reason.
+    """
+    if queries is None:
+        return []
+    if not isinstance(queries, list):
+        raise QueryRefused("evidence_queries must be a list of queries")
+    if len(queries) > MAX_TASK_QUERIES:
+        raise QueryRefused(
+            f"{len(queries)} queries declared and the ceiling is "
+            f"{MAX_TASK_QUERIES}. The pack is read before the agent starts and "
+            f"is the agent's whole view of the database; a pack nobody can "
+            f"read is not evidence.")
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for n, q in enumerate(queries, start=1):
+        where = f"evidence_queries[{n}]"
+        if not isinstance(q, dict):
+            raise QueryRefused(f"{where} is not a mapping of key, reader and sql")
+        key, reader, sql = q.get("key"), q.get("reader"), q.get("sql")
+        if not key or not str(key).strip():
+            raise QueryRefused(
+                f"{where} has no key. The key names the reading in the pack "
+                f"and in the document that cites it.")
+        key = str(key).strip()
+        if key in seen:
+            raise QueryRefused(
+                f"{where} repeats the key {key!r}; two readings under one name "
+                f"cannot be told apart afterwards")
+        seen.add(key)
+        if reader not in READERS:
+            raise QueryRefused(
+                f"{where} names reader {reader!r}; a task may name only "
+                f"{', '.join(sorted(READERS))}")
+        if not sql or not str(sql).strip():
+            raise QueryRefused(f"{where} has no sql")
+        text = str(sql)
+        low = text.lower()
+        for denied in TASK_QUERY_DENIED_TABLES:
+            if re.search(rf"\b{re.escape(denied)}\b", low):
+                raise QueryRefused(
+                    f"{where} references {denied!r}. A task-authored query may "
+                    f"not read it: the evidence pack is written to a path the "
+                    f"contract declares writable and is therefore COMMITTED, "
+                    f"and public.tenants carries api_key and api_key_hash. A "
+                    f"contract-level query may read it -- a person wrote that "
+                    f"one into a protected file.")
+        out.append({"key": key, "reader": reader, "sql": text,
+                    # Marks the result for redact() in run_queries. A
+                    # contract-level query carries no such flag and is
+                    # passed through untouched.
+                    "task_authored": True})
+    return out
+
+
+def redact(value: Any) -> Any:
+    """Replace credential-shaped values on their way into the pack."""
+    if not isinstance(value, str):
+        return value
+    return _SECRET_SHAPED.sub(REDACTED, value)
 
 
 def _connect(reader: str) -> psycopg.Connection:
@@ -96,7 +212,17 @@ def run_queries(queries: list[dict[str, Any]]) -> list[QueryResult]:
                     rows = conn.execute(q["sql"]).fetchall()
                     r.row_count = len(rows)
                     r.truncated = len(rows) > MAX_ROWS
-                    r.rows = rows[:MAX_ROWS]
+                    rows = rows[:MAX_ROWS]
+                    # REDACTED ON THE WAY IN, not on the way out. The pack is
+                    # written to a committed path, so a credential that reaches
+                    # `r.rows` has already reached the thing that matters.
+                    # Only for task-authored queries: a contract-level one was
+                    # written by a person into a protected file, and silently
+                    # rewriting their reading would be the worse surprise.
+                    if q.get("task_authored"):
+                        rows = [{k: redact(v) for k, v in row.items()}
+                                for row in rows]
+                    r.rows = rows
                 except Exception as exc:                          # noqa: BLE001
                     conn.rollback()
                     r.error = str(exc).splitlines()[0][:300]

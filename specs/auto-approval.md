@@ -2115,7 +2115,7 @@ column into that write would make every future column a way to stop the
 reason being recorded. When several runs have reported, `MEASURED_PEAK_MIB`
 moves to what a tick actually costs.
 
-### 9.16 The only contract carrying `evidence_queries` cannot be selected any more
+### 9.16 The only contract carrying `evidence_queries` cannot be selected any more — **SUPERSEDED 15 Sep 2026**
 
 Found 11 Sep 2026 from `research/refund-coverage.md` (task 57), which says "not
 measured" against most of its own requirements and names the reason in its first
@@ -2166,6 +2166,55 @@ can never match, so the wide one always wins and the refusal never fires. A
 about what a research contract is for, which is the user's call. What must not
 happen is a third research contract: that makes the ambiguity worse in exactly
 the way §9.13 measured.
+
+---
+
+**SUPERSEDED 15 Sep 2026. Both options above are dead, and the diagnosis was
+half the problem.** `research/top-products-index-pricing.md` (task 105) is the
+fourth document to report the gap — after task 57's `refund-coverage.md` and
+`segmentation-model-2026-09-11.md`, both on 11 Sep.
+
+**Option A is dead.** The pinned path no longer resolves to its own contract; it
+resolves to *both* and §9.13's ambiguity rule refuses it outright. Measured:
+
+    ['research/metorik-gap-2026-08-30.md'] -> QueueRefused: matches 2 contracts
+
+So widening it would mean reviving a contract that cannot currently be queued
+even by the file it is pinned to.
+
+**Option B was never sufficient**, for two reasons this section could not have
+seen:
+
+1. **The reader could not see the table.** `evidence_queries` run as
+   `dd_detector_login`, which held SELECT on `orders`,
+   `reconciliation_manifests`, `public.orders`, `public.tenants` and
+   `public.utm_source_alias` — and *not* `order_items`, the table task 105's
+   research is entirely about. Declaring queries would have produced a pack of
+   `permission denied`. §9.16 missed it because task 57's research was about
+   `orders`, which the role can read. Fixed by
+   `dd_047_the_evidence_reader_can_see_order_items.sql`.
+
+2. **`console/autoqueue` dropped the key.** It builds a task's frozen
+   `acceptance_contract` from a named list of contract keys, and
+   `evidence_queries` was not on it. `fleet task add` freezes the whole file —
+   which is why tasks 4 and 5 carry queries — but the chain autoqueues
+   everything, so a block on `research.yaml` would have been stripped before
+   any task saw it. Option B would have changed nothing.
+
+**And the shape was wrong.** A research question and its queries are one-to-one,
+which is *why* the only contract that ever carried queries was pinned to a
+single filename — that pinning was the design showing its shape, not a mistake.
+A fixed block on `research.yaml` hands every research task the same pack: right
+for a gap sweep, useless for an index pricing.
+
+**What was built instead:** the block travels with the task. A `fleet-spec`
+block may declare `evidence_queries`; `console/autoqueue` validates and freezes
+them onto the task beside everything else the contract froze;
+`runner/cycle.py` needed no change, because `evidence_queries` was already the
+key it looked for. A task-authored query may not read `tenants` — the pack is
+written to a path the contract declares writable and therefore commits, and
+that table carries `api_key` — and credential-shaped values are redacted out of
+a task-authored result whatever table they came from.
 
 ### 9.17 A task that shipped reads NOT_DELIVERED — **BUILT 11 Sep 2026** (`036`, `tasks.shipped_by_decision_id`)
 

@@ -612,6 +612,35 @@ def main() -> int:
                     f"from the two runs this defect has killed, not from a "
                     f"survey, so it misses wordings nobody has used yet.")
 
+            # 9. AND IF THE DRAFT ASKS FOR READINGS, THE BLOCK MUST BE ONE THE
+            #    RUNNER WILL ACTUALLY RUN. `evidence_queries` on a fleet-spec
+            #    block is how a research task gets numbers at all: the agent has
+            #    no shell and no credential, so the runner reads the database
+            #    for it, before it starts, as a read-only SELECT-only role.
+            #
+            #    Checked HERE as well as at queue time because the two refusals
+            #    cost different money. A block refused by console/autoqueue has
+            #    already been paid for; refused here it costs a rewrite of the
+            #    draft that is being written anyway. Validated by
+            #    runner.evidence.validate_task_queries -- imported, not
+            #    reimplemented, so the rule that refuses at draft time and the
+            #    rule that refuses at queue time cannot drift apart.
+            if "evidence_queries" in block:
+                try:
+                    from runner import evidence as _evidence
+                    _evidence.validate_task_queries(block["evidence_queries"])
+                except ImportError as exc:                   # pragma: no cover
+                    return fail(f"cannot import runner.evidence ({exc}), so the "
+                                f"evidence block this spec declares cannot be "
+                                f"checked. Reported as a refusal, never as a pass.")
+                except Exception as exc:
+                    return fail(
+                        f"{rel} declares an evidence_queries block the runner "
+                        f"would refuse: {exc}. The pack runs against production "
+                        f"as a read-only role and is written into a file this "
+                        f"task commits, so a block that cannot be checked is "
+                        f"not run.")
+
             print(f"ok: {rel} block {blocks.index(block) + 1}/{len(blocks)} -- "
                   f"work_type '{work_type}' has a contract, "
                   f"{len(writable)} writable path(s) resolve and none is "

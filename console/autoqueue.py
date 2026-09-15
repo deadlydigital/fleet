@@ -66,6 +66,7 @@ from typing import Any
 import yaml
 
 from console import config, db, requirements
+from runner import evidence
 from runner.boundary import path_inside
 
 #: The same block the draft-spec check reads. One shape, one parser.
@@ -494,9 +495,54 @@ def _queue_blocks(task: dict[str, Any], blocks: list, rel: str,
                     "read_only_links",
                     "paired_paths",
                     "worktree_links", "readable_repos", "agent_tools",
+                    # EVIDENCE_QUERIES WAS NOT ON THIS LIST UNTIL 15 Sep 2026,
+                    # and its absence was a third, unreported reason the pack
+                    # never ran. `fleet task add` freezes the whole contract
+                    # file, so tasks 4 and 5 carry queries; this path builds
+                    # `frozen` from the named keys above, so an AUTOQUEUED task
+                    # could never carry them however the contract was written.
+                    # Since the chain autoqueues everything, putting queries on
+                    # research.yaml -- §9.16's proposal -- would have changed
+                    # nothing at all.
+                    "evidence_queries",
+                    "evidence_pack",
                     "auto_merge", "contract_version"):
             if contract.get(opt) is not None:
                 frozen[opt] = contract[opt]
+
+        # THE QUERIES THE DRAFT ITSELF ASKED FOR.
+        #
+        # §9.16 offered two repairs and neither was right. Widening
+        # research-metorik-gap.yaml revives a contract pinned to a dated
+        # filename that §9.13's ambiguity rule now refuses outright; putting a
+        # fixed block on research.yaml hands every research task the same pack,
+        # which is the wrong shape -- a research question and its queries are
+        # one-to-one, which is WHY the only contract that ever carried queries
+        # was pinned to a single file.
+        #
+        # So the block travels with the task. The draft declares it, this
+        # freezes it onto `acceptance_contract` beside everything else the
+        # contract froze, the database freezes that the moment the task leaves
+        # QUEUED, and runner/cycle.py reads it without a line of change --
+        # evidence_queries was already the key it looked for.
+        #
+        # APPENDED, NEVER MERGED OVER. A contract's own queries run first and
+        # the task's follow, contiguous and in order, so a contract-level
+        # baseline survives and a task's multi-statement protocol is not
+        # interleaved with it. runner/evidence.run_queries groups by reader and
+        # runs each group on ONE connection in list order, which is what lets a
+        # hypopg session protocol work at all.
+        declared_queries = block.get("evidence_queries")
+        if declared_queries is not None:
+            try:
+                checked = evidence.validate_task_queries(declared_queries)
+            except evidence.QueryRefused as exc:
+                raise QueueRefused(
+                    f"{where}: {exc}. The pack runs against production as a "
+                    f"read-only role and lands in a file this task commits, so "
+                    f"a block that cannot be checked is not run.") from exc
+            frozen["evidence_queries"] = (
+                list(contract.get("evidence_queries") or []) + checked)
         links.append({"position": n, "block": block, "work_type": work_type,
                       "repo": target_repo, "declared": declared,
                       "contract": contract, "contract_file": contract_file,

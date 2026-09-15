@@ -90,6 +90,47 @@
 #
 # The rule in one line, and it is the one to keep: A SPEC MUST NOT NUMBER WORK
 # ITS OWN AGENT HAS NO TOOLS TO PERFORM.
+#
+# EXCEPT THAT A RESEARCH SPEC CAN ASK FOR READINGS, IF IT DECLARES THEM
+#
+# The one route from a spec to a number, and it is not a shell. A fleet-spec
+# block may carry an `evidence_queries` list, and the runner runs those queries
+# BEFORE the agent starts -- as a read-only role holding SELECT and nothing
+# else -- and writes the answers into the worktree as a markdown file the agent
+# reads like any other. The agent still cannot reach a database; the runner
+# reached it on the agent's behalf and the questions were fixed in advance.
+#
+#   evidence_queries:
+#     - key: tp_01_table_facts          # names the reading in the pack
+#       reader: deadly_digital          # or `fleet`; those two and no others
+#       sql: |
+#         SELECT count(*) AS rows FROM analytics_2.order_items
+#
+# WHAT THE RUNNER'S SHAPE DEMANDS OF THE BLOCK, because getting any of these
+# wrong produces a pack full of errors rather than readings. All four are
+# properties of runner/evidence.py and research/top-products-index-pricing.md
+# §5 derives them with line numbers:
+#
+#   * The session is READ-ONLY and the role holds SELECT. `CREATE EXTENSION`
+#     cannot be in a pack. An extension must already be installed out of band.
+#   * Order is preserved WITHIN a reader, on one connection, so session state
+#     carries from one query to the next -- which is what lets a multi-step
+#     protocol work. Keep such a run contiguous and do not interleave.
+#   * Every query must RETURN ROWS. `fetchall()` on a statement with no result
+#     set raises, and the pack records that as an error.
+#   * Prefer `EXPLAIN (FORMAT JSON)` to the default text: the pack renders rows
+#     as a markdown table, so a 20-line text plan becomes 20 rows.
+#
+# AND WHAT YOU MAY NOT ASK FOR. A task-authored query may not read `tenants`:
+# the pack is written to a path the contract declares writable and is therefore
+# COMMITTED, and that table carries `api_key`. Values shaped like a credential
+# are redacted out of a task-authored result whatever table they came from.
+# contracts/checks/draft_spec_shape.py refuses a block the runner would refuse,
+# here, before the money.
+#
+# IF YOU NEED A READING AND CANNOT DECLARE IT -- the table is not granted to
+# either reader, or the question needs a shell -- then say so in the draft and
+# do not number it as a requirement. That is the rule above, unchanged.
 
 work_type: draft_spec
 repo: fleet
