@@ -320,3 +320,83 @@ class TestARefusedNightIsARecordedNight:
                 return "permission denied for table decision_log"
         claims = P._refusal_claims(_R(), NOW - timedelta(days=1))
         assert claims and claims[0].uncomputed_reason
+
+
+class TestTheDeployUnitIsVisibleInTheBrief:
+    """15 Sep 2026. Seven refusals in seven runs were invisible here.
+
+    A refused deploy wrote nothing anywhere but journalctl, so the brief said
+    the same thing -- nothing -- for "the timer did not fire", "there was
+    nothing to deploy" and "it refused again". The streak is the only form in
+    which a unit that never works is distinguishable from one with no work.
+
+    Built from rows the way the class above is: these tests are about what the
+    brief PRINTS when handed a decision, not about the SQL that finds it.
+    """
+
+    def _rows(self, n_refusals, *, deployed_last=False, drift="DRIFT",
+              reason="drift-check says DRIFT"):
+        rows, streak = [], 0
+        for i in range(n_refusals):
+            streak += 1
+            rows.append({
+                "id": 100 + i, "decided_at": NOW, "decision": "DEFERRED",
+                "reason": reason, "streak": streak,
+                "mechanics": {"outcome": "refused", "target": "c" * 40,
+                              "commits": 1,
+                              "drift": {"status": drift, "detail": "c" * 40}}})
+        if deployed_last:
+            rows.append({
+                "id": 200, "decided_at": NOW, "decision": "APPROVED",
+                "reason": "deployed", "streak": 0,
+                "mechanics": {"outcome": "deployed", "target": "d" * 40,
+                              "commits": 2,
+                              "drift": {"status": "DRIFT", "detail": "c" * 40}}})
+        return rows
+
+    def _claims(self, rows):
+        class _R:
+            def probe(self, key, body):
+                return rows if key == "fleet:decision_log/deploys" else None
+            def failed(self, key):
+                return None
+        return P._deploy_decision_claims(_R(), NOW - timedelta(days=1))
+
+    def test_a_refused_deploy_appears_with_its_drift_reading(self):
+        md = _render(self._claims(
+            self._rows(1, drift="AHEAD", reason="drift-check says AHEAD")))
+        assert "did not deploy" in md
+        assert "drift-check said AHEAD" in md
+
+    def test_a_run_of_refusals_is_a_number(self):
+        md = _render(self._claims(self._rows(7)))
+        assert "7 run(s) in a row" in md
+        assert "the unit, not the day" in md
+
+    def test_one_refusal_is_just_a_day(self):
+        md = _render(self._claims(self._rows(1)))
+        assert "did not deploy" in md
+        assert "run(s) in a row" not in md
+
+    def test_a_deploy_is_rendered_as_one(self):
+        md = _render(self._claims(self._rows(0, deployed_last=True)))
+        assert "deployed" in md
+        assert "run(s) in a row" not in md
+
+    def test_it_does_not_render_as_an_approval_refusal(self):
+        """The two are different facts sharing a table. A deploy that did not
+        happen must never read as 'approved nothing'."""
+        md = _render(self._claims(self._rows(3)))
+        assert "did not deploy" in md
+        assert "approved nothing" not in md
+
+    def test_an_unreadable_log_says_so_rather_than_nothing(self):
+        """Silence is the failure mode this whole class is about, so the
+        no-answer case must not produce it either."""
+        class _R:
+            def probe(self, key, body):
+                return None
+            def failed(self, key):
+                return "connection refused"
+        claims = P._deploy_decision_claims(_R(), NOW - timedelta(days=1))
+        assert claims and claims[0].uncomputed

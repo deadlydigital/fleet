@@ -70,6 +70,7 @@ THE FIVE REFUSALS
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -100,6 +101,129 @@ def _git(repo: Path, *args: str) -> Optional[str]:
     r = subprocess.run(["git", "-C", str(repo), *args],
                        capture_output=True, text=True, timeout=60)
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+#: The product a deploy decision is ABOUT. Distinct from `fleet`, which is what
+#: console/approve.py's approval refusals carry -- so the two never render as
+#: each other, and brief/pass_.py's approval-streak query keeps working
+#: unchanged. Matches the value 21 existing deadly_digital rows already use.
+DEPLOY_PRODUCT = "deadly_digital"
+
+#: DEFERRED for a refusal, APPROVED for a deploy that went ahead. Both are
+#: written, and writing BOTH is the point: a streak is "refusals since the last
+#: time something shipped", and with only one of the two recorded there is
+#: nothing to count from.
+REFUSED, DEPLOYED = "DEFERRED", "APPROVED"
+
+
+def record(decision: DeployDecision, *, running: str, target: str,
+           drift: Any, log=print) -> int | None:
+    """Write down what this run decided. Returns the decision id, or None.
+
+    WHY A UNIT THAT REFUSES CORRECTLY STILL HAS TO SAY SO
+    -----------------------------------------------------
+    This is console/approve.record_unattended_refusal's argument, arriving at
+    the second unit that needed it, and the phrasing there is exact: SILENCE
+    CANNOT BE COUNTED.
+
+    Until this, a refused deploy wrote nothing anywhere but journalctl. So
+    these three left an identical trace -- none:
+
+        the timer did not fire
+        the timer fired and there was nothing to deploy
+        the timer fired and refused, for the seventh day running
+
+    WHAT WAS VISIBLE WAS THE STATE, NOT THE DECISION, and that is why this hid
+    so well rather than merely being unlogged. brief/pass_._deploy_claims has
+    always printed "api: production DOES NOT match main (DRIFT)" off the cron'd
+    drift files. A reader who saw that line had every reason to conclude the
+    04:15 timer would catch production up. Nothing said it had already run and
+    declined to.
+
+    The third case above is the one that matters and it was the one nobody
+    could see. It
+    took reading `journalctl -u fleet-autodeploy.service` by hand, on 15 Sep
+    2026, to find that this unit had run seven times, refused seven times, and
+    NEVER DEPLOYED ANYTHING -- for six different-looking reasons, two of which
+    were the same structural bug. A unit that refuses every time looks exactly
+    like a unit with nothing to do, and looking at the code does not tell you
+    which you have.
+
+    THE STREAK IS THE NUMBER, not the row. One refused deploy is Tuesday.
+    Seven in a row is a unit that does not work, and it is only a number if
+    each run leaves a row to count. That is why a successful deploy is recorded
+    too: a streak needs something to reset it.
+
+    NOT A DEPLOYMENT RECORD. console/deploys.py remains the answer to "what is
+    production running", read from the drift state files outside this database
+    -- its own header explains why that cannot come from here. This records
+    what the UNIT DECIDED, which is a different fact and was not written down
+    at all.
+    """
+    from . import db
+
+    mechanics = {
+        "outcome": "deployed" if decision.ok else "refused",
+        "reason": decision.reason or "",
+        "running": running or None,
+        "target": target or None,
+        "commits": len(decision.commits),
+        "unattended_tasks": decision.unattended,
+        # The reading this decision was made against, so the row can be checked
+        # rather than believed. `status` is the field that made BEHIND and
+        # AHEAD indistinguishable until 15 Sep 2026; recording it means a
+        # future run of refusals can be read back by cause.
+        "drift": {
+            "status": getattr(drift, "status", None),
+            "detail": getattr(drift, "detail", None),
+            "age_seconds": (int(getattr(drift, "age").total_seconds())
+                            if getattr(drift, "age", None) is not None else None),
+        },
+    }
+    subject = (f"Deployed {target[:12]}" if decision.ok
+               else f"Did not deploy {target[:12] if target else 'main'}")
+    try:
+        with db.writer() as conn, conn.transaction():
+            conn.execute(
+                "INSERT INTO decision_log (product, subject, decision, reason,"
+                " decided_by, evidence, decided_via, mechanics)"
+                " VALUES (%s,%s,%s,%s,current_user,%s,'unattended',%s)",
+                (DEPLOY_PRODUCT, subject,
+                 DEPLOYED if decision.ok else REFUSED,
+                 decision.reason or "deployed", json.dumps([
+                     {"kind": "task", "id": t} for t in decision.unattended]),
+                 json.dumps(mechanics)))
+            return conn.execute(
+                "SELECT currval('decision_log_id_seq') AS id").fetchone()["id"]
+    except Exception as exc:                        # noqa: BLE001
+        # A RECORD THAT FAILS MUST NOT CHANGE WHAT HAPPENED. This runs after
+        # the decision and, on the deploy path, after deploy.sh -- so raising
+        # here would turn a successful deploy into a traceback and a failed
+        # one into two problems. Logged loudly instead, because an unwritable
+        # decision log is itself the defect this function exists to prevent.
+        log(f"  WARNING: the decision was not recorded ({type(exc).__name__}: "
+            f"{exc}). This run is invisible to the streak, which is the "
+            f"condition that hid seven refusals.")
+        return None
+
+
+def refusal_streak(conn) -> int:
+    """How many runs in a row have now refused. 0 if the last one deployed.
+
+    Counted in SQL rather than kept in a column, on the same argument
+    brief/pass_.py's approval streak uses: the rows are the record, and a
+    counter beside them is a second thing that can be wrong.
+    """
+    row = conn.execute(
+        "SELECT count(*) AS n FROM decision_log"
+        " WHERE product = %s AND decided_via = 'unattended'"
+        "   AND decision = %s"
+        "   AND id > coalesce((SELECT max(d.id) FROM decision_log d"
+        "                       WHERE d.product = %s"
+        "                         AND d.decided_via = 'unattended'"
+        "                         AND d.decision = %s), 0)",
+        (DEPLOY_PRODUCT, REFUSED, DEPLOY_PRODUCT, DEPLOYED)).fetchone()
+    return int(row["n"] if isinstance(row, dict) else row[0])
 
 
 def should_deploy(repo: Path, deployment: Any, unattended_shas: set[str]
@@ -291,8 +415,32 @@ def run(*, dry_run: bool = False, log=print) -> DeployDecision:
     drift = found.get("api")
     decision = should_deploy(repo, drift, shas)
 
+    def _record(d: DeployDecision) -> None:
+        """One row per run, whatever happened. See record()'s docstring."""
+        if dry_run:
+            log("  dry run: nothing recorded")
+            return
+        rid = record(d, running=d.running, target=d.target, drift=drift,
+                     log=log)
+        if rid is None:
+            return
+        try:
+            with db.connect() as conn:
+                n = refusal_streak(conn)
+        except Exception:                            # noqa: BLE001
+            return
+        if n > 1:
+            # THE SENTENCE THE JOURNAL NEVER SAID. Seven consecutive refusals
+            # read as seven ordinary nights, because each line only ever
+            # described itself. A refusal is correct behaviour; a run of them
+            # is a unit that does not work.
+            log(f"  {n} run(s) in a row have now refused with nothing "
+                f"deployed between them. A refusal is correct behaviour; a "
+                f"run of them is this unit, not the day.")
+
     if not decision.ok:
         log(f"not deploying: {decision.reason}")
+        _record(decision)
         return decision
 
     log(f"deploying {decision.running[:12]} -> {decision.target[:12]}, "
@@ -314,9 +462,16 @@ def run(*, dry_run: bool = False, log=print) -> DeployDecision:
     if r.returncode != 0:
         log(f"deploy.sh FAILED ({r.returncode}); production is untouched "
             f"unless it says otherwise:\n{tail}")
-        return DeployDecision(False, f"deploy.sh exited {r.returncode}",
-                              running=decision.running, target=decision.target,
-                              commits=decision.commits,
-                              unattended=decision.unattended)
+        failed = DeployDecision(
+            False, f"deploy.sh exited {r.returncode}",
+            running=decision.running, target=decision.target,
+            commits=decision.commits, unattended=decision.unattended)
+        # A FAILED DEPLOY IS A REFUSAL FOR STREAK PURPOSES, and deliberately:
+        # what the streak counts is runs that did not ship, and a build that
+        # broke did not ship. Recording it as a deploy would reset the count on
+        # the strength of an attempt.
+        _record(failed)
+        return failed
     log("deployed")
+    _record(decision)
     return decision

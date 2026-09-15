@@ -198,6 +198,30 @@ _REFUSALS_SQL = """
 """
 
 
+#: Deploy decisions, which are product='deadly_digital' rather than 'fleet' --
+#: see console/autodeploy.DEPLOY_PRODUCT. Kept apart from _REFUSALS_SQL above
+#: on purpose: a deploy that did not happen is not an approval that did not
+#: happen, and rendering one as the other is how a reader stops believing
+#: either.
+_DEPLOY_SQL = """
+    SELECT d.id, d.decided_at, d.decision, d.reason, d.mechanics,
+           (SELECT count(*) FROM decision_log e
+             WHERE e.product = 'deadly_digital'
+               AND e.decided_via = 'unattended'
+               AND e.decision = 'DEFERRED'
+               AND e.id > coalesce((SELECT max(f.id) FROM decision_log f
+                                     WHERE f.product = 'deadly_digital'
+                                       AND f.decided_via = 'unattended'
+                                       AND f.decision = 'APPROVED'), 0)
+               AND e.id <= d.id) AS streak
+      FROM decision_log d
+     WHERE d.product = 'deadly_digital'
+       AND d.decided_via = 'unattended'
+       AND d.decided_at > %(since)s
+     ORDER BY d.id
+"""
+
+
 def _approval_claims(r: S.Reader, since) -> List[Claim]:
     """What the machine ticked while nobody was watching.
 
@@ -395,6 +419,72 @@ def _refusal_claims(r: S.Reader, since) -> List[Claim]:
             f"overnight.refusal.{x['id']}", line, source="fleet:decision_log",
             as_of=x["decided_at"] or now, value_num=x["streak"],
             query_key="overnight_refusal", query_version=1))
+    return out
+
+
+
+def _deploy_decision_claims(r: S.Reader, since) -> List[Claim]:
+    """What the deploy unit DECIDED, which is not what `_deploy_claims` says.
+
+    THE TWO ARE DIFFERENT FACTS AND ONLY ONE WAS EVER PRINTED.
+    `_deploy_claims` below reports the STATE -- "api: production DOES NOT match
+    main (DRIFT)" -- read from the cron'd drift files. That line was there
+    throughout, and it is exactly why this gap was so easy to miss: a reader
+    who saw it had every reason to think the 04:15 timer would catch production
+    up, because nothing anywhere said the timer had already run and refused.
+
+    This reports the DECISION. `fleet-autodeploy.service` ran seven times
+    between 9 and 15 Sep 2026, refused seven times, and deployed nothing. Two
+    of those seven were one structural bug -- it refused on drift-check's
+    DRIFT, which means production is BEHIND, which is the state that means
+    there is something to deploy -- and it took reading
+    `journalctl -u fleet-autodeploy.service` by hand to find out.
+
+    So the pair to read together is "production does not match main" and "the
+    unit declined to fix that, N runs running". A refusal is correct behaviour;
+    a RUN of them is the unit, not the day, and the streak is the only form in
+    which that is visible.
+    """
+    out: List[Claim] = []
+    if since is None:
+        return []
+
+    rows = r.probe("fleet:decision_log/deploys",
+                   S.rows(_DEPLOY_SQL, {"since": since}))
+    if rows is None:
+        return [Claim.uncomputed(
+            "overnight.deploys", "what the deploy unit decided",
+            reason=(r.failed("fleet:decision_log/deploys")
+                    or "decision_log could not be read, so whether anything "
+                       "was deployed is unknown -- which is the state this "
+                       "claim exists to stop being the default"))]
+    if not rows:
+        return []
+
+    now = _utcnow()
+    for x in rows:
+        m = x["mechanics"] or {}
+        drift = (m.get("drift") or {})
+        if x["decision"] == "APPROVED":
+            line = (f"deployed {(m.get('target') or '?')[:12]}: "
+                    f"{m.get('commits', '?')} commit(s)")
+            streak = 0
+        else:
+            line = f"did not deploy: {x['reason']}"
+            streak = x["streak"] or 0
+            if streak > 1:
+                line += (f"\n      {streak} run(s) in a row have now refused "
+                         f"with nothing deployed between them. A refusal is "
+                         f"correct behaviour; a run of them is the unit, not "
+                         f"the day.")
+        if drift.get("status"):
+            line += (f"\n      drift-check said {drift['status']}"
+                     + (f" ({(drift.get('detail') or '')[:12]})"
+                        if drift.get("detail") else ""))
+        out.append(Claim.overnight(
+            f"overnight.deploy.{x['id']}", line, source="fleet:decision_log",
+            as_of=x["decided_at"] or now, value_num=streak,
+            query_key="overnight_deploy", query_version=1))
     return out
 
 
@@ -1012,6 +1102,7 @@ def run_pass(fleet_dsn: str, dd_dsn: str, write_dsn: str, *,
         # Approvals BEFORE runs, because the approval is what CAUSED them.
         claims += _approval_claims(reader, last)
         claims += _refusal_claims(reader, last)
+        claims += _deploy_decision_claims(reader, last)
         claims += _overnight_claims(reader, last)
         claims += _fleet_claims(reader, last)
         claims += _sentry_claims(reader)

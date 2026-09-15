@@ -199,3 +199,109 @@ def test_every_refusal_says_why_in_a_sentence(repo):
         assert not d.ok
         assert len(d.reason.split()) >= 8, f"terse: {d.reason!r}"
 
+
+# ---- a run of refusals is a number, not seven identical silences ----------
+
+class TestEveryRunLeavesARow:
+    """15 Sep 2026, and it is the reason the bug above survived seven days.
+
+    A refused deploy wrote nothing anywhere but journalctl, so these three left
+    an identical trace -- none:
+
+        the timer did not fire
+        the timer fired and there was nothing to deploy
+        the timer fired and refused, for the seventh day running
+
+    console/approve.py had already solved this for the approval path and its
+    docstring says why in four words: SILENCE CANNOT BE COUNTED. This is the
+    same fix at the second unit that needed it.
+    """
+
+    def _dec(self, ok, reason="because"):
+        return autodeploy.DeployDecision(
+            ok, reason, running="b" * 40, target="c" * 40,
+            commits=["c" * 40], unattended=[])
+
+    def test_a_refusal_is_written_down(self, dsns, console, monkeypatch):
+        rid = autodeploy.record(self._dec(False, "drift-check says AHEAD"),
+                                running="b" * 40, target="c" * 40,
+                                drift=_dep(status="AHEAD"))
+        assert rid
+        row = console.execute(
+            "SELECT product, decision, decided_via, reason, mechanics"
+            " FROM decision_log WHERE id=%s", (rid,)).fetchone()
+        assert row["product"] == autodeploy.DEPLOY_PRODUCT
+        assert row["decision"] == autodeploy.REFUSED
+        assert row["decided_via"] == "unattended"
+        assert "AHEAD" in row["reason"]
+        # The reading it was made against, so the row can be checked rather
+        # than believed -- and so a run of refusals can be read back by cause.
+        assert row["mechanics"]["drift"]["status"] == "AHEAD"
+        assert row["mechanics"]["outcome"] == "refused"
+
+    def test_a_deploy_is_written_down_too(self, dsns, console, monkeypatch):
+        """A streak needs something to reset it. With only refusals recorded
+        there is nothing to count FROM."""
+        rid = autodeploy.record(self._dec(True, "deployed"),
+                                running="b" * 40, target="c" * 40,
+                                drift=_dep(status="DRIFT"))
+        row = console.execute("SELECT decision, mechanics FROM decision_log"
+                              " WHERE id=%s", (rid,)).fetchone()
+        assert row["decision"] == autodeploy.DEPLOYED
+        assert row["mechanics"]["outcome"] == "deployed"
+
+    def test_the_streak_counts_refusals_since_the_last_deploy(
+            self, dsns, console, monkeypatch):
+        """Seven in a row is the number that would have surfaced this bug on
+        day two instead of day seven."""
+        for _ in range(7):
+            autodeploy.record(self._dec(False), running="b" * 40,
+                              target="c" * 40, drift=_dep(status="DRIFT"))
+        assert autodeploy.refusal_streak(console) >= 7
+        autodeploy.record(self._dec(True), running="b" * 40, target="c" * 40,
+                          drift=_dep(status="DRIFT"))
+        assert autodeploy.refusal_streak(console) == 0
+        autodeploy.record(self._dec(False), running="b" * 40, target="c" * 40,
+                          drift=_dep(status="DRIFT"))
+        assert autodeploy.refusal_streak(console) == 1
+
+    def test_it_does_not_collide_with_the_approval_refusals(
+            self, dsns, console, monkeypatch):
+        """brief/pass_.py counts approval refusals as product='fleet'. A deploy
+        refusal must not render as 'approved nothing', and an approval refusal
+        must not reset the deploy streak."""
+        console.execute(
+            "INSERT INTO decision_log (product, subject, decision, reason,"
+            " decided_by, decided_via, mechanics)"
+            " VALUES ('fleet','Approved none of 3','DEFERRED','no key',"
+            " current_user,'unattended','{\"cut\": {}}'::jsonb)")
+        console.commit()
+        before = autodeploy.refusal_streak(console)
+        autodeploy.record(self._dec(False), running="b" * 40,
+                          target="c" * 40, drift=_dep(status="DRIFT"))
+        assert autodeploy.refusal_streak(console) == before + 1
+
+    def test_a_failed_deploy_does_not_reset_the_streak(
+            self, dsns, console, monkeypatch):
+        """What the streak counts is runs that did not ship. A build that broke
+        did not ship, and recording it as a deploy would reset the count on the
+        strength of an attempt."""
+        autodeploy.record(self._dec(False, "deploy.sh exited 1"),
+                          running="b" * 40, target="c" * 40,
+                          drift=_dep(status="DRIFT"))
+        assert autodeploy.refusal_streak(console) >= 1
+
+    def test_a_record_that_fails_does_not_change_what_happened(
+            self, monkeypatch):
+        """It runs after deploy.sh. Raising here would turn a successful deploy
+        into a traceback and a failed one into two problems."""
+        import console.db as _db
+        def boom(*a, **k):
+            raise RuntimeError("no database today")
+        monkeypatch.setattr(_db, "writer", boom)
+        said = []
+        assert autodeploy.record(self._dec(True), running="b" * 40,
+                                 target="c" * 40, drift=_dep(),
+                                 log=said.append) is None
+        assert any("not recorded" in m for m in said)
+        assert any("hid seven refusals" in m for m in said)
