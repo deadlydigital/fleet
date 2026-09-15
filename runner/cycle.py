@@ -285,12 +285,16 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             log(f"  paths pack {paths_written}: {paths_n} real path(s) listed "
                 f"(generated for this run, not committed)")
 
-        pack_path = contract.get("evidence_pack")
         if contract.get("evidence_queries"):
             results = evidence.run_queries(contract["evidence_queries"])
             if True:
+                # THE PATH THE BOUNDARY WILL ALSO ASK FOR. Resolved by
+                # evidence.pack_path and not by an expression here, because
+                # console/reverify.py has to permit exactly this file and a
+                # second copy of the rule is the one that drifts.
                 written = evidence.write_pack(
-                    wt_path, pack_path or "EVIDENCE.md", results, task)
+                    wt_path, evidence.pack_path(contract, task["id"]),
+                    results, task)
                 failed = [r.key for r in results if not r.ok]
                 log(f"  evidence pack {written.relative_to(wt_path)}: "
                     f"{len(results)} quer{'y' if len(results) == 1 else 'ies'}"

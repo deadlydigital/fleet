@@ -172,6 +172,41 @@ def redact(value: Any) -> Any:
     return _SECRET_SHAPED.sub(REDACTED, value)
 
 
+#: Where a task's evidence pack is written, and — since the boundary must
+#: permit exactly the file the runner wrote — the one definition both of them
+#: ask. runner/cycle.py uses it to decide where to write; console/reverify.py
+#: uses it to decide what to allow in the merge's diff. Two readers, one
+#: expression, for the reason spec_requirements_cited.py imports
+#: console.requirements rather than copying its regexes: a boundary that
+#: permitted a different path from the one the runner wrote is a refusal
+#: nobody can act on.
+#:
+#: PER TASK, AND THAT IS THE POINT OF THE DEFAULT. It used to be a bare
+#: `EVIDENCE.md` at the repository root, which was harmless while the only
+#: contract carrying queries was pinned to a single task:
+#: research-metorik-gap.yaml names `research/EVIDENCE-metorik.md` and only one
+#: task ever ran under it.
+#:
+#: Per-task `evidence_queries` (15 Sep 2026) made research.yaml a SHARED
+#: contract that can carry queries, and a fixed path under a shared contract
+#: collides: task 115's pack overwrites task 114's on master, so task 114's
+#: document cites readings that are no longer at the path it names. The pack
+#: exists so the readings travel with the document that rests on them, and a
+#: filename two documents share defeats exactly that.
+#:
+#: A contract or a fleet-spec block may still name one explicitly, and
+#: research-metorik-gap.yaml's is unaffected.
+PACK_DIR = "evidence"
+
+
+def pack_path(contract: dict[str, Any], task_id: Any) -> str:
+    """The pack's path for this task, relative to the worktree."""
+    named = (contract or {}).get("evidence_pack")
+    if named and str(named).strip():
+        return str(named).strip()
+    return f"{PACK_DIR}/task-{task_id}.md"
+
+
 def _connect(reader: str) -> psycopg.Connection:
     if reader not in READERS:
         raise ValueError(

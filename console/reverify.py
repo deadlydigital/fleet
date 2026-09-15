@@ -48,7 +48,7 @@ from typing import Any, Sequence
 
 import subprocess
 
-from runner import boundary, config, verify, worktree
+from runner import boundary, evidence, config, verify, worktree
 
 TRIAL_PREFIX = "fleet-accept-trial"
 
@@ -303,6 +303,23 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
         # console/rank.gate gives; console/queries.protected_floor is what the
         # callers use.
         contract = config.effective_contract(contract, floor)
+        # AND THE RUNNER'S OWN FILE, RESOLVED THE WAY THE RUNNER RESOLVED IT.
+        #
+        # runner/cycle.py measures the agent's diff from the evidence COMMIT,
+        # so the pack is deliberately outside what IT judges. This asks a
+        # different question -- what the merge adds to the base it will land
+        # on -- and the pack is part of that answer, because the merge really
+        # does add it to master. Both are right about their own question, and
+        # task 114 fell between them on 15 Sep 2026: refused here with every
+        # check green and the agent's 558 lines entirely inside the one path
+        # its contract declares.
+        #
+        # runner.evidence.pack_path is asked rather than an expression written
+        # here, so the path this permits IS the path the runner wrote. The
+        # boundary treats it as add-only, so an agent that edits the pack is
+        # still refused.
+        contract = dict(contract,
+                        evidence_pack=evidence.pack_path(contract, task["id"]))
         verdict = boundary.enforce(change, contract)
 
         # THE DEPENDENCY TREE, LINKED IN AS THE RUNNER LINKS IT.

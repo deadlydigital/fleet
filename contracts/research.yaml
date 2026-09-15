@@ -22,6 +22,29 @@
 # writable_paths is ONE file. Not a tree: a research task produces a document,
 # and anything else in the diff is something nobody asked for.
 #
+# THIS CONTRACT DECLARES NO `evidence_pack`, AND THAT IS WHY TASK 114 BROKE
+# HERE RATHER THAN ON research-metorik-gap.yaml.
+#
+# The runner falls back to a default when a contract names no path. Until
+# 15 Sep 2026 that default was a bare `EVIDENCE.md` at the repository root,
+# which is outside this contract's `research/**` and outside anything it would
+# sensibly declare -- so the pack landed somewhere no contract permitted, and
+# the accept path refused the branch for a file the agent never wrote.
+# research-metorik-gap.yaml names `research/EVIDENCE-metorik.md` and never saw
+# it.
+#
+# THE DEFAULT LOOKED HARMLESS BECAUSE THE CONTRACT WAS NOT SHARED. One
+# contract carrying queries, pinned to one task, means one pack and no
+# collision -- so a fixed path and a root-level default both cost nothing.
+# Per-task `evidence_queries` made THIS contract one that can carry queries
+# for any research task, and under a shared contract a fixed path collides:
+# task 115's pack overwrites task 114's on master, and 114's document then
+# cites readings that are no longer at the path it names.
+#
+# The default is now per task (`runner.evidence.pack_path`), so this contract
+# still names none and no longer needs to. Naming one here would reintroduce
+# exactly the collision, because every research task runs under it.
+#
 # THE AGENT HAS NO SHELL AND NO CREDENTIAL. It cannot reach a database. The
 # runner runs the queries named below, before the agent starts, as roles
 # holding SELECT and nothing else, and writes the results into the worktree as

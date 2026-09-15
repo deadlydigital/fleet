@@ -345,9 +345,41 @@ def enforce(change: Change, contract: dict) -> Boundary:
     creatable = list(contract.get("creatable_paths", []))
     limit = int(contract.get("max_diff_lines", 0))
 
+    # THE RUNNER'S OWN FILE, PERMITTED IN THE DIFF AND NOT WRITABLE BY THE
+    # AGENT. A fourth category, and the distinction is the whole of why it is
+    # not simply added to `writable_paths`.
+    #
+    # The evidence pack is written by the RUNNER, before the agent starts, from
+    # queries the database froze onto the task -- and then committed, so the
+    # readings travel with the document that rests on them. The agent never
+    # wrote it and must never be able to: the pack's entire value is that the
+    # agent can change neither what was asked nor what came back. Declaring the
+    # path `writable` would assert the opposite, and that assertion would be
+    # both false and load-bearing.
+    #
+    # ADD-ONLY, on `creatable_paths`' argument: the runner adds it once and
+    # nothing may modify or delete it afterwards. So an agent that edits the
+    # pack is still refused, by this same line.
+    #
+    # WHY IT IS NEEDED AT ALL, since the runner's own boundary never sees it:
+    # runner/cycle.py measures the agent's diff from the evidence COMMIT, so
+    # the pack is deliberately outside what it judges. console/reverify.py asks
+    # a different and equally correct question -- "what does this merge add to
+    # the base it will land on" -- and the answer includes the pack, because
+    # the merge really does add it to master. Task 114 was refused there on
+    # 15 Sep 2026 with every check green and the agent's 558 lines entirely
+    # inside the one path its contract declares.
+    #
+    # `evidence_pack` is resolved by runner.evidence.pack_path BEFORE this is
+    # called, so the path permitted here is the path the runner wrote, by
+    # construction rather than by two expressions agreeing.
+    pack = str(contract.get("evidence_pack") or "").strip()
+
     hits: dict[str, str] = {}
     outside: list[str] = []
     for path in change.paths:
+        if pack and path == pack and change.status.get(path) == "A":
+            continue
         # ADDED and matching a creatable glob: permitted, and permitted BEFORE
         # the protected check, which is the whole point -- the paths this is
         # for are protected ones.

@@ -681,3 +681,109 @@ def test_every_real_contract_still_loads():
     for path in sorted(Path("contracts").glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         config.load_contract(data["repo"], path)
+
+
+class TestTheEvidencePackIsTheRunnersFileAndNotTheAgents:
+    """15 Sep 2026, task 114. Every check green, the agent's 558 lines entirely
+    inside the one path its contract declares, and accept refused it.
+
+    runner/cycle.py commits the pack BEFORE the agent runs and measures the
+    agent's diff from that commit, so the pack is deliberately outside what the
+    runner judges. console/reverify.py asks a different and equally correct
+    question -- what the merge adds to the base it will land on -- and the pack
+    is part of that answer, because the merge really does add it to master.
+    Both were right about their own question and the branch fell between them.
+
+    THE FIX IS NOT `writable_paths`. That key asserts THE AGENT MAY WRITE HERE,
+    which is false and load-bearing: the pack's whole value is that the agent
+    can change neither what was asked nor what came back. So this is a fourth
+    category -- permitted in the diff, add-only, never agent-writable.
+    """
+
+    CONTRACT = {
+        "writable_paths": ["research/**"],
+        "protected_paths": ["contracts/**"],
+        "max_diff_lines": 4000,
+    }
+
+    def test_without_the_key_the_pack_is_outside_writable(self):
+        """The refusal task 114 actually got."""
+        ch = _change({"EVIDENCE.md": "A",
+                      "research/classification.md": "A"})
+        v = boundary.enforce(ch, self.CONTRACT)
+        assert not v.clean
+        assert v.outside_writable == ["EVIDENCE.md"]
+
+    def test_with_it_the_pack_is_permitted_and_the_rest_still_judged(self):
+        ch = _change({"evidence/task-114.md": "A",
+                      "research/classification.md": "A"})
+        v = boundary.enforce(ch, dict(self.CONTRACT, evidence_pack="evidence/task-114.md"))
+        assert v.clean, v.outside_writable
+
+    def test_only_that_exact_path(self):
+        """Permitting a glob would let the runner's category swallow paths
+        nobody declared. It is one file, named."""
+        ch = _change({"evidence/task-999.md": "A"})
+        v = boundary.enforce(ch, dict(self.CONTRACT, evidence_pack="evidence/task-114.md"))
+        assert not v.clean and v.outside_writable == ["evidence/task-999.md"]
+
+    def test_add_only_so_an_edited_pack_is_still_refused(self):
+        """creatable_paths' argument, for the same reason: the runner adds it
+        once. An agent that edits the readings its document rests on is the one
+        thing this must not permit."""
+        ch = _change({"evidence/task-114.md": "M"})
+        v = boundary.enforce(ch, dict(self.CONTRACT, evidence_pack="evidence/task-114.md"))
+        assert not v.clean and v.outside_writable == ["evidence/task-114.md"]
+
+    def test_a_deleted_pack_is_refused_too(self):
+        ch = _change({"evidence/task-114.md": "D"})
+        v = boundary.enforce(ch, dict(self.CONTRACT, evidence_pack="evidence/task-114.md"))
+        assert not v.clean
+
+    def test_a_protected_path_is_not_rescued_by_naming_it_the_pack(self):
+        """The pack check runs before the protected check, like creatable, so
+        this asserts a contract cannot launder a protected path through the
+        key. It can only ever be ONE path, and a contract that points it at the
+        suite has said so out loud in a file a person reviews."""
+        ch = _change({"contracts/draft-spec.yaml": "A"})
+        v = boundary.enforce(ch, dict(self.CONTRACT, evidence_pack="contracts/x.yaml"))
+        assert not v.clean and "contracts/draft-spec.yaml" in v.protected_hits
+
+    def test_no_key_changes_nothing_for_every_other_contract(self):
+        ch = _change({"research/doc.md": "A"})
+        assert boundary.enforce(ch, self.CONTRACT).clean
+
+
+class TestOneDefinitionForWhereThePackLives:
+    """The runner decides where to write it and the boundary decides what to
+    allow. Two expressions would be one refusal nobody can act on."""
+
+    def test_the_default_is_per_task(self):
+        """It was a bare EVIDENCE.md at the repository root, which was harmless
+        while the only contract carrying queries was pinned to one task. Per-
+        task evidence_queries made research.yaml a SHARED contract that can
+        carry them, and a fixed path under a shared contract collides: task
+        115's pack overwrites task 114's on master, so 114's document cites
+        readings no longer at the path it names."""
+        from runner import evidence
+        assert evidence.pack_path({}, 114) == "evidence/task-114.md"
+        assert evidence.pack_path({}, 115) != evidence.pack_path({}, 114)
+
+    def test_a_contract_may_still_name_one(self):
+        from runner import evidence
+        assert evidence.pack_path(
+            {"evidence_pack": "research/EVIDENCE-metorik.md"}, 5) \
+            == "research/EVIDENCE-metorik.md"
+
+    def test_blank_is_not_a_name(self):
+        from runner import evidence
+        assert evidence.pack_path({"evidence_pack": "  "}, 9) == "evidence/task-9.md"
+
+    def test_the_runner_and_the_boundary_ask_the_same_function(self):
+        """Asserted by reading both call sites, because the defect this
+        prevents is precisely the two drifting apart."""
+        cycle = open("/home/ubuntu/fleet/runner/cycle.py").read()
+        rev = open("/home/ubuntu/fleet/console/reverify.py").read()
+        call = 'evidence.pack_path(contract, task["id"])'
+        assert call in cycle
+        assert call in rev
