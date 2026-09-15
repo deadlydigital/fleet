@@ -67,6 +67,35 @@ class Check:
     #: this and the read-only filesystem, and neither was in the class that
     #: exists to hold them.
     undecided_reason: str | None = None
+    #: The check RAN, answered, and its answer is not about the code.
+    #:
+    #: THE THIRD THING A REFUSAL CAN MEAN. `unresolved` is "the checker is not
+    #: on disk"; `undecided` is "the checker was there and was killed". Both
+    #: mean nothing is known. A non-zero exit means "the tree is wrong". This
+    #: is the fourth case and until 15 Sep 2026 it was filed as the third:
+    #:
+    #:     the check ran, the tree is fine as far as it can tell, and what is
+    #:     missing is an OBLIGATION THE BRANCH OWED -- cite your requirements,
+    #:     state your premise, name the dataset your figure came from.
+    #:
+    #: Task 102 is why it exists. Five checks green over a 530-line diff --
+    #: compileall, ruff, tests/unit, new_test_bites and a 15.4-minute analytics
+    #: suite -- and `spec_requirements_cited.py` refused in 76ms because
+    #: requirements 5, 6 and 7 carried no citation. Two of those asked for a
+    #: measurement on production data that the agent, which is granted no
+    #: shell, could not take; the third was conditional on the second and the
+    #: spec authorised leaving it unbuilt. The agent said all of that in its
+    #: reply, which is exactly what the check's own failure text asks for.
+    #:
+    #: The run was recorded as "verification failed" -- a sentence about the
+    #: code -- and died at max_attempts 1, GBP 4.74. The absence was real. "The
+    #: code is wrong" was not.
+    #:
+    #: IT STILL REFUSES. `passed` is False, so nothing merges unattended on an
+    #: unmet obligation; that is the half that keeps the gate a gate. What
+    #: changes is the sentence, and that a person can be shown a branch whose
+    #: code checks all passed and be told what it owes.
+    obligation_reason: str | None = None
 
     @property
     def ran(self) -> bool:
@@ -76,6 +105,11 @@ class Check:
         establishes nothing, and `Verification.passed` requires that at least
         one check established something.
         """
+        # An UNMET OBLIGATION is `ran`. It looked and it answered -- the
+        # answer is simply not about the code. That matters beyond wording:
+        # `Verification.passed` requires at least one check to have
+        # established something, and a contract whose only speaking check
+        # reported an obligation has had something established about it.
         return (self.skipped_reason is None
                 and self.unresolved_reason is None
                 and self.undecided_reason is None)
@@ -100,6 +134,12 @@ class Check:
         # AHEAD OF THE SKIP BRANCH, for the reason the unresolved branch is:
         # falling through would turn a check the kernel killed into a PASS.
         if self.undecided_reason is not None:
+            return False
+        # AN UNMET OBLIGATION IS NOT A PASS. Not knowing is not permission and
+        # neither is knowing that something was not written down. The branch is
+        # refused here exactly as it was before this class existed; what the
+        # class buys is that the refusal can say what it is about.
+        if self.obligation_reason is not None:
             return False
         if not self.ran:
             return True
@@ -241,6 +281,45 @@ def unwritable(worktree: Path, links: Sequence[Path] = ()) -> list[str]:
 #: too and honours it INTERNALLY, distinguishing 2 from 1 when it reads its
 #: own runner's exit.
 COULD_NOT_RUN_EXIT = 2
+
+#: 3 THE BRANCH OWES AN OBLIGATION. The check ran, it has no complaint about
+#: the tree, and what is missing is something the branch was required to write
+#: down. See Check.obligation_reason for the case that named this and what it
+#: cost.
+#:
+#: WHY A NEW EXIT CODE AND NOT A FLAG IN THE OUTPUT. The three readers of a
+#: check -- runner/verify.py, console/adopt.py and 042's SQL -- agree on
+#: exactly two things about a check they did not run: its command and its exit
+#: code. Anything carried in the output tail is read by one of them and not by
+#: the others, and the whole of the corroborate defect was two layers matching
+#: on an exit code while the distinguishing fact sat in the output.
+#:
+#: A CHECK THAT DOES NOT KNOW ABOUT THIS STILL WORKS. 3 is not a code any
+#: existing check emits; every one of them documents 0, 1 and 2. A check that
+#: never returns 3 behaves exactly as it did.
+OBLIGATION_EXIT = 3
+
+
+def obligation_of(exit_code: int) -> str | None:
+    """Why this exit code is an unmet obligation rather than a verdict.
+
+    Deliberately thin, and deliberately not consulted before `killed_by`: a
+    check killed by a signal that happens to produce 3 never reaches here,
+    because 3 is not in the 128+N range and a negative code is not 3 either.
+    The one real ambiguity is a check that exits 3 for its own unrelated
+    reasons, and the answer is the same as COULD_NOT_RUN_EXIT's: the contract
+    for checks under contracts/checks/ documents what the codes mean, and a
+    check that means something else by 3 is wrong in the way a check that
+    means something else by 2 is wrong.
+    """
+    if exit_code != OBLIGATION_EXIT:
+        return None
+    return (f"the check exited {OBLIGATION_EXIT}, which contracts/checks/ "
+            f"documents as AN OBLIGATION THE BRANCH OWES rather than as a "
+            f"fault in the code -- it ran, it has no complaint about the "
+            f"tree, and something the branch was required to state is not "
+            f"there. Its output says what. This refuses the merge exactly as "
+            f"a failure does; it does not claim the code is broken.")
 
 
 def killed_by(exit_code: int, oom_kills_delta: int | None) -> str | None:
@@ -405,7 +484,35 @@ class Verification:
         the one finding the run did establish. Callers ask this first and keep
         the verdict they have.
         """
-        return any(c.ran and not c.passed for c in self.checks)
+        return any(c.ran and not c.passed and c.obligation_reason is None
+                   for c in self.checks)
+
+    @property
+    def unmet_obligation(self) -> bool:
+        """Some check ran, refused, and its refusal is not about the code.
+
+        KEPT APART FROM `failed_outright` FOR THE SAME REASON `undecided` IS
+        KEPT APART FROM `unresolved`: they send a reader to different places.
+        A failure sends them to the diff. An unmet obligation sends them to the
+        branch's own reply, where the agent has usually already said why --
+        task 102's did, at length, and was recorded as "verification failed".
+
+        BOTH REFUSE THE MERGE. `Verification.passed` is False either way, and
+        that is not a compromise: an obligation nobody wrote down is not
+        permission to merge, it is a question for a person. What this property
+        exists to do is let the caller ASK the question instead of asserting
+        that the code is broken.
+
+        Callers ask `failed_outright` FIRST and keep the verdict they have, on
+        the argument that property already makes: a run can hold both, and a
+        genuine failure beside an unmet obligation is a failing branch that
+        also owes something.
+        """
+        return any(c.obligation_reason for c in self.checks)
+
+    def obligation_summary(self) -> str:
+        return "; ".join(f"{c.command}: {c.obligation_reason}"
+                         for c in self.checks if c.obligation_reason)
 
     @property
     def undecided(self) -> bool:
@@ -441,7 +548,8 @@ class Verification:
         if not self.ran:
             return f"not run ({self.skipped_reason})"
         return "  ".join(
-            ("skip" if not c.ran else "ok" if c.passed else "FAIL")
+            ("skip" if not c.ran else "ok" if c.passed
+             else "OWES" if c.obligation_reason else "FAIL")
             + f" {c.command}" for c in self.checks)
 
 
@@ -637,9 +745,16 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
                   f"is a loop in the branch or a host too slow to finish in "
                   f"time, and the deadline expiring does not say which."
                   if timed_out else killed_by(code, delta))
+        # AFTER killed_by, never before. A signalled process reports 128+N and
+        # a negative code, so nothing that was killed can look like a 3 -- but
+        # the order is fixed here anyway so that a future widening of either
+        # rule cannot make a kill read as an obligation. Not knowing beats
+        # knowing the wrong thing, in that direction and not the other.
+        obligation = None if killed else obligation_of(code)
         result.checks.append(
             Check(command, code, duration_ms, out[-4000:], timed_out,
-                  expanded=expanded, undecided_reason=killed))
+                  expanded=expanded, undecided_reason=killed,
+                  obligation_reason=obligation))
         # AND ON TO THE NEXT ONE, FAILED OR NOT. The `break` that stood here
         # is what made the first failure the only fact a run recorded; the
         # docstring carries the argument and what it cost.

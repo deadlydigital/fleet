@@ -83,6 +83,11 @@ class Reverification:
     # setup failure reported as a verification failure would have them reading
     # a diff that is fine.
     could_not_run: bool = False
+    #: The checks ran and the code ones passed; the branch owes something it
+    #: was required to write down. A THIRD FLAG rather than a second meaning
+    #: for could_not_run, because the two say opposite things about how much is
+    #: known -- see the branch that sets it.
+    unmet_obligation: bool = False
 
     def as_record(self) -> dict[str, Any]:
         return {"ok": self.ok, "reason": self.reason, "merged_sha": self.merged_sha,
@@ -90,7 +95,8 @@ class Reverification:
                 "boundary_clean": self.boundary_clean,
                 "violations": self.violations, "duration_s": round(self.duration_s, 1),
                 "checks": self.checks, "skipped_reason": self.skipped_reason,
-                "could_not_run": self.could_not_run}
+                "could_not_run": self.could_not_run,
+                "unmet_obligation": self.unmet_obligation}
 
 
 def _has_commit(repo: Path, sha: str) -> bool:
@@ -358,6 +364,7 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                    "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                    "unresolved_reason": c.unresolved_reason,
                    "undecided_reason": c.undecided_reason,
+                   "obligation_reason": c.obligation_reason,
                    "output_tail": c.output_tail[-800:]} for c in result.checks]
 
         if not verdict.clean:
@@ -421,6 +428,33 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                         f"to read. Look at the unit's limits and the "
                         f"filesystem it ran on, not at the diff. Nothing was "
                         f"recorded."),
+                duration_s=time.monotonic() - started)
+
+        # AN UNMET OBLIGATION IS ITS OWN FLAG AND NOT could_not_run, 15 Sep
+        # 2026. The two branches above both mean NOTHING IS KNOWN and both map
+        # to could_not_run, which is why they share it. This one is the
+        # opposite: the checks DID run and the code ones passed. Folding it
+        # into could_not_run would tell a reviewer that nothing was
+        # established about a branch that had just been checked six ways.
+        #
+        # Ordered after failed_outright on the same argument as the two above:
+        # a branch that is broken AND owes a citation is a broken branch.
+        #
+        # `ok` is False. This refuses the merge exactly as a failure does --
+        # the gate is still a gate -- and the sentence is the only thing that
+        # changes.
+        if result.unmet_obligation and not result.failed_outright:
+            return Reverification(
+                ok=False, unmet_obligation=True, base_sha=base_sha,
+                merged_sha=head, checks=checks,
+                reason=(f"the merge into {base} has NOT been made, and not "
+                        f"because anything is wrong with the code: every check "
+                        f"that looks at the tree passed against the merged "
+                        f"result. {branch} owes something it was required to "
+                        f"state -- {result.obligation_summary()}. Read the "
+                        f"check's output and the branch's own reply, which "
+                        f"usually says why. This is a question for a person, "
+                        f"not a diff to debug."),
                 duration_s=time.monotonic() - started)
 
         if not result.passed:

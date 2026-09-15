@@ -649,6 +649,37 @@ class TestTheModuleAndTheDatabaseAgreeOnCorroboration:
         why = adopt._why_not_green(self._payload(), [])
         assert "--corroborate-base" in why
 
+    def test_a_check_that_cannot_speak_at_the_base_excuses_nothing(self):
+        """15 Sep 2026, and the reason the citation gate now exits 2 there.
+
+        contracts/checks/spec_requirements_cited.py reads `git diff BASE..HEAD`.
+        At a corroboration run BASE and HEAD are the same commit, so the diff is
+        empty, so nothing is cited, so it failed -- for every branch, whatever
+        the branch did. Matched on command and exit code, which is all this
+        function and 042 compare, that excused the one gate in the path that
+        reads a spec.
+
+        The check now reports 2 there. This asserts the half that lives on THIS
+        side: a 2 at the base is not evidence, so the branch's 1 stands.
+        """
+        cite = "spec_requirements_cited.py"
+        p = self._payload(checks=[check(cite, exit_code=1)])
+        at_base = {"base_commit_sha": self.BASE,
+                   "checks": [check(cite, exit_code=2,
+                                    undecided_reason="exited 2, COULD NOT RUN")]}
+        assert adopt._verification_is_green(p, [at_base]) is False
+
+    def test_the_old_hole_is_what_it_would_have_done(self):
+        """Stated as its own test so the regression is legible rather than
+        implied: had the check kept returning 1 at the base, this is the excuse
+        it would have manufactured for itself, on any branch at all."""
+        cite = "spec_requirements_cited.py"
+        p = self._payload(checks=[check(cite, exit_code=1)])
+        as_it_was = {"base_commit_sha": self.BASE,
+                     "checks": [check(cite, exit_code=1)]}
+        assert adopt._verification_is_green(p, [as_it_was]) is True
+
+
     def test_it_does_not_name_the_remedy_for_a_check_that_cannot_use_it(self):
         """Offering --corroborate-base for a timeout would send someone to run
         a suite for nothing."""
@@ -656,3 +687,102 @@ class TestTheModuleAndTheDatabaseAgreeOnCorroboration:
         why = adopt._why_not_green(p, [])
         assert "--corroborate-base" not in why
         assert "timed out" in why
+
+class TestAnObligationIsNeverCorroborable:
+    """046, and the other half of the corroborate fix.
+
+    Making spec_requirements_cited.py exit 2 at the base closes the hole for
+    THAT check. This closes it for the class: an obligation is owed BY THE
+    BRANCH, the base has no branch and owes nothing, so a base run of such a
+    check refuses identically for every branch. That is an excuse, not
+    evidence -- and a check that forgets the base-run rule must still not be
+    excusable on one.
+    """
+
+    BASE = "a" * 40
+
+    def _p(self, c):
+        return {"base_commit_sha": self.BASE, "checks": [c],
+                "boundary_violations": {"protected": {}, "outside_writable": []}}
+
+    def _owes(self, **over):
+        c = check("cite", exit_code=3, obligation_reason="uncited: 5, 6, 7")
+        c.update(over)
+        return c
+
+    def test_an_obligation_is_not_green(self):
+        assert adopt._check_is_green(self._owes()) is False
+
+    def test_an_obligation_is_not_excusable(self):
+        why = adopt._excusable(self._owes())
+        assert why and "the base owes" in why
+
+    def test_an_obligation_cannot_be_corroborated_by_an_obligation(self):
+        ev = [{"base_commit_sha": self.BASE, "checks": [self._owes()]}]
+        assert adopt._corroboration_for(self._owes(), ev, self.BASE) is None
+        assert adopt._verification_is_green(self._p(self._owes()), ev) is False
+
+    def test_an_obligation_cannot_be_corroborated_by_a_plain_failure(self):
+        """Matching exit codes are not matching causes, and here they are not
+        even matching KINDS."""
+        plain = check("cite", exit_code=3)
+        ev = [{"base_commit_sha": self.BASE, "checks": [plain]}]
+        assert adopt._corroboration_for(self._owes(), ev, self.BASE) is None
+
+    def test_a_base_obligation_excuses_nothing_at_all(self):
+        """The other direction. A base check that reports an obligation is a
+        base run answering a question about a branch that is not applied."""
+        plain = check("cite", exit_code=3)
+        ev = [{"base_commit_sha": self.BASE, "checks": [self._owes()]}]
+        assert adopt._corroboration_for(plain, ev, self.BASE) is None
+
+    def test_a_plain_failure_is_still_corroborable(self):
+        """The rule 042 exists for, and this must not widen over it. Task 100:
+        a migration tally the base had already broken."""
+        c = check("pytest", exit_code=1)
+        ev = [{"base_commit_sha": self.BASE, "checks": [check("pytest", exit_code=1)]}]
+        assert adopt._corroboration_for(c, ev, self.BASE) is not None
+        assert adopt._verification_is_green(self._p(c), ev) is True
+
+
+class TestTheBaseRunIsNotHandedFilesTheBaseDoesNotHave:
+    """The structural half of the same rule, 15 Sep 2026.
+
+    `changed` is the BRANCH's file list. Expanding `{changed_files}` with it at
+    the base names paths that are not there -- a file the branch ADDED cannot
+    be checked on a tree that does not have it, and the error that produces is
+    about the missing file, not about the base.
+
+    Files the branch MODIFIED are kept, deliberately. Those exist at the base,
+    a check over them asks a real question there, and task 100's kind of excuse
+    has to survive this.
+    """
+
+    def test_added_files_are_dropped_and_modified_files_are_kept(self, tmp_path):
+        trial = tmp_path / "trial"
+        (trial / "api").mkdir(parents=True)
+        (trial / "api" / "engine.py").write_text("x = 1\n")
+        changed = ["api/engine.py", "api/tests/test_fleet_new.py"]
+        at_base = [f for f in changed if (trial / f).exists()]
+        assert at_base == ["api/engine.py"]
+
+    def test_a_placeholder_over_added_files_alone_is_skipped(self, tmp_path):
+        """And a skipped base check excuses nothing -- which is the point of
+        dropping them rather than letting the command fail on a missing path."""
+        from runner import verify
+        cmd = "compileall {changed_files:.py}"
+        expanded, had, matched = verify.expand_changed_files(cmd, [])
+        assert had and matched == 0
+        result = verify.run(tmp_path, [cmd], 30.0, changed=[])
+        assert len(result.checks) == 1
+        assert result.checks[0].skipped_reason is not None
+        assert adopt._corroboration_for(
+            {"command": cmd, "exit_code": 1, "skipped_reason": None,
+             "unresolved_reason": None, "undecided_reason": None,
+             "timed_out": False},
+            [{"base_commit_sha": "b",
+              "checks": [{"command": cmd, "exit_code": 1,
+                          "skipped_reason": "no changed file matched",
+                          "unresolved_reason": None, "undecided_reason": None,
+                          "timed_out": False}]}],
+            "b") is None

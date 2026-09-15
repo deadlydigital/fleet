@@ -553,6 +553,20 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 # the run actually made. See verify.Verification.failed_outright.
                 f"could not be verified: {verification.undecided_summary()}"
                 if verification.undecided and not verification.failed_outright
+                else
+                # THE THIRD SENTENCE, 15 Sep 2026. Ordered after both
+                # could-not-run branches and after failed_outright for the same
+                # reason they are ordered among themselves: a run that holds a
+                # real failing verdict is a failing run, whatever else it also
+                # owes. Only when NOTHING is wrong with the code does the
+                # reason say what is actually missing.
+                #
+                # Task 102 read "verification failed" with five checks green
+                # and a 15.4-minute analytics suite among them. That sentence
+                # sent a reader to a diff that was fine.
+                f"the branch owes: {verification.obligation_summary()}"
+                if verification.unmet_obligation
+                and not verification.failed_outright
                 else "verification failed")
             return
 
@@ -762,6 +776,7 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
                     "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
                     "unresolved_reason": c.unresolved_reason,
                     "undecided_reason": c.undecided_reason,
+                    "obligation_reason": c.obligation_reason,
                     "output_tail": c.output_tail} for c in verification.checks],
         "verification_skipped": verification.skipped_reason,
         # Recorded on the run itself: a FAIL whose checks never opened is a
@@ -769,6 +784,10 @@ def _record_verification(task, run_id, base_sha, change, wt_path, contract,
         # the payload should not require inferring it from exit codes.
         "verification_unresolved": verification.unresolved_summary() or None,
         "verification_undecided": verification.undecided_summary() or None,
+        # And the third, for the same reason: "five checks green and the branch
+        # owes a citation" must be readable off the payload rather than
+        # reconstructed from exit codes by whoever happens to look.
+        "verification_obligation": verification.obligation_summary() or None,
         "boundary_violations": {
             "protected": verdict.protected_hits,
             "outside_writable": verdict.outside_writable,

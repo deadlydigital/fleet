@@ -203,6 +203,100 @@ def test_an_unparseable_command_is_not_called_unresolved(tmp_path):
 
 # ---- a check that was killed did not answer -------------------------------
 
+class TestAnUnmetObligationIsNotABrokenTree:
+    """The fourth thing a refusal can mean, 15 Sep 2026.
+
+    `unresolved` is "the checker is not on disk". `undecided` is "the checker
+    was there and was killed". Both mean NOTHING IS KNOWN. A non-zero exit
+    means "the tree is wrong". Task 102 was none of those:
+
+        five checks green over a 530-line diff -- compileall, ruff,
+        tests/unit, new_test_bites, and a 15.4-minute analytics suite -- and
+        spec_requirements_cited.py refused in 76 ms because requirements 5, 6
+        and 7 carried no citation.
+
+    Two of those asked for a measurement on production data that the agent,
+    granted no shell, could not take. The third was conditional on the second
+    and the spec authorised leaving it unbuilt. The agent said so in its reply,
+    which is what the check's own failure text asks for. The run was recorded
+    as "verification failed" -- a sentence about the code -- and died at
+    max_attempts 1.
+
+    The absence was real. "The code is wrong" was not.
+    """
+
+    def test_exit_three_is_an_obligation_and_not_a_failure(self, tmp_path):
+        v = verify.run(tmp_path, ["exit 3"], 60)
+        c = v.checks[0]
+        assert c.obligation_reason and "OBLIGATION" in c.obligation_reason
+        assert c.passed is False, "it still refuses -- the gate is still a gate"
+        assert c.ran is True, "it looked and it answered; the answer is not about the code"
+        assert v.unmet_obligation is True
+        assert v.failed_outright is False
+        assert v.undecided is False
+        assert v.unresolved is False
+        assert v.passed is False
+
+    def test_it_is_not_could_not_run(self, tmp_path):
+        """The distinction the whole class exists for. Folding this into
+        could_not_run would tell a reviewer nothing was established about a
+        branch that had just been checked six ways."""
+        owes = verify.run(tmp_path, ["exit 3"], 60)
+        never = verify.run(tmp_path, ["exit 2"], 60)
+        assert owes.unmet_obligation and not owes.undecided
+        assert never.undecided and not never.unmet_obligation
+
+    def test_a_real_failure_beside_an_obligation_is_a_failure(self, tmp_path):
+        """Ordered the way failed_outright already orders itself: a run can
+        hold both, and a branch that is broken AND owes a citation is a broken
+        branch. The verdict that was reached is kept."""
+        v = verify.run(tmp_path, ["exit 3", "exit 1"], 60)
+        assert v.failed_outright is True
+        assert v.unmet_obligation is True
+        assert v.passed is False
+
+    def test_an_ordinary_failure_is_untouched(self, tmp_path):
+        """The gate this must not widen, asserted for the same reason the
+        killed-check class asserts it."""
+        v = verify.run(tmp_path, ["exit 1"], 60)
+        assert v.checks[0].obligation_reason is None
+        assert v.unmet_obligation is False
+        assert v.failed_outright is True
+
+    def test_a_kill_is_not_read_as_an_obligation(self, tmp_path):
+        """killed_by runs first and wins. A signalled process reports 128+N so
+        it cannot look like a 3 today -- asserted anyway, because the ordering
+        is what keeps that true if either rule is ever widened."""
+        v = verify.run(tmp_path, [
+            'python3 -c "import os, signal; os.kill(os.getpid(), signal.SIGABRT)"'], 60)
+        assert v.checks[0].undecided_reason is not None
+        assert v.checks[0].obligation_reason is None
+        assert v.unmet_obligation is False
+
+    def test_a_passing_check_is_untouched(self, tmp_path):
+        v = verify.run(tmp_path, ["true"], 60)
+        assert v.checks[0].obligation_reason is None
+        assert v.passed is True
+        assert v.unmet_obligation is False
+
+    def test_the_summary_says_OWES_rather_than_FAIL(self, tmp_path):
+        v = verify.run(tmp_path, ["true", "exit 3"], 60)
+        assert "OWES" in v.summary()
+        assert "FAIL" not in v.summary()
+
+    def test_a_contract_whose_only_speaker_owes_has_established_something(self):
+        """`ran` is True, so this does NOT trip the "nothing looked at the
+        tree" half of Verification.passed. It is refused by the obligation,
+        which is a different sentence and a different repair."""
+        owes = verify.Check("cite", 3, 1, "",
+                            obligation_reason=verify.obligation_of(3))
+        skip = verify.Check("tsc", 0, 0, "", skipped_reason="no .ts files")
+        v = verify.Verification(checks=[owes, skip])
+        assert v.passed is False
+        assert v.unmet_obligation is True
+        assert any(c.ran for c in v.checks)
+
+
 class TestAKilledCheckIsNotAVerdict:
     """`exit_code != 0` is two different facts and was read as one.
 

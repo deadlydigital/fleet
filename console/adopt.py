@@ -58,6 +58,48 @@ tails are recorded side by side for the human, and the real defence is the one
 named above: accept() re-runs the whole contract against the merged tree and
 requires green outright, consulting no corroboration at all.
 
+AND IT WAS NOT NARROW ENOUGH (15 Sep 2026)
+
+A CHECK WHOSE SUBJECT IS THE CHANGE FAILS AT THE BASE FOR A REASON THAT IS NOT
+ABOUT THE TREE, AND MUST NOT CORROBORATE ANYTHING.
+
+contracts/checks/spec_requirements_cited.py reads `git diff BASE..HEAD` and
+refuses a change that cites no requirement. At a corroboration run BASE and
+HEAD are the same commit, so the diff is empty, so NOTHING is cited, so it
+exits 1 -- every time, for every branch, whatever the branch did. Matched on
+command and exit code, that excused the check FOR EVERY BRANCH. 042 enforces
+the same rule in SQL and has the same blind spot. Measured, not reasoned: run
+at the base it prints `FAIL: 8 of 8 numbered requirement(s) are cited nowhere`
+and exits 1.
+
+That is exactly the gate that caught task 102 -- five checks green over 530
+lines, including a 15-minute analytics suite, and this the only one that
+noticed the branch had not proved its central claim. The rule written to rescue
+task 100 punched a hole in it two days later.
+
+WHY NOT COMPARE THE OUTPUT, which is the obvious fix and is wrong. Task 100's
+excused check printed `FAIL: 1 of 43 files in tests/analytics failed` on the
+branch and `1 of 42` at the base -- the branch had added a test file. The tails
+differ in length by a factor of three. Requiring them to match would refuse the
+one case this feature exists for.
+
+SO THE CHECK SAYS SO ITSELF, and the vocabulary already existed: exit 2, COULD
+NOT RUN. A check that cannot speak about a tree with no branch applied reports
+2 there, and _excusable() and 042 both already refuse a base check that is
+undecided. No new state, no output matching, and the knowledge lives in the
+check that has it rather than in a list here that would drift from it.
+
+IF YOU ARE WRITING A CHECK THAT READS THE DIFF -- `git diff`, FLEET_CHANGED_FILES,
+or `{changed_files}` -- make it exit 2 when the change is empty. A 1 there is
+not a verdict about the base; it is your check answering a question nobody
+asked, and the answer excuses you.
+
+The two structural halves of that rule are enforced here rather than trusted:
+the base run is handed only the changed files that EXIST at the base (see
+corroborate()), so a `{changed_files}` command over files the branch added
+expands to nothing and is recorded as skipped -- and a skipped base check
+excuses nothing.
+
 WHAT THIS DOES NOT DO. It does not merge, it does not push, and it does not
 record a verdict. It moves a row to READY_FOR_REVIEW, which is where a person
 decides -- the same place the runner's own branches arrive, reached by a
@@ -131,6 +173,11 @@ def _check_is_green(c: dict) -> bool:
         return False
     if c.get("undecided_reason") is not None:
         return False
+    # AN UNMET OBLIGATION IS NOT GREEN, ahead of the skip branch for the same
+    # reason the two above are. It is handled as its own case by the caller;
+    # what must never happen is it falling through into "nothing to do".
+    if c.get("obligation_reason") is not None:
+        return False
     if c.get("skipped_reason") is not None:
         return True
     return c.get("exit_code") == 0 and not c.get("timed_out")
@@ -142,6 +189,18 @@ def _excusable(c: dict) -> str:
     A check is excusable only if it RAN and exited non-zero. Everything else
     is a check that did not judge the tree, and re-running it somewhere else
     judges nothing either. 042 refuses the same four cases in SQL.
+
+    AN UNMET OBLIGATION JOINS THAT LIST, 15 Sep 2026, and it is the case that
+    made the list too short. An obligation is owed BY THE BRANCH. The base has
+    no branch and therefore owes nothing, so re-running such a check there
+    answers a question nobody asked -- and answers it the same way every time,
+    for every branch, which is an excuse rather than evidence. That is exactly
+    the hole spec_requirements_cited.py fell into: it returned 1 at the base
+    and corroborated itself.
+
+    The check now returns 2 there, which this function already refuses. This
+    branch closes the same door from the other side, so that a check which
+    forgets the base-run rule is still not excusable on an obligation.
     """
     if c.get("skipped_reason") is not None:
         return "it was skipped, so it is not a failure to excuse"
@@ -149,6 +208,12 @@ def _excusable(c: dict) -> str:
         return "unresolved: " + str(c["unresolved_reason"])
     if c.get("undecided_reason") is not None:
         return "undecided: " + str(c["undecided_reason"])
+    if c.get("obligation_reason") is not None:
+        return ("it is an obligation the BRANCH owes, and the base owes "
+                "nothing -- a base run would refuse it identically for every "
+                "branch, which is an excuse rather than evidence. The remedy "
+                "is to clear it on the branch: cite the requirement, or change "
+                "the spec that asked for something the branch cannot give")
     if c.get("timed_out"):
         return ("it timed out, and a timeout corroborated by a timeout is how "
                 "a busy box adopts a branch nobody judged")
@@ -184,7 +249,14 @@ def _corroboration_for(check: dict, base_payloads: list[dict],
                 continue
             if (bc.get("skipped_reason") is not None
                     or bc.get("unresolved_reason") is not None
-                    or bc.get("undecided_reason") is not None):
+                    or bc.get("undecided_reason") is not None
+                    # 046: AND A BASE CHECK THAT REPORTS AN OBLIGATION EXCUSES
+                    # NOTHING. _excusable() above closes the branch side; this
+                    # is the base side, and they are two separate doors. A base
+                    # run reporting an obligation is a check answering a
+                    # question about a branch that is not applied -- whatever
+                    # it says, it is not about this branch.
+                    or bc.get("obligation_reason") is not None):
                 continue
             return bc
     return None
@@ -452,9 +524,29 @@ def corroborate(task_id: int, branch: str) -> Corroboration:
         # closed rather than wrongly. Linked anyway, because "the base fails
         # this too" is only worth asking when the base can run it.
         worktree.link_dependencies(trial, contract.get("worktree_links", {}))
+        # ONLY THE FILES THAT EXIST AT THE BASE, since 15 Sep 2026. `changed`
+        # is the BRANCH's list, and a `{changed_files}` command expanded with
+        # it at the base names paths that are not there -- a file the branch
+        # ADDED cannot be checked on a tree that does not have it, and the
+        # error that produces is about the missing file rather than about the
+        # tree. Matching exit codes would then excuse the branch check with
+        # evidence that is not about the base at all.
+        #
+        # The filter is the same sentence as the exit-2 rule below: at the base
+        # there is no branch diff, so a check whose subject is the CHANGE has
+        # no input here. A command whose placeholder now expands to nothing is
+        # recorded by verify.run as skipped -- "no changed file matched this
+        # check's filter" -- and a skipped base check excuses nothing, in this
+        # module and in 042 alike.
+        #
+        # Files the branch MODIFIED are kept, and that is the whole point of
+        # keeping the filter rather than passing []: those exist at the base,
+        # a check over them asks a real question there, and task 100's kind of
+        # excuse survives.
+        at_base = [f for f in changed if (trial / f).exists()]
         result = verify.run(
             trial, commands, _deadline_for(task),
-            changed=changed,
+            changed=at_base,
             links=worktree.writable_links(trial, contract),
             # HEAD IS THE BASE HERE, and saying so is the point: the tree
             # under test is the base with nothing applied to it.
@@ -476,6 +568,7 @@ def corroborate(task_id: int, branch: str) -> Corroboration:
             "timed_out": c.timed_out, "skipped_reason": c.skipped_reason,
             "unresolved_reason": c.unresolved_reason,
             "undecided_reason": c.undecided_reason,
+            "obligation_reason": c.obligation_reason,
             "output_tail": c.output_tail[-800:],
             # BOTH TAILS, SIDE BY SIDE. Equal exit codes are not equal causes
             # and nothing here can tell them apart; the person who accepts

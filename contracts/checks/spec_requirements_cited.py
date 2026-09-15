@@ -96,6 +96,15 @@ except ImportError as exc:                                    # pragma: no cover
     sys.exit(2)
 
 
+#: runner/verify.OBLIGATION_EXIT. Written out rather than imported for the
+#: reason this file already imports console.requirements and nothing else: the
+#: checks under contracts/checks/ are run as scripts by a path the runner
+#: hands them, and a second package import is a second way for the check to
+#: become unresolvable. The exit-code vocabulary is a contract between this
+#: directory and runner/verify.py, stated in both.
+OBLIGATION_EXIT = 3
+
+
 def die(code: int, *lines: str) -> None:
     for line in lines:
         print(line)
@@ -103,14 +112,47 @@ def die(code: int, *lines: str) -> None:
 
 
 def token(rid: str) -> re.Pattern:
-    """`spec:2.5`, and not `spec:2.50`.
+    r"""`spec:2.5`, and not `spec:2.50`.
 
-    The trailing guard excludes a digit and a dot, so `spec:2.5` does not
-    match inside `spec:2.51`; the leading guard excludes word characters and
-    dots, so it does not match the tail of `myspec:2.5` either. Case is
-    ignored because `SPEC:2.5` in a heading comment is the same claim.
+    The leading guard excludes word characters and dots, so this does not match
+    the tail of `myspec:2.5`. Case is ignored because `SPEC:2.5` in a heading
+    comment is the same claim.
+
+    THE TRAILING GUARD EXCLUDES A DOT ONLY WHEN A DIGIT FOLLOWS IT, and that
+    narrowing is the whole of this function's history. It has two jobs:
+
+        `spec:2.5` must not match inside `spec:2.51`   -- `(?!\w)` does that,
+                                                          the next char is `1`
+        `spec:2`   must not match inside `spec:2.5`    -- needs the dot rule,
+                                                          since `.` is not `\w`
+
+    The first version spelled the second job as `(?!\.)`: no dot at all. That
+    also rejects a dot ENDING A SENTENCE, and task 87 is what it cost. Its
+    branch carried, in a comment at the top of the changed file:
+
+        * spec:6. The API half of this shipped months before the page read it:
+
+    A correct citation of requirement 6, in prose, refused over a full stop.
+    Run 62, GBP 3.63, and attempt 1 of 2 spent; the rebuild that followed did
+    not add the token, it rewrote the feature -- 261 test lines against 242,
+    127 page lines against 156 -- because a retry is a re-roll and not a
+    repair.
+
+    `(?!\.\d)` keeps both jobs and drops the collateral. Replayed over every
+    patch commit in the fleet's history -- 76 of them, of which 33 have a spec
+    that numbers anything for this check to read -- it changes exactly one
+    verdict, run 62's, from FAIL to PASS, and introduces no acceptance
+    anywhere else.
+
+    WHAT IT DOES NOT FIX, said here because the two failures look alike and are
+    not. Task 102 cited nothing for its requirements 5, 6 and 7 in any form, so
+    no regex reaches it: those were a measurement and a production proof the
+    agent had no shell to perform, and a conditional the spec itself authorised
+    leaving unbuilt. A citation gate reads added lines. It cannot see a reply,
+    and a requirement whose deliverable IS the reply should not be numbered as
+    one.
     """
-    return re.compile(rf"(?<![\w.])spec:{re.escape(rid)}(?![\w.\d])",
+    return re.compile(rf"(?<![\w.])spec:{re.escape(rid)}(?!\w)(?!\.\d)",
                       re.IGNORECASE)
 
 
@@ -166,6 +208,28 @@ def main() -> None:
         die(2, f"FAIL: could not derive the diff from git: {exc}",
                "      Reported as 'could not run' (2), never as a pass.")
 
+    if not lines:
+        die(2, "FAIL: this change adds no lines, so there is nothing for this "
+               "check to read and no citation it could find.",
+               "",
+               "      THIS IS ALSO WHAT A BASE-CORROBORATION RUN LOOKS LIKE, "
+               "and that is the reason it is a 2 rather than a 1.",
+               "      console/adopt.py re-runs a failing check in a clone AT "
+               "THE BASE, with FLEET_BASE_SHA and FLEET_HEAD_SHA set to the "
+               "same commit, to establish whether the check fails without the "
+               "branch applied. For a check that reads the TREE that is a real "
+               "question. For this one it is not: the diff is empty by "
+               "construction, no requirement is cited, and the answer is "
+               "always FAIL.",
+               "      Returning 1 there made this check corroborate ITSELF for "
+               "every branch -- adopt._corroboration_for() and 042 both match "
+               "on the command and the exit code, and neither compares output "
+               "-- so the one gate that reads the spec could be excused by "
+               "re-running it somewhere it cannot speak. Exit 2 is refused as "
+               "evidence by both of them.",
+               "",
+               "      Reported as 'could not run' (2), never as a pass.")
+
     ids = [q.id for q in reqs]
     cited = {rid for rid in ids
              if any(token(rid).search(ln) for ln in lines)}
@@ -198,7 +262,14 @@ def main() -> None:
               "explains itself is useful, and a token written over work that "
               "was not done is a lie rather than an oversight. Do not cite a "
               "requirement you did not implement.")
-        sys.exit(1)
+        print()
+        print("      Reported as 'the branch owes an obligation' (3). This "
+              "REFUSES the merge exactly as a failure does -- nothing ships "
+              "unattended on an uncited requirement. It does not claim the "
+              "code is broken, because this check has no opinion about the "
+              "code: it reads added lines for a token. Whoever reviews this "
+              "sees the other checks' verdicts beside this sentence.")
+        sys.exit(OBLIGATION_EXIT)
 
     print(f"PASS: all {len(reqs)} numbered requirement(s) are cited by an "
           f"added line.")

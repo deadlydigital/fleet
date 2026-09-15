@@ -321,6 +321,51 @@ def test_an_ordinary_failing_check_still_reads_as_a_failure(repo, wt_root):
     assert "FAILS when merged" in r.reason
 
 
+def test_an_unmet_obligation_is_its_own_flag_not_could_not_run(repo, wt_root):
+    """15 Sep 2026. The third thing a refusal can be about.
+
+    could_not_run means NOTHING IS KNOWN -- the checker was missing, or it was
+    killed. This is the opposite: the checks ran and the ones that look at the
+    tree passed. Folding it into could_not_run would tell a reviewer nothing
+    was established about a branch that had just been checked six ways; leaving
+    it as a plain failure tells them the code is broken when it is not, which
+    is what task 102 was told.
+    """
+    point, tip = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+
+    r = reverify.run(
+        repo, wt_root, task_for(repo),
+        contract(verification=["true", "exit 3"]),
+        "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
+
+    assert not r.ok, "it still refuses -- the gate is still a gate"
+    assert r.unmet_obligation
+    assert not r.could_not_run, (
+        "the checks ran; saying nothing is known about this branch would be "
+        "false and would send the reviewer nowhere useful")
+    assert "owes" in r.reason
+    assert "FAILS when merged" not in r.reason, (
+        "this is the sentence that sends a reviewer to read a diff that is fine")
+    assert "question for a person" in r.reason
+    assert r.as_record()["unmet_obligation"] is True
+
+
+def test_a_failure_beside_an_obligation_is_still_reported_as_a_failure(repo, wt_root):
+    """Ordered after failed_outright, on the argument the undecided branch
+    already makes: a branch that is broken AND owes a citation is broken, and
+    'it owes something' over that run would bury the finding."""
+    point, tip = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+
+    r = reverify.run(
+        repo, wt_root, task_for(repo),
+        contract(verification=["exit 3", "exit 1"]),
+        "fleet/task-1", recorded_base=point, changed_files=["api/provides.txt"])
+
+    assert not r.ok
+    assert not r.unmet_obligation
+    assert "FAILS when merged" in r.reason
+
+
 class TestARefusalSaysWhatItSaw:
     """Two reporting defects that cost a 16-minute re-run on 11 Sep 2026.
 

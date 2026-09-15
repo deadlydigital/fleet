@@ -372,6 +372,38 @@ def test_a_file_outside_the_contract_is_refused(dsns, settings, console,
 
 # ---- failure paths --------------------------------------------------------
 
+def test_an_unmet_obligation_gets_its_own_sentence(dsns, settings, console,
+                                                   monkeypatch):
+    """15 Sep 2026. `tasks.status` still has no third terminal value -- adding
+    one is a schema change and does not belong riding along here -- so the
+    task is FAILED either way and the SENTENCE is doing the work.
+
+    Task 102 read "verification failed" with five checks green beside it,
+    including a 15.4-minute analytics suite. That sentence is what the brief
+    and the console print, and it sent a reader to a diff that was fine.
+    """
+    tid = queue_task(console, contract=contract(verification=["true", "exit 3"]))
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
+    assert result.outcome == "FAILED"
+    assert result.reason.startswith("the branch owes:")
+    assert "verification failed" not in result.reason
+    assert not result.verification.passed, "it still refuses"
+    assert result.verification.unmet_obligation
+    assert not result.verification.failed_outright
+
+
+def test_a_failure_beside_an_obligation_still_says_verification_failed(
+        dsns, settings, console, monkeypatch):
+    """The verdict that was reached is kept, on failed_outright's own
+    argument. A branch that is broken and also owes a citation is broken."""
+    tid = queue_task(console, contract=contract(verification=["exit 3", "false"]))
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"}))
+    assert result.outcome == "FAILED"
+    assert result.reason == "verification failed"
+
+
 def test_failing_verification_fails_the_task(dsns, settings, console,
                                              monkeypatch):
     tid = queue_task(console, contract=contract(verification=["false"]))

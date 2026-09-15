@@ -89,8 +89,10 @@ def run(repo: Path, added: str, spec: str | None = SPEC,
 
 
 def test_a_requirement_cited_nowhere_refuses(repo):
+    """3, not 1, since 15 Sep 2026: this check has no opinion about the code.
+    It still REFUSES -- verify.Check.passed is False for an obligation."""
     r = run(repo, "// spec:1 forwards them\n")
-    assert r.returncode == 1
+    assert r.returncode == 3
     assert "2.1" in r.stdout and "2.5" in r.stdout and "3" in r.stdout
 
 
@@ -110,13 +112,13 @@ def test_a_token_already_in_the_tree_does_not_count(repo):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "citations land first")
     r = run(repo, "const unrelated = 3;\n")
-    assert r.returncode == 1
+    assert r.returncode == 3
     assert "4 of 4" in r.stdout or "cited nowhere" in r.stdout
 
 
 def test_a_longer_id_does_not_satisfy_a_shorter_one(repo):
     r = run(repo, "// spec:2.50 spec:1 spec:3 spec:2.1\n")
-    assert r.returncode == 1
+    assert r.returncode == 3
     assert "2.5  The table cells" in r.stdout
 
 
@@ -139,7 +141,7 @@ def test_a_parent_is_carried_by_a_cited_child(repo):
 
 def test_a_parent_with_no_cited_child_is_still_missing(repo):
     r = run(repo, "// spec:1\n// spec:3\n")
-    assert r.returncode == 1
+    assert r.returncode == 3
     assert "2.1" in r.stdout and "2.5" in r.stdout
 
 
@@ -172,6 +174,138 @@ def test_a_missing_base_sha_is_could_not_run(repo):
 
 
 # ---- it would have caught the thing it was written for --------------------
+
+
+class TestAFullStopIsNotAWordCharacter:
+    """15 Sep 2026. The guard was `(?![\\w.\\d])` -- no dot at all -- and it has
+    two jobs that the dot only half serves:
+
+        `spec:2.5` must not match inside `spec:2.51`   -- `(?!\\w)` does that
+        `spec:2`   must not match inside `spec:2.5`    -- needs the dot rule
+
+    Rejecting EVERY following dot also rejects one ending a sentence. Task 87's
+    branch carried `* spec:6. The API half of this shipped months before the
+    page read it:` -- a correct citation of requirement 6, in prose -- and was
+    refused. Run 62, GBP 3.63, attempt 1 of 2 spent, and the rebuild rewrote
+    the feature rather than adding the token.
+
+    Replayed over every patch commit in the fleet's history -- 76, of which 33
+    have a spec that numbers anything -- the narrowed guard changes exactly one
+    verdict: run 62's, FAIL to PASS.
+    """
+
+    def test_task_87s_real_line_is_a_citation(self, repo):
+        r = run(repo, "// spec:1 spec:2.1 spec:2.5\n"
+                      "/* spec:3. The API half of this shipped months "
+                      "before the page read it. */\n")
+        assert r.returncode == 0, r.stdout
+
+    def test_a_parent_still_does_not_match_inside_its_child(self, repo):
+        """The job the dot rule exists for, and the one the narrowing must not
+        drop: citing 2.5 is not citing 2 by textual accident. 2 is satisfied
+        here by the parent rule instead, which is a different mechanism."""
+        from contextlib import suppress
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("c", str(CHECK))
+        mod = importlib.util.module_from_spec(spec)
+        with suppress(SystemExit):
+            spec.loader.exec_module(mod)
+        assert not mod.token("2").search("// spec:2.5 clicking a cell")
+        assert not mod.token("2.5").search("// spec:2.51 a longer id")
+        assert not mod.token("6").search("// myspec:6 a suffix")
+
+    @pytest.mark.parametrize("form", ["(spec:3)", "spec:3, and", "spec:3; then",
+                                      "spec:3 -- so", "SPEC:3.", "spec:3."])
+    def test_the_other_punctuation_that_ends_a_clause(self, repo, form):
+        """One line per case, and it has to differ between cases: `run()`
+        rewrites the file and commits, so a line repeated from the previous
+        case is diff CONTEXT rather than an added line, and this check counts
+        added lines only. That is the check working, and it caught this test."""
+        r = run(repo, f"// spec:1 spec:2.1 spec:2.5 {form}\n")
+        assert r.returncode == 0, f"{form}: {r.stdout}"
+
+    def test_a_child_cited_with_a_full_stop_carries_its_parent(self, repo):
+        r = run(repo, "// spec:1\n// spec:2.1. and spec:2.5.\n// spec:3.\n")
+        assert r.returncode == 0, r.stdout
+
+
+class TestItCannotCorroborateItself:
+    """15 Sep 2026. The hole 042 opened in this check two days after it landed.
+
+    console/adopt.corroborate() re-runs a FAILING check in a clone at the base,
+    with FLEET_BASE_SHA and FLEET_HEAD_SHA set to the same commit, to establish
+    whether it fails without the branch applied. For a check that reads the
+    TREE that is a real question and task 100 is why it exists.
+
+    For THIS check it is not a question at all. The diff is empty by
+    construction, so nothing is cited, so it fails -- every time, for every
+    branch, whatever the branch did. Matched on command and exit code, which is
+    all adopt._corroboration_for() and 042's SQL compare, that excused this
+    check for every branch: the one gate in the path that reads a spec, and the
+    only thing that noticed task 102 had not proved its central claim.
+
+    The fix is not output comparison. Task 100's excused check printed `1 of 43
+    files` on the branch and `1 of 42` at the base, so requiring the tails to
+    match would refuse the case the feature exists for. The check says so
+    itself instead, in the vocabulary that already existed: exit 2, which both
+    layers already refuse as evidence.
+    """
+
+    def test_an_empty_diff_is_could_not_run_and_not_a_failure(self, repo):
+        """base == HEAD, which is exactly the corroboration run."""
+        head = _git(repo, "rev-parse", "HEAD")
+        env = dict(os.environ)
+        env["FLEET_SPEC_MD"] = SPEC
+        env["FLEET_BASE_SHA"] = head
+        env["FLEET_HEAD_SHA"] = head
+        r = subprocess.run([str(PYTHON), str(CHECK)], cwd=repo, env=env,
+                           capture_output=True, text=True)
+        assert r.returncode == 2, r.stdout
+        assert "adds no lines" in r.stdout
+        assert "could not run" in r.stdout
+
+    def test_the_message_names_the_hole_it_closes(self, repo):
+        """The next person to read this exit code needs to know why it is a 2
+        and not a 1, or it will be 'simplified' back into the hole."""
+        head = _git(repo, "rev-parse", "HEAD")
+        env = dict(os.environ)
+        env["FLEET_SPEC_MD"] = SPEC
+        env["FLEET_BASE_SHA"] = head
+        r = subprocess.run([str(PYTHON), str(CHECK)], cwd=repo, env=env,
+                           capture_output=True, text=True)
+        assert "BASE-CORROBORATION" in r.stdout
+        assert "corroborate ITSELF" in r.stdout
+
+    def test_two_is_refused_as_evidence_by_the_module(self, repo):
+        """The exit code is only half of it -- this asserts the other half,
+        that adopt refuses to build an excuse out of an undecided base check.
+        Asserted here, beside the check that produces the 2, because the two
+        halves are one rule and a test for either alone would pass while the
+        rule was broken."""
+        from runner import verify
+        from console import adopt
+        base_side = {"command": "cite", "exit_code": 2,
+                     "undecided_reason": verify.killed_by(2, None)}
+        branch_side = {"command": "cite", "exit_code": 1,
+                       "skipped_reason": None, "unresolved_reason": None,
+                       "undecided_reason": None, "timed_out": False}
+        assert verify.killed_by(2, None) is not None
+        assert adopt._corroboration_for(
+            branch_side, [{"base_commit_sha": "b", "checks": [base_side]}],
+            "b") is None
+
+    def test_a_branch_that_adds_lines_and_cites_nothing_still_refuses(self, repo):
+        """The 2 must be reachable ONLY by an empty diff. A branch that adds
+        lines and cites nothing is an ordinary obligation refusal -- 3, and
+        Check.passed False -- otherwise the fix has turned the gate off, which
+        is the opposite of the point."""
+        r = run(repo, "const b = 2;\n")
+        assert r.returncode == 3
+        assert "cited nowhere" in r.stdout
+
+    def test_a_passing_branch_still_passes(self, repo):
+        r = run(repo, "// spec:1 spec:2.1 spec:2.5 spec:3 all of them\n")
+        assert r.returncode == 0, r.stdout
 
 
 def test_it_refuses_task_53s_real_diff_against_task_53s_real_spec():
@@ -270,6 +404,8 @@ class TestTheDraftStageGuaranteesNumbering:
              "```\n")
 
     def test_a_draft_that_numbers_nothing_is_refused(self, tmp_path):
+        """draft_spec_shape.py, NOT the citation check -- 1 here is a verdict
+        about the draft in front of it, which is the artefact it judges."""
         r = self._shape(tmp_path, self.BLOCK + "\nJust prose about the work.\n")
         assert r.returncode == 1
         assert "numbers no requirements" in r.stdout + r.stderr
