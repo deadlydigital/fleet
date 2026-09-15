@@ -67,7 +67,33 @@ from runner.boundary import path_inside
 #:     purpose: a daily row that failed once still beats a weekly row that
 #:     never ran, because what the work is worth does not change because an
 #:     attempt at it went wrong.
-RANK_VERSION = 3
+#: v4 (15 Sep 2026): measured impact inserted as key 5, id moves to key 6. 045.
+#:     v3 landed at about 20:38 on 14 Sep and did separate c63 from c64. The
+#:     sweep at 20:46 refused anyway, naming c66 and c67. What that showed is
+#:     that the tie is not a PAIR: c63, c66 and c67 all carry [1, 1, 0, 0, id]
+#:     and differ in nothing but the id, so the sweep refuses wherever the pace
+#:     puts the cut inside that group -- the pair it names is a function of
+#:     per_night, not of the pool.
+#:
+#:     Four changes had by then each moved this rather than ended it, and the
+#:     reason is structural: class, coverage, band and prior failures are all
+#:     properties of the row's FORM -- what kind of work it is, whether its data
+#:     exists, how often it is wanted, whether it has been tried. None of them
+#:     is how much the work is WORTH, so rows describing very different amounts
+#:     of value are identical to all four. c66 and c67 are seven to one apart on
+#:     a figure measured twenty minutes before they were loaded, written down in
+#:     the document they were loaded from, and unreachable from the row.
+#:
+#:     BELOW prior failures, and that is not obvious. A row worth 619 ms that
+#:     has failed twice is still a worse bet tonight than a row worth 89 ms
+#:     that has never been attempted: the repeat stop is about spending money
+#:     on the same failure again, and value does not answer it. Above the id,
+#:     because the id is not a reason.
+#:
+#:     THE FIGURE IS NOT RE-EXECUTED, unlike the probes and the premise. See
+#:     045's header and impact_class() below -- it establishes that a number
+#:     was stated against a named dataset on a stated date, and nothing more.
+RANK_VERSION = 4
 
 #: Key 1's three classes, lower first.
 FRONTEND_ONLY, MODIFY, CREATE = 0, 1, 2
@@ -77,6 +103,18 @@ CLASS_NAMES = {FRONTEND_ONLY: "frontend-only", MODIFY: "modify", CREATE: "create
 #: Key 3 since v2. A NULL band sorts last and does not gate.
 BAND_ORDER = {"daily": 0, "weekly": 1, "monthly": 2, "rarely": 3}
 NO_BAND = 4
+
+#: Key 5 since v4. The sort position of a row that states no figure: after
+#: every row that states one, and ordered among its own kind by the keys below
+#: it. Not a gate -- 045's header argues the difference at length, and the
+#: short form is that all 23 rows open when the column landed are this row.
+HAS_FIGURE, NO_FIGURE = 0, 1
+
+#: The one unit the figure may be in, and the same closed vocabulary 045's
+#: check constraint enforces. Named here so the ranker REFUSES to compare a
+#: unit it was not taught rather than silently ordering milliseconds against
+#: rows-scanned. A second member is a migration that says how the two compare.
+IMPACT_UNITS = ("ms",)
 
 #: KEY 2, and the three values are not a scale -- they are three different
 #: STATEMENTS, and the middle one is why this is not a ratio sort.
@@ -273,6 +311,63 @@ def coverage_class(candidate: Dict[str, Any],
             else COVERAGE_ABSENT), ratio
 
 
+def impact_class(candidate: Dict[str, Any]) -> tuple[tuple[int, float],
+                                                    Dict[str, Any] | None]:
+    """Key 5, and the figure that produced it. Lower sorts first.
+
+    Returns ((HAS_FIGURE, -value), figure) for a row carrying a well-formed
+    measurement, and ((NO_FIGURE, 0.0), None) for everything else. The value is
+    NEGATED because a bigger number is better here and every other key in this
+    module is better-is-smaller; doing it in the key rather than by reversing
+    the sort keeps `rank()` one tuple that one `sorted()` understands.
+
+    WHAT THIS READS, AND WHAT IT REFUSES TO READ
+
+    The structured object and never prose, on coverage_ratio()'s argument: 025
+    refused to parse a sentence for a number and was right to. A row whose
+    `measured_impact` is malformed scores NO_FIGURE rather than raising --
+    045's CHECK constraint is what refuses a malformed one at the door, and a
+    ranker that threw here would take the night down over a row it could
+    simply place last.
+
+    A UNIT IT WAS NOT TAUGHT IS NO FIGURE. 045 closes the vocabulary at `ms`
+    and says why: c66 is truly 619 ms and truly 4,546,466 rows scanned, and
+    only one of those can be compared with c67's 89 ms. If a later migration
+    adds a unit and this module is not taught the conversion, the row sorts
+    last -- which loses a discriminator. The alternative is comparing two
+    numbers whose ratio means nothing and printing a sentence claiming it
+    decided something, which is worse.
+
+    NOTHING HERE VERIFIES THE FIGURE. Unlike check_probes() and
+    check_premise(), which re-execute their predicates against the sha this is
+    about to spend money on, there is no re-executing a millisecond: the probe
+    vocabulary is a closed set of predicates over a source tree and a latency
+    is not one of them. This key ranks A STATED CLAIM, attributable to a named
+    dataset and a date. The date is carried into key_values() and printed, so
+    a reader who wants to know whether the figure is stale can see its age
+    rather than take the ordering's word for it.
+    """
+    fig = candidate.get("measured_impact")
+    if not isinstance(fig, dict):
+        return (NO_FIGURE, 0.0), None
+    if fig.get("unit") not in IMPACT_UNITS:
+        return (NO_FIGURE, 0.0), None
+    raw = fig.get("value")
+    # A REAL NUMBER, not something that coerces to one. 045's CHECK requires
+    # jsonb_typeof(value) = 'number', and this has to agree with it for the
+    # reason console/adopt._check_is_green mirrors verify.Check.passed: two
+    # places decide the same thing and a disagreement between them is a row
+    # the database refuses and the ranker orders, or the reverse. `bool` is
+    # excluded explicitly because it is an int in Python and `true` is not a
+    # measurement.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return (NO_FIGURE, 0.0), None
+    value = float(raw)
+    if value <= 0:
+        return (NO_FIGURE, 0.0), None
+    return (HAS_FIGURE, -value), fig
+
+
 def rank(candidate: Dict[str, Any], *,
          coverage_floor: float | None = None) -> tuple:
     """The sort key. Lower sorts first. PURE -- no database, no filesystem.
@@ -290,7 +385,12 @@ def rank(candidate: Dict[str, Any], *,
     # alongside every other key in _open_candidates. Absent means zero, which
     # is what a row nothing has attempted has.
     prior = int(candidate.get("prior_failures") or 0)
-    return (klass, cov, band, prior, candidate["id"])
+    # OFF THE ROW as well, and for the same purity reason: `measured_impact` is
+    # selected alongside every other key in _open_candidates. A row that states
+    # no figure scores NO_FIGURE and sorts after every row that states one --
+    # it is not held, not marked and not refused. 045's header is the argument.
+    impact, _fig = impact_class(candidate)
+    return (klass, cov, band, prior, impact, candidate["id"])
 
 
 def key_values(candidate: Dict[str, Any], *,
@@ -298,6 +398,7 @@ def key_values(candidate: Dict[str, Any], *,
     """The keys, named, for the record and the dry run."""
     klass, why = work_class(candidate.get("probes") or [])
     cov, ratio = coverage_class(candidate, coverage_floor)
+    impact, fig = impact_class(candidate)
     return {
         "key1_class": CLASS_NAMES[klass],
         "key1_why": why,
@@ -309,10 +410,16 @@ def key_values(candidate: Dict[str, Any], *,
         "key2_floor": coverage_floor,
         "key3_band": candidate.get("band"),
         "key4_prior_failures": int(candidate.get("prior_failures") or 0),
-        "key5_id": candidate["id"],
+        # The FIGURE and not only the class, on key2_ratio's argument: the
+        # morning should be able to see the number, its unit, the dataset it
+        # was taken on and the date it was taken, rather than take the
+        # ordering's word for it. None is "no figure stated".
+        "key5_impact": fig,
+        "key6_id": candidate["id"],
         "sort_key": [klass, cov,
                      BAND_ORDER.get(candidate.get("band"), NO_BAND),
                      int(candidate.get("prior_failures") or 0),
+                     list(impact),
                      candidate["id"]],
     }
 

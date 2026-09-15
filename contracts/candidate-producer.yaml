@@ -33,6 +33,50 @@
 # them because they were the only way to do what it had been asked. See
 # specs/auto-approval.md §9.9.1 and 030_candidate_premise.sql.
 #
+# AND SINCE 15 SEP 2026, A `measured_impact` AS WELL. THE SAME WARNING APPLIES:
+# WHOEVER QUEUES THE NEXT PRODUCER TASK MUST SAY SO IN ITS SPEC. The check
+# refuses a block that omits the key, and an agent that has not been told will
+# spend a run discovering it.
+#
+# What it is: how much the work is worth, MEASURED NOW, as
+# {value, unit, what, dataset, as_of} -- or an explicit `null`. The key is
+# required; the value very often is null, because most work has no latency
+# figure and never will. A CSV export is worth building and is not worth
+# milliseconds.
+#
+#   measured_impact:
+#     value: 619
+#     unit: ms                    # the vocabulary is closed at this one member
+#     what: the top_products statement, per dashboard request
+#     dataset: tenant 166, dashboard at a 30-day window, median of three warm
+#              passes on a quiet box
+#     as_of: 2026-09-14
+#
+# THREE RULES, AND EACH COST SOMETHING TO LEARN:
+#
+#   * TRANSCRIBE, DO NOT ESTIMATE. The figure comes from the findings document
+#     you were given. This contract grants no Bash and no database, so you
+#     cannot measure anything -- and a number you reasoned your way to is not
+#     what this key is for. If the document states no figure, write `null`.
+#
+#   * MEASURED, NEVER PROJECTED. Candidate 67's loop is 89 ms today and its
+#     research argues it becomes ~1.8 s on a two-year store. The 89 goes here;
+#     the 1.8 s goes in `rationale`, where a reader weighs it. A producer free
+#     to choose the horizon is a producer choosing which row wins.
+#
+#   * THE DATASET AND THE DATE ARE NOT DECORATION. Nothing re-executes this
+#     number -- not this check, not the ranker, not the approval. Every other
+#     claim you make in a block is a predicate something runs against the tree.
+#     This one is a claim, and the dataset and date are the whole of what lets
+#     a reader check it against the document you took it from.
+#
+# Why it exists: console/rank.py's first four keys are all properties of a
+# row's FORM -- what kind of work, whether its data exists, how often it is
+# wanted, whether it has been tried. None is how much the work is WORTH.
+# Candidates 66 and 67 tied on all four for 15 consecutive sweeps and approved
+# nothing, while the document they were both loaded from timed them at 619 ms
+# and 89 ms. See 045_measured_impact.sql.
+#
 # THE PROHIBITIONS ARE IN THIS FILE, NOT IN A PROMPT
 #
 # §7 forbids a producer to set a disposition, to write to `tasks`, and to

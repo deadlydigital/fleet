@@ -80,6 +80,11 @@ def candidate(**over):
         "suggested_paths": ["api/analytics/routes/orders.py"],
         "verified_sha": head(),
         "hib_signal": None,
+        # Required since 15 Sep 2026, and NULL here for the reason most real
+        # rows will be null: this fixture claims nothing about the repository
+        # and there is nothing to have measured. See
+        # TestMeasuredImpactIsAStatedFigure below and 045.
+        "measured_impact": None,
         # Absent now and absent after any merge: the count is 0 whether the
         # glob matches every route file or none of them.
         "probes": [{"grep_count": {"glob": "api/analytics/routes/*.py",
@@ -323,6 +328,108 @@ class TestEachRowCarriesTheShaItWasVerifiedAt:
     def test_a_sha_that_is_not_a_commit_is_refused(self, tmp_path):
         code, out = run(tmp_path, block([candidate(verified_sha="0" * 40)]))
         assert code == 1 and "not a commit" in out
+
+
+# ---- measured_impact is a stated figure, not a verified one ----------------
+
+class TestMeasuredImpactIsAStatedFigure:
+    """045, 15 Sep 2026. Key 5 of console/rank.py.
+
+    Four tiebreaks each moved the tie rather than removing it, because all four
+    keys describe the row's FORM and none describes what the work is WORTH.
+    c66 and c67 tied for 15 consecutive sweeps while the document they were
+    both loaded from timed them at 619 ms and 89 ms.
+
+    EVERY TEST HERE IS ABOUT SHAPE, and that is the point rather than a
+    limitation. Nothing re-executes this figure -- not this check, not the
+    ranker, not the approval -- because a latency is not a predicate over a
+    source tree and this contract grants no shell. A producer can write 619 ms
+    over a measurement it never took and every test below will pass. What the
+    key converts is a silent omission into a dated, attributable claim a reader
+    can check against the source document.
+    """
+
+    #: c66's real figure, from research/candidates-dashboard-remaining-
+    #: 2026-09-14.md -- the median of three warm passes, not the single-pass
+    #: 660 ms the document corrects at 19:50.
+    C66 = {"value": 619, "unit": "ms",
+           "what": "the top_products statement, per dashboard request",
+           "dataset": ("tenant 166, dashboard at a 30-day window, median of "
+                       "three warm passes on a quiet box"),
+           "as_of": "2026-09-14"}
+
+    def test_the_key_is_required_even_when_there_is_no_figure(self, tmp_path):
+        c = candidate()
+        del c["measured_impact"]
+        code, out = run(tmp_path, block([c]))
+        assert code == 1 and "omits measured_impact" in out
+
+    def test_null_is_accepted_and_means_the_document_states_none(self, tmp_path):
+        """Most work has no latency figure and never will. A CSV export is
+        worth building and is not worth milliseconds."""
+        code, out = run(tmp_path, block([candidate(measured_impact=None)]))
+        assert code == 0, out
+
+    def test_the_real_c66_figure_is_accepted(self, tmp_path):
+        code, out = run(tmp_path, block([candidate(measured_impact=self.C66)]))
+        assert code == 0, out
+
+    def test_a_figure_with_no_dataset_is_refused(self, tmp_path):
+        """The one that matters most. `619 ms` naming no tenant, window or
+        conditions is unfalsifiable, and nothing downstream re-executes it."""
+        fig = dict(self.C66)
+        del fig["dataset"]
+        code, out = run(tmp_path, block([candidate(measured_impact=fig)]))
+        assert code == 1 and "dataset" in out
+
+    def test_a_figure_with_no_date_is_refused(self, tmp_path):
+        fig = dict(self.C66)
+        del fig["as_of"]
+        code, out = run(tmp_path, block([candidate(measured_impact=fig)]))
+        assert code == 1 and "as_of" in out
+
+    def test_a_date_that_is_not_one_is_refused(self, tmp_path):
+        """'recently' satisfies a non-empty test and tells a reader nothing."""
+        code, out = run(tmp_path, block(
+            [candidate(measured_impact=dict(self.C66, as_of="recently"))]))
+        assert code == 1 and "ISO date" in out
+
+    def test_a_unit_outside_the_vocabulary_is_refused(self, tmp_path):
+        """c66 is truly 619 ms and truly 4,546,466 rows scanned, and only one
+        of those can be compared with c67's 89 ms."""
+        code, out = run(tmp_path, block([candidate(measured_impact={
+            "value": 4546466, "unit": "rows",
+            "what": "order_items scanned by top_products",
+            "dataset": "tenant 166 at a 30-day window",
+            "as_of": "2026-09-14"})]))
+        assert code == 1 and "vocabulary is closed" in out
+
+    def test_zero_is_refused(self, tmp_path):
+        code, out = run(tmp_path, block(
+            [candidate(measured_impact=dict(self.C66, value=0))]))
+        assert code == 1 and "zero is not a measurement" in out
+
+    def test_a_string_value_is_refused(self, tmp_path):
+        """As text, '89' sorts above '619'."""
+        code, out = run(tmp_path, block(
+            [candidate(measured_impact=dict(self.C66, value="619"))]))
+        assert code == 1 and "non-numeric" in out
+
+    def test_the_shape_says_nothing_about_whether_the_figure_is_true(self):
+        """Stated as an assertion so that nobody reads a green as verification.
+
+        This is the same sentence spec_requirements_cited.py carries about a
+        `spec:` token, and it is here for the same reason: the check establishes
+        that a claim was MADE.
+        """
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "cbs", "contracts/checks/candidate_block_shape.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        invented = dict(self.C66, value=999999,
+                        dataset="a dataset that does not exist")
+        assert mod.check_measured_impact("c", {"measured_impact": invented}) == []
 
 
 # ---- hib_signal is a fact, with its age ------------------------------------

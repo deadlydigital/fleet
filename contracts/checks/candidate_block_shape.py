@@ -278,6 +278,112 @@ def check_coverage(where: str, sig: dict) -> list[str]:
     return problems
 
 
+#: The one unit a figure may be in, and the same closed set 045's CHECK
+#: constraint and console/rank.IMPACT_UNITS enforce.
+IMPACT_UNITS = ("ms",)
+
+#: The keys a stated figure must carry. `what` and `dataset` are prose because
+#: a reader is the only check on this number; `as_of` is a date because a
+#: figure that cannot be told from a stale one is not evidence.
+IMPACT_KEYS = ("value", "unit", "what", "dataset", "as_of")
+
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def check_measured_impact(where: str, c: dict) -> list[str]:
+    """`measured_impact`: what the work is worth NOW, or an explicit null.
+
+    045 and console/rank.impact_class(). Key 5 exists because four keys that
+    are all properties of a row's FORM could not separate c66 from c67 -- and
+    the document both were loaded from times them at 619 ms and 89 ms, twenty
+    minutes before the load.
+
+    REQUIRED KEY, NULL PERMITTED, the fourth time this file uses that shape.
+    Most work has no latency figure and never will: a CSV export is worth
+    building and is not worth milliseconds. `measured_impact: null` says the
+    producer considered it and the document states none, which is a different
+    fact from the key having been forgotten -- and only a required key keeps
+    them apart.
+
+    THIS CHECK CANNOT RE-EXECUTE THE FIGURE, AND NOTHING DOWNSTREAM CAN EITHER.
+    Every other claim in a candidate block is a predicate over a source tree
+    and run_probe() runs it. A latency is not: re-taking it needs a database, a
+    tenant, a warm cache and a clock, and this contract grants no Bash on
+    purpose. So what follows is SHAPE -- that a number was stated, in a unit
+    the ranker understands, about a named thing, on a named dataset, on a
+    stated date. A producer can write 619 ms over a measurement it never took
+    and this will pass, exactly as spec_requirements_cited.py will pass a
+    `spec:` token written over work that was not done. What it converts is a
+    silent omission into a written, attributable, dated claim that a reader
+    can check against the source document. That is all it converts.
+
+    MEASURED, NOT PROJECTED, and c67 is why the rule is worth stating. Its
+    figure today is 89 ms; its argument is that a two-year store holds ~730
+    manifests instead of 36, which is ~1.8 s. The second number is the reason
+    to build it and belongs in `rationale`, where a reader weighs it. A
+    producer allowed to put it HERE would be choosing the horizon that wins,
+    and no reader downstream could tell which horizon it chose.
+    """
+    if "measured_impact" not in c:
+        return [f"{where} omits measured_impact. It is required and may be "
+                f"null -- most work has no latency figure and never will, and "
+                f"'the document states none' is a fact worth stating. What it "
+                f"may NOT be is absent, because c66 and c67 tied for 15 sweeps "
+                f"on a difference their own source document had measured."]
+    fig = c["measured_impact"]
+    if fig is None:
+        return []
+    if not isinstance(fig, dict):
+        return [f"{where} has a measured_impact that is not a mapping: {fig!r}"]
+
+    problems = []
+    missing = [k for k in IMPACT_KEYS if k not in fig]
+    if missing:
+        problems.append(
+            f"{where} has a measured_impact missing {missing}. A figure needs "
+            f"all five: nothing re-executes this number, so the dataset it was "
+            f"taken on and the date it was taken are the whole of what makes "
+            f"it checkable.")
+        return problems
+
+    if fig.get("unit") not in IMPACT_UNITS:
+        problems.append(
+            f"{where} states a measured_impact in {fig.get('unit')!r}. The "
+            f"vocabulary is closed to {list(IMPACT_UNITS)}: c66 is truly 619 "
+            f"ms and truly 4,546,466 rows scanned, and only one of those can "
+            f"be compared with c67's 89 ms. A ranker handed both would order "
+            f"them anyway. A second unit is a migration that says how the two "
+            f"compare.")
+    raw = fig["value"]
+    # A REAL NUMBER, not something that coerces to one. YAML gives `value: 619`
+    # as an int and `value: "619"` as a string, and the three places that judge
+    # this figure -- here, 045's CHECK constraint, and console/rank.impact_class
+    # -- have to agree about which is acceptable, or a block passes the producer
+    # and is refused at the INSERT.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        problems.append(
+            f"{where} has a non-numeric measured_impact value: "
+            f"{raw!r}. As text, '89' sorts above '619'.")
+    else:
+        value = float(raw)
+        if value <= 0:
+            problems.append(
+                f"{where} states a measured_impact of {value}, and zero is not "
+                f"a measurement of impact -- it is a statement that there is "
+                f"none, which is a row that should not have been filed.")
+    for key in ("what", "dataset"):
+        if not str(fig.get(key) or "").strip():
+            problems.append(
+                f"{where} has a measured_impact with no `{key}` in words. "
+                f"A bare number is not a figure a reader can check.")
+    if not ISO_DATE.match(str(fig.get("as_of") or "")):
+        problems.append(
+            f"{where} has a measured_impact as_of {fig.get('as_of')!r}, which "
+            f"is not an ISO date. 'recently' satisfies a non-empty test and "
+            f"tells a reader nothing about whether the figure still holds.")
+    return problems
+
+
 class BandUncheckable(RuntimeError):
     """The band rule could not be asked, which is not the same as passing."""
 
@@ -410,6 +516,8 @@ def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> l
                     f"it can be leaned on.")
             else:
                 problems += check_coverage(where, sig)
+
+    problems += check_measured_impact(where, c)
 
     paths = c.get("suggested_paths") or []
     if not isinstance(paths, list):

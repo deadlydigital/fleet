@@ -62,8 +62,20 @@ class NothingToApprove(Exception):
     """Not an error. The night had no answer it could defend."""
 
 
-def _require_030(conn) -> None:
-    """The column gate 6 reads, checked before the night rather than during it.
+#: Every candidates column this module SELECTs that arrived by a migration,
+#: with the file that adds it and what is lost while it is missing. Checked
+#: together, before the night, by _require_columns().
+_REQUIRED_COLUMNS = (
+    ("premise", "030_candidate_premise.sql",
+     "gate 6 cannot re-execute what a candidate rests on"),
+    ("measured_impact", "045_measured_impact.sql",
+     "key 5 cannot order two rows that tie on the first four, which is the "
+     "refusal 045 was written to end"),
+)
+
+
+def _require_columns(conn) -> None:
+    """The migration-borne columns this module reads, checked before the night.
 
     THE CODE AND THE SCHEMA DEPLOY BY DIFFERENT MEANS AND THAT IS THE HAZARD.
     The units run from the ~/fleet working tree, so an edit to this file is
@@ -76,15 +88,24 @@ def _require_030(conn) -> None:
     would report `declared: 0` for every row, which is indistinguishable from
     the pool's real state and would read as a verified night. Named instead, so
     the failure says which migration to apply.
+
+    A LIST RATHER THAN A FUNCTION PER MIGRATION, since 045. The 030 form was
+    one hand-written check and the second column would have been a second copy
+    of it -- and the copy that does not get written is the one whose absence
+    produces the traceback this exists to prevent. One query, every column, and
+    a message naming each file that is missing.
     """
-    ok = conn.execute(
-        "SELECT 1 FROM information_schema.columns"
-        " WHERE table_name='candidates' AND column_name='premise'").fetchone()
-    if not ok:
+    have = {r["column_name"] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns"
+        " WHERE table_name='candidates'").fetchall()}
+    missing = [(col, f, why) for col, f, why in _REQUIRED_COLUMNS
+               if col not in have]
+    if missing:
         raise RuntimeError(
-            "candidates.premise does not exist, so gate 6 cannot re-execute "
-            "what a candidate rests on. Apply 030_candidate_premise.sql as the "
-            "owner of the table. Nothing was decided.")
+            "; ".join(f"candidates.{col} does not exist, so {why} -- apply "
+                      f"{f} as the owner of the table"
+                      for col, f, why in missing)
+            + ". Nothing was decided.")
 
 
 def _open_candidates(conn) -> List[Dict[str, Any]]:
@@ -93,9 +114,10 @@ def _open_candidates(conn) -> List[Dict[str, Any]]:
     # dry run and the real decision must not be two predicates that agree only
     # until somebody edits one -- which is how this defect stayed invisible,
     # since the stop lived inside approve_batch() and a dry run never called it.
-    _require_030(conn)
+    _require_columns(conn)
     return conn.execute(
         "SELECT id, batch_id, title, repo, band, hib_signal, probes, premise,"
+        " measured_impact,"
         " suggested_paths, disposition, objective_ref, work_key,"
         " candidate_work_identity(id) AS work_identity,"
         " candidate_prior_failures(id) AS prior_failures"
@@ -214,6 +236,38 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
                f"{_attempts(keys_last['key4_prior_failures'])} against "
                f"{_attempts(keys_next['key4_prior_failures'])} for the next "
                f"eligible row ({nxt['id']})")
+    elif keys_last["key5_impact"] != keys_next["key5_impact"]:
+        # KEY 5, ADDED 15 Sep 2026. The night c66 and c67 tied on the first
+        # four keys this branch did not exist, and the sweep approved nothing
+        # -- correctly. What separates them is how much the work is WORTH, and
+        # it had been measured, written down and loaded into neither row.
+        #
+        # THE SENTENCE CARRIES THE DATASET AND THE DATE, and that is not
+        # decoration. Nothing re-executes this figure -- see rank.impact_class
+        # and 045 -- so the reader of this reason is the only check on it, and
+        # a reader handed "619 ms against 89 ms" with no idea what was measured
+        # or when cannot be that check.
+        def _fig(k):
+            # .get() throughout. 045's CHECK guarantees all five keys on any
+            # row that reached the database, and rank.impact_class only reads
+            # two of them -- so a figure arriving by some other route could
+            # carry a value and a unit and nothing else. A KeyError here would
+            # take the sweep down inside the sentence builder, which is the one
+            # place impact_class went out of its way not to raise.
+            f = k["key5_impact"]
+            if not f:
+                return "no figure stated"
+            what = str(f.get("what") or "unstated").strip()
+            dataset = str(f.get("dataset") or "an unnamed dataset").strip()
+            as_of = str(f.get("as_of") or "no date").strip()
+            return (f"{float(f['value']):g} {f['unit']} ({what}), measured on "
+                    f"{dataset}, {as_of}")
+        why = (f"both are {keys_last['key1_class']} work with the same "
+               f"coverage reading, the same band and the same record of prior "
+               f"attempts, and its measured impact is {_fig(keys_last)} "
+               f"against {_fig(keys_next)} for the next eligible row "
+               f"({nxt['id']}). THE FIGURE IS A STATED CLAIM AND NOTHING "
+               f"RE-EXECUTES IT")
     else:
         # NO DISCRIMINATOR. Approve nothing.
         raise NothingToApprove(
@@ -222,7 +276,8 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
             f"both {keys_last['key2_coverage']}, "
             f"both band {keys_last['key3_band']}, both with "
             f"{keys_last['key4_prior_failures']} prior unsuccessful "
-            f"attempt(s), and only the candidate id separates them. Approving "
+            f"attempt(s), and neither states a measured impact the other does "
+            f"not. Only the candidate id separates them. Approving "
             f"on that is approving because it was first, which is a decision "
             f"nobody made and a reason nobody wrote. Nothing was approved.")
 

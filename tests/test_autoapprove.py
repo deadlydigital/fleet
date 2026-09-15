@@ -1431,14 +1431,146 @@ class TestKeyFourIsPriorFailures:
         assert rank.rank({"id": 1, "band": "daily", "probes": [self.MODIFY]}) \
             == rank.rank(self._c(1, 0))
 
-    def test_the_keys_name_it_and_the_id_moved_to_five(self):
+    def test_the_keys_name_it_and_the_id_moved_to_six(self):
+        """The id was key 5 under v3 and is key 6 under v4. This assertion is
+        the reason the version is bumped rather than the position edited: a
+        reader of last week's decision record needs `key5_id` to still mean
+        what it meant when that record was written."""
         k = rank.key_values(self._c(63, 2))
         assert k["key4_prior_failures"] == 2
-        assert k["key5_id"] == 63
+        assert k["key6_id"] == 63
         assert k["sort_key"][3] == 2
-        assert k["sort_key"][4] == 63
+        assert k["sort_key"][5] == 63
 
     def test_the_version_was_bumped(self):
         """A key inserted without bumping this re-explains last week's
         decisions with this week's ranking, silently."""
         assert rank.RANK_VERSION >= 3
+
+
+class TestKeyFiveIsMeasuredImpact:
+    """v4, 15 Sep 2026. The fifth fact, and the first one that is not a
+    property of the row's FORM.
+
+    v3 landed at about 20:38 on 14 Sep and did separate c63 from c64. The sweep
+    at 20:46 refused anyway, naming c66 and c67 -- because the tie is not a
+    PAIR. c63, c66 and c67 all carry [1, 1, 0, 0, id] and differ in nothing but
+    the id, so the sweep refuses wherever the pace puts the cut inside that
+    group, and the pair it names is a function of per_night rather than of the
+    pool.
+
+    That is why this key is tested against all THREE rows and not the named
+    two: a fifth key that separated only c66 from c67 would be the fifth fix to
+    move this rather than end it.
+    """
+
+    MODIFY = {"path_exists": "api/analytics/routes/orders.py"}
+
+    def _fig(self, value, as_of="2026-09-14"):
+        return {"value": value, "unit": "ms", "what": "a statement",
+                "dataset": "tenant 166, 30-day window", "as_of": as_of}
+
+    def _c(self, cid, value=None, prior=0, band="daily"):
+        row = {"id": cid, "band": band, "prior_failures": prior,
+               "probes": [self.MODIFY]}
+        if value is not None:
+            row["measured_impact"] = self._fig(value)
+        return row
+
+    def test_the_real_pair_is_separated(self):
+        """c66 at 619 ms against c67 at 89 ms -- the pair that shut 15 sweeps.
+
+        The 619 and the 89 are the medians from
+        research/candidates-dashboard-remaining-2026-09-14.md, not invented.
+        """
+        order = sorted([self._c(67, 89), self._c(66, 619)], key=rank.rank)
+        assert [c["id"] for c in order] == [66, 67]
+
+    def test_a_bigger_figure_sorts_first(self):
+        assert rank.rank(self._c(1, 619)) < rank.rank(self._c(2, 89))
+
+    def test_the_whole_tied_GROUP_is_ordered_and_not_just_the_named_pair(self):
+        """c63, c66 and c67 are mutually tied on all four of v3's keys. The
+        sweep names whichever adjacent pair the pace puts the cut between, so a
+        key that separates only the named pair moves the refusal instead of
+        ending it.
+
+        c63 is a CSV export: no latency figure, and it sorts last of the three
+        rather than first-by-id. That is the whole group ordered on what the
+        work is worth.
+        """
+        group = [self._c(63), self._c(67, 89), self._c(66, 619)]
+        assert [c["id"] for c in sorted(group, key=rank.rank)] == [66, 67, 63]
+        # And every adjacent pair is now separated, at any pace.
+        ranked = sorted(group, key=rank.rank)
+        for a, b in zip(ranked, ranked[1:]):
+            assert rank.rank(a)[:5] != rank.rank(b)[:5]
+
+    def test_no_figure_sorts_last_and_does_not_gate(self):
+        """045 chose the WEAKER rule than 030 did for the premise, and this is
+        it. All 23 rows open when the column landed state no figure; making
+        them ineligible would have replaced a ranker that will not choose with
+        a pool holding nothing to choose from."""
+        silent, tiny = self._c(1), self._c(2, 1)
+        assert rank.rank(tiny) < rank.rank(silent)
+        # Sorting last is not being held: the row still ranks, and gate
+        # eligibility is decided nowhere near here.
+        assert rank.rank(silent)[4] == (rank.NO_FIGURE, 0.0)
+
+    def test_two_silent_rows_still_tie(self):
+        """Said out loud because it is the limit of what this key buys. It
+        separates the NEXT tie, not the one on the board: c66 and c67 both
+        predate the column and are being separated by a recorded by_hand
+        decision instead."""
+        assert rank.rank(self._c(66))[:5] == rank.rank(self._c(67))[:5]
+
+    def test_it_is_below_prior_failures(self):
+        """A row worth 619 ms that has failed twice is still a worse bet than
+        an untried row worth 89 ms. The repeat stop is about spending money on
+        the same failure again, and value does not answer it."""
+        valuable_burnt = self._c(1, 619, prior=2)
+        modest_clean = self._c(2, 89, prior=0)
+        assert rank.rank(modest_clean) < rank.rank(valuable_burnt)
+
+    def test_it_is_above_the_id(self):
+        assert rank.rank(self._c(99, 619)) < rank.rank(self._c(1, 89))
+
+    def test_a_unit_it_was_not_taught_is_no_figure(self):
+        """c66 is truly 619 ms and truly 4,546,466 rows scanned. Ordering the
+        second against c67's 89 ms would be a ratio that means nothing, printed
+        in a sentence claiming a decision was made."""
+        rows_unit = {"id": 1, "band": "daily", "probes": [self.MODIFY],
+                     "measured_impact": {"value": 4546466, "unit": "rows",
+                                         "what": "x", "dataset": "y",
+                                         "as_of": "2026-09-14"}}
+        assert rank.impact_class(rows_unit)[0] == (rank.NO_FIGURE, 0.0)
+
+    def test_a_malformed_figure_sorts_last_rather_than_raising(self):
+        """045's CHECK constraint refuses a malformed figure at the door. If
+        one reaches the ranker anyway, placing it last is right and taking the
+        night down over it is not."""
+        for bad in ({}, {"value": "619", "unit": "ms"}, {"value": 0, "unit": "ms"},
+                    {"unit": "ms"}, None, "619 ms", []):
+            row = {"id": 1, "band": "daily", "probes": [self.MODIFY],
+                   "measured_impact": bad}
+            assert rank.impact_class(row)[0] == (rank.NO_FIGURE, 0.0)
+
+    def test_a_row_without_the_column_still_sorts(self):
+        """`rank()` is pure and reads the row. Every fixture written before
+        today, and every row read by a caller that has not been taught the
+        column, must still sort."""
+        assert rank.rank({"id": 1, "band": "daily", "probes": [self.MODIFY]}) \
+            == rank.rank(self._c(1))
+
+    def test_the_keys_carry_the_figure_and_not_only_the_class(self):
+        """On key2_ratio's argument: nothing re-executes this number, so the
+        morning has to be able to see the dataset and the date rather than take
+        the ordering's word for it."""
+        k = rank.key_values(self._c(66, 619))
+        assert k["key5_impact"]["value"] == 619
+        assert k["key5_impact"]["dataset"] == "tenant 166, 30-day window"
+        assert k["key5_impact"]["as_of"] == "2026-09-14"
+        assert rank.key_values(self._c(1))["key5_impact"] is None
+
+    def test_the_version_was_bumped(self):
+        assert rank.RANK_VERSION >= 4

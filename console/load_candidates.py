@@ -231,6 +231,19 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
                 # keeping. Absent reads as "not a ratio", the same as null.
                 problems += mod.check_coverage(where, sig)
 
+        # measured_impact: the SHAPE from the producer's own check rather than
+        # a second copy of it, on the same argument this module already makes
+        # for hib_signal.coverage and for the probe vocabulary. The asymmetry
+        # is the same too -- the check governs what a producer may EMIT, and
+        # this loader loads documents written before the key existed. An
+        # ABSENT key therefore loads as NULL here, where the check refuses it;
+        # what is refused at BOTH ends is a figure that is present and
+        # malformed, because 045's CHECK constraint would reject the INSERT and
+        # a whole batch would die on one bad row at the write instead of at the
+        # read.
+        if "measured_impact" in c and c.get("measured_impact") is not None:
+            problems += mod.check_measured_impact(where, c)
+
         probes = c.get("probes")
         if not isinstance(probes, list) or not probes:
             problems.append(
@@ -320,6 +333,7 @@ def validate(block: Dict[str, Any]) -> List[Dict[str, Any]]:
             "suggested_paths": [str(p) for p in (c.get("suggested_paths") or [])],
             "band": band,
             "hib_signal": sig,
+            "measured_impact": c.get("measured_impact"),
             "probes": probes if isinstance(probes, list) else [],
             "premise": premise if isinstance(premise, list) else [],
             "work_key": keyed["key"],
@@ -421,6 +435,7 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
         "premise": sum(len(r["premise"]) for r in rows),
         "no_premise": sum(1 for r in rows if not r["premise"]),
         "signals": sum(1 for r in rows if r["hib_signal"]),
+        "figures": sum(1 for r in rows if r["measured_impact"]),
         "bands": {b: sum(1 for r in rows if r["band"] == b)
                   for b in BANDS + (None,) if any(r["band"] == b for r in rows)},
         # PRINTED, NOT SWALLOWED. A batch where nothing keyed is a batch the
@@ -504,14 +519,16 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
             conn.execute(
                 "INSERT INTO candidates (batch_id, title, rationale, repo,"
                 " objective_ref, evidence, suggested_paths, band, hib_signal,"
-                " probes, premise, work_key)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " probes, premise, work_key, measured_impact)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (batch_id, r["title"], r["rationale"], r["repo"],
                  r["objective_ref"], json.dumps(r["evidence"]),
                  r["suggested_paths"], r["band"],
                  json.dumps(r["hib_signal"]) if r["hib_signal"] else None,
                  json.dumps(r["probes"]), json.dumps(r["premise"]),
-                 r["work_key"]))
+                 r["work_key"],
+                 json.dumps(r["measured_impact"])
+                 if r["measured_impact"] else None))
             ids.append(conn.execute(
                 "SELECT currval('candidates_id_seq') AS id").fetchone()["id"])
     summary["batch_id"] = batch_id
