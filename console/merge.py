@@ -274,12 +274,45 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     if not recorded_patch:
         return MergeOutcome(False, "the run recorded no patch commit, so there "
                                    "is nothing to check this branch against")
+    # AND THERE IS NO WAY BACK FROM HERE, WHICH IS WORTH KNOWING BEFORE YOU
+    # EDIT A BRANCH RATHER THAN AFTER.
+    #
+    # This refusal is correct: reverify takes its changed-file list from the
+    # recorded PATCH_PROPOSED step, so a moved tip means the record no longer
+    # describes the branch. What is not obvious is that it is TERMINAL.
+    #
+    #   * `run_steps` carries run_steps_immutable, so the recorded
+    #     patch_commit_sha cannot be updated to the new tip.
+    #   * step_authority reserves VERIFICATION_RUN to fleet_verifier, and the
+    #     only writer is runner/cycle.py inside a run. Nothing re-verifies a
+    #     branch on demand.
+    #   * console/adopt.py will not help: it requires FAILED, and it pins the
+    #     tip to the recorded sha for this same reason.
+    #
+    # So ANY hand-edit to a branch -- a rebase, an amend, a one-line fix, or
+    # moving a file the RUNNER wrote with its bytes untouched -- ends the
+    # branch's acceptability permanently. The only routes afterwards are to
+    # re-run the task, paying for the work again and getting different work
+    # back, or to change the code so the original tip passes.
+    #
+    # Measured 15 Sep 2026 on task 114, which was refused by the boundary for
+    # carrying the evidence pack at a path no contract declared. Moving the
+    # pack and correcting the one citation that named it (66ec97a, c07f48d,
+    # since unpublished) made the boundary pass and landed on this line
+    # instead. The branch was reset to its verified tip and the code changed
+    # instead -- see the legacy_pack note in runner/boundary.enforce.
+    #
+    # THE RULE: decide between re-run and code change BEFORE touching the
+    # branch, because touching it removes one of the two options.
     if tip != recorded_patch:
         return MergeOutcome(
             False,
             f"{branch} is at {tip[:12]} but the run verified {recorded_patch[:12]}. "
             f"Something has been committed to the branch since it was verified, "
-            f"so what would merge is not what was checked.")
+            f"so what would merge is not what was checked. This is terminal for "
+            f"this branch: run_steps is immutable and only a run may write a "
+            f"VERIFICATION_RUN, so the choices now are to re-run the task or to "
+            f"make the original tip acceptable.")
 
     # AGAINST THE LOCAL BASE, DELIBERATELY, AND NOT `effective_base`.
     #

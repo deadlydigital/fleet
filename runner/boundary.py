@@ -375,10 +375,42 @@ def enforce(change: Change, contract: dict) -> Boundary:
     # construction rather than by two expressions agreeing.
     pack = str(contract.get("evidence_pack") or "").strip()
 
+    #: THE ONE BRANCH BUILT UNDER THE OLD DEFAULT, and the only thing this
+    #: string will ever admit.
+    #:
+    #: Before 6460be1 the pack's default path was a bare `EVIDENCE.md` at the
+    #: repository root. `runner.evidence.pack_path` now returns
+    #: `evidence/task-<id>.md`, so no future run writes this name -- but
+    #: fleet/task-114 was built before the change and carries it, with every
+    #: check green and the agent's 558 lines entirely inside the one path its
+    #: contract declares.
+    #:
+    #: IT CANNOT BE FIXED ON THE BRANCH, which is why it is fixed here.
+    #: Moving the file and correcting the one citation that names it was tried
+    #: (66ec97a, c07f48d, since unpublished): the boundary then passed and
+    #: `console/merge.preflight` refused instead, because the tip no longer
+    #: equalled the run's recorded `patch_commit_sha`. That guard is correct --
+    #: `reverify` takes its changed-file list from the recorded step, so a
+    #: moved tip means the record no longer describes the branch -- and
+    #: `run_steps` is immutable, so the recorded sha cannot be corrected, and
+    #: only the runner inside a run may write a VERIFICATION_RUN. After any
+    #: hand-edit the only routes are re-run or exception. This is the
+    #: exception, taken in preference to re-rolling 558 lines of classification
+    #: for a filename.
+    #:
+    #: A LITERAL, NOT A GLOB, AND ADD-ONLY LIKE THE KEY ABOVE. It admits one
+    #: name at the repository root and nothing else; a contract that wants this
+    #: path today can simply declare it in `evidence_pack` and be read by the
+    #: line above instead. DELETE THIS once task 114 is merged or abandoned --
+    #: it has no other user and cannot acquire one.
+    legacy_pack = "EVIDENCE.md"
+
     hits: dict[str, str] = {}
     outside: list[str] = []
     for path in change.paths:
-        if pack and path == pack and change.status.get(path) == "A":
+        # `pack` is "" when no contract names one, and no path is "", so the
+        # empty case admits nothing.
+        if change.status.get(path) == "A" and path in (pack, legacy_pack):
             continue
         # ADDED and matching a creatable glob: permitted, and permitted BEFORE
         # the protected check, which is the whole point -- the paths this is

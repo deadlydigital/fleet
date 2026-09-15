@@ -707,12 +707,19 @@ class TestTheEvidencePackIsTheRunnersFileAndNotTheAgents:
     }
 
     def test_without_the_key_the_pack_is_outside_writable(self):
-        """The refusal task 114 actually got."""
-        ch = _change({"EVIDENCE.md": "A",
+        """The refusal task 114 actually got, in its general form.
+
+        Written against `EVIDENCE.md` originally, which is the literal task
+        114's branch carries. That name is now admitted unconditionally by the
+        one-branch legacy exception below, so this uses the per-task path the
+        resolver produces for every run since -- the rule is the same and the
+        example is one that is still refused.
+        """
+        ch = _change({"evidence/task-114.md": "A",
                       "research/classification.md": "A"})
         v = boundary.enforce(ch, self.CONTRACT)
         assert not v.clean
-        assert v.outside_writable == ["EVIDENCE.md"]
+        assert v.outside_writable == ["evidence/task-114.md"]
 
     def test_with_it_the_pack_is_permitted_and_the_rest_still_judged(self):
         ch = _change({"evidence/task-114.md": "A",
@@ -787,3 +794,72 @@ class TestOneDefinitionForWhereThePackLives:
         call = 'evidence.pack_path(contract, task["id"])'
         assert call in cycle
         assert call in rev
+
+
+class TestTheLegacyPackNameIsOneBranchWide:
+    """fleet/task-114 was built before the pack default became per task, so it
+    carries `EVIDENCE.md` at the repository root. No future run writes that
+    name -- runner.evidence.pack_path returns evidence/task-<id>.md -- and this
+    branch cannot be corrected in place:
+
+        moving the file made the boundary pass and console/merge.preflight
+        refuse instead, because the tip no longer equalled the run's recorded
+        patch_commit_sha. run_steps is immutable, so the recorded sha cannot be
+        corrected, and only the runner inside a run may write a
+        VERIFICATION_RUN. After a hand-edit the routes are re-run or exception.
+
+    These tests are the fence around the exception. It admits ONE literal name
+    and must never become a way in for anything else.
+    """
+
+    CONTRACT = {
+        "writable_paths": ["research/**"],
+        "protected_paths": ["contracts/**"],
+        "max_diff_lines": 4000,
+    }
+
+    def test_task_114s_shape_is_admitted(self):
+        ch = _change({"EVIDENCE.md": "A",
+                      "research/metorik-report-classification-2026-09-15.md": "A"})
+        assert boundary.enforce(ch, self.CONTRACT).clean
+
+    def test_it_is_add_only_like_the_key(self):
+        """An agent editing the readings its document rests on is the one thing
+        neither path may permit."""
+        for st in ("M", "D"):
+            v = boundary.enforce(_change({"EVIDENCE.md": st}), self.CONTRACT)
+            assert not v.clean, st
+
+    def test_it_is_a_literal_and_not_a_prefix(self):
+        for near in ("EVIDENCE.md.bak", "docs/EVIDENCE.md", "EVIDENCE",
+                     "evidence.md", "EVIDENCE.markdown"):
+            v = boundary.enforce(_change({near: "A"}), self.CONTRACT)
+            assert not v.clean, near
+            assert v.outside_writable == [near]
+
+    def test_it_does_not_admit_the_root_generally(self):
+        v = boundary.enforce(_change({"README.md": "A"}), self.CONTRACT)
+        assert not v.clean and v.outside_writable == ["README.md"]
+
+    def test_a_contract_naming_its_own_pack_is_unaffected(self):
+        """The exception is beside the key, not instead of it: a contract that
+        wants a path today declares it and is read by the key."""
+        ch = _change({"research/EVIDENCE-metorik.md": "A"})
+        assert boundary.enforce(
+            ch, dict(self.CONTRACT,
+                     evidence_pack="research/EVIDENCE-metorik.md")).clean
+
+    def test_an_empty_pack_key_admits_nothing_extra(self):
+        """`pack` is "" when no contract names one. No path is "", so the
+        membership test cannot match it."""
+        v = boundary.enforce(_change({"anything.md": "A"}),
+                             dict(self.CONTRACT, evidence_pack=""))
+        assert not v.clean and v.outside_writable == ["anything.md"]
+
+    def test_the_comment_names_its_only_user_and_says_to_delete_it(self):
+        """A carve-out with no expiry written next to it is a permanent one."""
+        src = open("/home/ubuntu/fleet/runner/boundary.py").read()
+        i = src.index("legacy_pack")
+        head = src[max(0, i - 2200):i]
+        assert "task-114" in head or "task 114" in head
+        assert "DELETE THIS" in head
