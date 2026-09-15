@@ -417,6 +417,27 @@ class TestTheDraftStageGuaranteesNumbering:
         assert r.returncode == 0, r.stdout
         assert "1 numbered requirement" in r.stdout
 
+    #: The two drafts rule 8 refuses, named rather than excused.
+    #:
+    #: THIS LIST IS NOT A WEAKENING OF THE RULE. The class docstring's premise
+    #: -- a rule that refuses the corpus it was written against is a rule about
+    #: the corpus -- holds for 23 of the 25 drafts on disk. These two are the
+    #: corpus being wrong, not the rule: each numbers requirements demanding a
+    #: production measurement, each produced exactly one task, and both of
+    #: those tasks died of it with every code check green.
+    #:
+    #:     restrict-the-acquiring-order-cte-to-the-window  -> task 102, GBP 4.74
+    #:     fold-the-per-manifest-reconciliation-queries    -> task 109, GBP 5.15
+    #:
+    #: They are left on disk unedited because they are the record of what was
+    #: written, and rewriting them would erase the evidence for the rule. A
+    #: THIRD name appearing here is not a bigger allow-list; it means rule 8 is
+    #: firing on something it should not, and the rule is what to look at.
+    KNOWN_UNBUILDABLE = {
+        "restrict-the-acquiring-order-cte-to-the-window.md",
+        "fold-the-per-manifest-reconciliation-queries.md",
+    }
+
     def test_the_real_drafts_on_disk_already_satisfy_it(self, tmp_path):
         """A rule that would refuse the corpus it was written against is a
         rule about the corpus, not about the specs.
@@ -427,6 +448,12 @@ class TestTheDraftStageGuaranteesNumbering:
         required field refusing documents written before it existed is not the
         corpus failing the rule; it is the rule being younger than the corpus.
         What this test is about is NUMBERING, and that is unchanged.
+
+        SINCE 15 Sep 2026 TWO DRAFTS ARE EXPECTED TO FAIL, and the test asserts
+        that they do rather than skipping them — see KNOWN_UNBUILDABLE. A rule
+        whose only evidence is a test fixture is a rule nobody has checked
+        against real prose; these two are the real prose, and they are the two
+        that cost money.
         """
         import yaml as _yaml
         for draft in sorted((FLEET / "drafts").glob("*.md")):
@@ -452,6 +479,14 @@ class TestTheDraftStageGuaranteesNumbering:
                 cwd=tmp_path, capture_output=True, text=True,
                 env={**os.environ,
                      "FLEET_CHANGED_FILES": f"drafts/{draft.name}"})
+            if draft.name in self.KNOWN_UNBUILDABLE:
+                assert r.returncode == 1, (
+                    f"{draft.name} is one of the two drafts that numbered a "
+                    f"requirement its build agent could not perform. If it "
+                    f"passes now, rule 8 has stopped catching the case it was "
+                    f"written for.")
+                assert "cannot satisfy" in r.stdout + r.stderr
+                continue
             assert r.returncode == 0, f"{draft.name}: {r.stdout}{r.stderr}"
             assert "numbered requirement" in r.stdout
 
@@ -480,3 +515,155 @@ class TestThePromptAndTheGateAskForTheSameThing:
                     "max_diff_lines": 600, "verification": ["true"]}
         prompt = agent.build_prompt({"spec_md": SPEC}, contract)
         assert "Cite every numbered requirement" not in prompt
+
+
+class TestARequirementTheAgentCannotPerform:
+    """Rule 8 of draft_spec_shape.py, 15 Sep 2026.
+
+    Rule 7 makes a spec enforceable. This makes it SATISFIABLE. A requirement
+    the build agent has no tools to perform cannot be cited honestly, so
+    spec_requirements_cited.py refuses the branch -- with every code check
+    green -- and the run dies with its attempt spent.
+
+        task 102   GBP 4.74   "the identity is PROVED on production data",
+                              "report the measurement", and a requirement
+                              conditional on that measurement
+        task 109   GBP 5.15   "proved on production data, per period, with the
+                              dataset named", "report the statement count and
+                              the time, before and after" -- written by the
+                              draft-spec agent five days after 102 died of it
+
+    MEASURED, NOT ASSERTED. Over every numbered requirement in the task table
+    on 15 Sep 2026 -- 254 across 76 specs -- the rule flags exactly the five
+    above and nothing else.
+    """
+
+    def _shape(self, body: str):
+        draft = FLEET / "drafts" / "test_fleet_rule8_probe.md"
+        draft.write_text(body)
+        try:
+            return subprocess.run(
+                [str(PYTHON), str(FLEET / "contracts/checks/draft_spec_shape.py")],
+                cwd=FLEET, capture_output=True, text=True,
+                env={**os.environ, "FLEET_CHANGED_FILES": f"drafts/{draft.name}"})
+        finally:
+            draft.unlink(missing_ok=True)
+
+    BLOCK = ("```fleet-spec\n"
+             "work_type: dd_frontend\n"
+             "repo: deadly-digital-platform\n"
+             "contract: dd-analytics-frontend.yaml\n"
+             "title: A probe\n"
+             "writable_paths:\n"
+             "  - platform/app/(dashboard)/analytics/orders/page.tsx\n"
+             "```\n")
+
+    OK_REQ = "### 1. The page sends the filters\n\nWords about it.\n"
+
+    def test_a_buildable_spec_passes(self):
+        r = self._shape(self.BLOCK + self.OK_REQ)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    def test_task_102s_requirement_5_is_refused(self):
+        r = self._shape(self.BLOCK + self.OK_REQ +
+                        "\n### 2. The identity is PROVED on production data, "
+                        "the way task 100's requirement 3 was\n\nWords.\n")
+        out = r.stdout + r.stderr
+        assert r.returncode == 1
+        assert "cannot satisfy" in out
+        assert "no shell" in out
+
+    def test_task_109s_requirement_7_is_refused(self):
+        r = self._shape(self.BLOCK + self.OK_REQ +
+                        "\n### 2. Report the statement count and the time, "
+                        "before and after\n\nWords.\n")
+        assert r.returncode == 1 and "cannot satisfy" in r.stdout + r.stderr
+
+    def test_a_requirement_conditional_on_one_is_refused_too(self):
+        """Task 102's requirement 7. It demands no measurement itself, so the
+        phrase list does not touch it -- and it is unbuildable all the same,
+        because it is gated on one the agent cannot satisfy."""
+        r = self._shape(
+            self.BLOCK + self.OK_REQ +
+            "\n### 2. Report the measurement after the restriction\n\nWords.\n"
+            "\n### 3. The LATERAL form, only if requirement 2's measurement "
+            "justifies it\n\nWords.\n")
+        assert r.returncode == 1
+        assert "conditional on requirement 2" in r.stdout + r.stderr
+
+    def test_a_conditional_on_a_BUILDABLE_requirement_is_fine(self):
+        """The conditional rule must not fire on every `only if requirement N`
+        -- only when N is itself unsatisfiable."""
+        r = self._shape(
+            self.BLOCK + self.OK_REQ +
+            "\n### 2. The table renders the coupon column\n\nWords.\n"
+            "\n### 3. The export includes it, only if requirement 2 shipped\n"
+            "\nWords.\n")
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    def test_the_message_says_what_to_do_instead(self):
+        """A refusal that does not say how to fix it costs a second draft."""
+        r = self._shape(self.BLOCK + self.OK_REQ +
+                        "\n### 2. Report the measurement after the change\n\nW.\n")
+        out = r.stdout + r.stderr
+        assert "STATE THE FIGURE INSTEAD OF ASKING FOR IT" in out
+        assert "lateral-acquiring-order-in-three-call-sites.md" in out
+        assert "not ready to\nbe queued" in r.stdout or "not ready to be queued" in out
+
+    def test_it_says_it_catches_shape_and_not_intent(self):
+        """The same sentence spec_requirements_cited.py carries about itself.
+        The phrase list came from two incidents, not a survey, and a reader who
+        takes a green here as proof the spec is buildable is wrong."""
+        r = self._shape(self.BLOCK + self.OK_REQ +
+                        "\n### 2. Report the measurement after the change\n\nW.\n")
+        out = r.stdout + r.stderr
+        assert "SHAPE, NOT INTENT" in out
+        assert "not from a\nsurvey" in r.stdout or "not from a survey" in out
+
+
+class TestRuleEightReadsTheContract:
+    """It asks the contract what tools the agent will get, rather than keeping
+    a list of which contracts lack a shell. Eleven of twelve have none today,
+    and that is the kind of fact that is wrong the week after it is written."""
+
+    def _mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "dss", str(FLEET / "contracts/checks/draft_spec_shape.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_the_default_comes_from_runner_yaml(self):
+        """A contract that declares no agent_tools gets runner.yaml's set, so
+        a copy here would be asking a different question from the runner."""
+        assert self._mod()._default_agent_tools() == [
+            "Read", "Edit", "Write", "Grep", "Glob"]
+
+    def test_a_contract_with_no_bash_has_no_shell(self):
+        assert self._mod().has_a_shell("deadly-digital-platform-api.yaml") is False
+
+    def test_an_unreadable_contract_declines_to_judge(self):
+        """None, not False. A rule that fires because a file is missing is a
+        rule about the filesystem."""
+        m = self._mod()
+        assert m.has_a_shell("no-such-contract.yaml") is None
+        from console import requirements
+        reqs = requirements.parse(
+            "### 1. Report the measurement after the change\n\nWords.\n")
+        assert m.unbuildable_requirements(reqs, "no-such-contract.yaml") == []
+
+    def test_a_pinned_command_is_not_a_shell(self):
+        """draft-spec.yaml grants Bash(<one script>) with no wildcard. It
+        cannot time a request or open a database, so it does not exempt."""
+        assert self._mod().has_a_shell("draft-spec.yaml") is False
+
+    def test_a_real_shell_exempts(self, tmp_path):
+        m = self._mod()
+        for grant, expected in (("Bash", True), ("Bash(/usr/bin/psql *)", True),
+                                ("Bash(/one/pinned.sh)", False)):
+            y = tmp_path / "probe.yaml"
+            y.write_text("work_type: x\nrepo: y\nagent_tools:\n  - Read\n"
+                         f"  - {grant}\n")
+            m.CONTRACTS = tmp_path
+            assert m.has_a_shell("probe.yaml") is expected, grant

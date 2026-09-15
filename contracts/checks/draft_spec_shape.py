@@ -200,6 +200,121 @@ def glob_matches(path: str, pattern: str) -> bool:
     return path == pattern or path.startswith(p + "/") or path == p
 
 
+#: Phrases that name an OBSERVATION rather than an edit. Rule 8.
+#:
+#: DRAWN FROM TWO INCIDENTS, NOT FROM A SURVEY, and that is the honest
+#: description of this list. Every phrase below was lifted from the four
+#: requirements that actually killed a run; none came from reading the corpus
+#: looking for what such a requirement tends to say. So it will miss wordings
+#: nobody has used yet, and it will keep missing them until one costs a run and
+#: gets added -- which is a real limitation and not a temporary one.
+#:
+#: What can be said for it is measured rather than hoped. Run over every
+#: numbered requirement in the task table on 15 Sep 2026 -- 254 of them across
+#: 76 specs -- it flagged four, and all four were the known-bad ones. Zero
+#: false positives. That is a statement about a corpus of 76 specs by a handful
+#: of authors, not a claim about prose in general.
+_MEASUREMENT_PHRASES = re.compile(r"""
+    \bproved?\s+on\s+production\b
+  | \bon\s+production\s+data\b
+  | \breport\s+the\s+measurement\b
+  | \bbefore\s+and\s+after\b
+  | \bEXPLAIN\s*\(?\s*ANALYZE\b
+  | \bbenchmark\b
+  | \bmeasure(?:d|ment)?\s+(?:it|the|on|against)\b
+  | \bwith\s+the\s+dataset\s+named\b
+""", re.I | re.X)
+
+#: A requirement whose condition is another requirement's measurement. Task
+#: 102's requirement 7 -- "The LATERAL form, only if requirement 6's
+#: measurement justifies it" -- demands no measurement itself and so the
+#: phrases above do not touch it. It is unbuildable all the same: it is gated
+#: on a requirement the agent cannot satisfy, so it can never be honestly
+#: cited either. Costs nothing to add and it is the case that needs it.
+_CONDITIONAL_ON = re.compile(
+    r"\bonly\s+if\s+requirement\s+(\d+(?:\.\d+)*)"
+    r"|\bif\s+requirement\s+(\d+(?:\.\d+)*)'s\b", re.I)
+
+
+def _default_agent_tools() -> list[str]:
+    """runner.yaml's default tool set, read rather than copied.
+
+    The runner falls back to this when a contract declares no `agent_tools`,
+    so a check that assumed the default would be asking a different question
+    from the one the runner will answer.
+    """
+    try:
+        data = yaml.safe_load((FLEET / "runner.yaml").read_text()) or {}
+    except Exception:
+        return []
+    return [str(t) for t in (data.get("agent_tools") or [])]
+
+
+def has_a_shell(contract_name: str) -> bool | None:
+    """Will the agent running this spec be able to execute anything?
+
+    None when the question cannot be asked -- the contract is not on disk or
+    will not parse -- which rule 8 treats as "do not judge", because a rule
+    that fires on an unreadable contract is a rule about the filesystem.
+
+    READ FROM THE CONTRACT, NEVER FROM A LIST HERE. Eleven of the twelve
+    contracts grant no Bash today and that is exactly the kind of fact that
+    goes stale between the day it is written and the day it is wrong. The
+    contract is the thing the runner will actually consult.
+
+    A PINNED COMMAND IS NOT A SHELL. `Bash(/home/ubuntu/fleet/contracts/checks/
+    spec_selfcheck.sh)` runs one script with no argument wildcard; it cannot
+    time a request or open a database. Only a bare `Bash` or one whose
+    argument carries a `*` counts here. The direction of that choice is
+    deliberate and is the same one glob_matches() takes above: a false
+    positive refuses a draft with a sentence naming the requirement, which
+    costs a rewording; a false negative costs a build, and this defect has
+    cost two.
+    """
+    path = CONTRACTS / contract_name
+    if not path.exists():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except Exception:
+        return None
+    tools = data.get("agent_tools")
+    tools = [str(t) for t in tools] if tools is not None else _default_agent_tools()
+    for t in tools:
+        if t == "Bash":
+            return True
+        if t.startswith("Bash(") and "*" in t:
+            return True
+    return False
+
+
+def unbuildable_requirements(reqs, contract_name: str) -> list[tuple]:
+    """Numbered requirements the build agent could not satisfy, with why.
+
+    Returns [(id, title, why)]. Empty when the contract grants a shell, when
+    the contract cannot be read, or when nothing matches.
+    """
+    if has_a_shell(contract_name) is not False:
+        return []
+    ids = {q.id for q in reqs}
+    direct = {q.id for q in reqs if _MEASUREMENT_PHRASES.search(q.title)}
+    out = []
+    for q in reqs:
+        if q.id in direct:
+            out.append((q.id, q.title, "asks for a measurement or an "
+                                       "observation, and the agent has no "
+                                       "shell, no database and no network"))
+            continue
+        m = _CONDITIONAL_ON.search(q.title)
+        ref = (m.group(1) or m.group(2)) if m else None
+        if ref and ref in direct and ref in ids:
+            out.append((q.id, q.title, f"is conditional on requirement {ref}, "
+                                       f"which the agent cannot satisfy, so "
+                                       f"this one cannot be honestly cited "
+                                       f"either"))
+    return out
+
+
 def main() -> int:
     changed = [c for c in os.environ.get("FLEET_CHANGED_FILES", "").split("\n") if c]
     specs = [c for c in changed if c.endswith(".md")]
@@ -461,6 +576,41 @@ def main() -> int:
                     f"refused by spec_requirements_cited.py unless each numbered "
                     f"requirement is cited in its diff, and a spec with none "
                     f"turns that gate off.")
+
+            # 8. AND EVERY NUMBERED REQUIREMENT MUST BE ONE THE AGENT CAN DO.
+            #    Rule 7 makes the spec enforceable; this one makes it
+            #    satisfiable. A requirement the build agent has no tools to
+            #    perform cannot be cited honestly, so spec_requirements_cited.py
+            #    refuses the branch -- with every code check green -- and the
+            #    run dies with an attempt spent. Twice: task 102 (GBP 4.74) and
+            #    task 109 (GBP 5.15), five days apart, the second written by
+            #    this very contract's agent.
+            #
+            #    Caught HERE because a draft costs GBP 2.50 and the build it
+            #    queues costs 6, and because the fix at this point is a
+            #    rewording rather than a rerun.
+            unbuildable = unbuildable_requirements(reqs, named)
+            if unbuildable:
+                lines = "; ".join(f"{rid} ({why}): {title[:70]}"
+                                  for rid, title, why in unbuildable)
+                return fail(
+                    f"{rel} numbers {len(unbuildable)} requirement(s) the agent "
+                    f"that will build this spec cannot satisfy -- {lines}. That "
+                    f"agent gets {named}'s agent_tools, which grant no shell, "
+                    f"no database and no network: it can read, search and edit "
+                    f"files and nothing else. It cannot run the code, time a "
+                    f"request or take a plan. "
+                    f"STATE THE FIGURE INSTEAD OF ASKING FOR IT: put the "
+                    f"measurement in a table near the top marked as given, and "
+                    f"put any proof a person must run in a section that is NOT "
+                    f"a numbered requirement -- "
+                    f"specs/lateral-acquiring-order-in-three-call-sites.md is "
+                    f"the worked example. If you cannot state the figure "
+                    f"because nobody has measured it, this spec is not ready to "
+                    f"be queued and saying so in the draft is the right answer. "
+                    f"THIS CATCHES SHAPE, NOT INTENT: the phrase list comes "
+                    f"from the two runs this defect has killed, not from a "
+                    f"survey, so it misses wordings nobody has used yet.")
 
             print(f"ok: {rel} block {blocks.index(block) + 1}/{len(blocks)} -- "
                   f"work_type '{work_type}' has a contract, "
