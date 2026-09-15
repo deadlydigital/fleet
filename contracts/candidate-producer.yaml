@@ -7,6 +7,26 @@
 #
 # WHY THIS IS A TASK AND NOT A PARSER
 #
+# WHICH DOCUMENT TO POINT THIS AT, AS OF 15 Sep 2026
+#
+# `specs/metorik-gap.md` is the document every batch so far was produced from:
+# 50 rows, 48 Metorik features plus 2 DD capabilities with no counterpart, each
+# carrying a DD status established by reading code or querying production, and
+# each under a band-prefixed section heading.
+#
+# `research/metorik-report-catalogue-2026-09-15.md` is larger and newer -- 100
+# reports from Metorik's published catalogue -- and IT IS NOT A DROP-IN
+# REPLACEMENT. It carries no DD status and no band. `console/load_candidates.
+# band_of` reads a candidate's band from the SECTION HEADING of the evidence it
+# cites, and `console/rank.py` sorts a NULL band LAST (NO_BAND = 4), so a batch
+# produced from that catalogue would be legal, unbanded, and would rank below
+# every existing candidate forever -- silently, because nothing refuses it.
+#
+# Task 114 is classifying those 100 rows into three buckets and assigning each
+# a band. Point this at `research/metorik-report-classification-2026-09-15.md`
+# when it lands, and not before. Until then `specs/metorik-gap.md` remains the
+# document with the two columns this pipeline needs.
+#
 # A parser over specs/metorik-gap.md yields 50 rows, 14 of them already
 # shipped, and -- worse -- the 34 marked Missing or Partial are 11 days old.
 # Probed against platform HEAD ebe016c on 8 Sep 2026, two of four Daily-band

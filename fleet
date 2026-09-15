@@ -45,7 +45,12 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
+import re
+
+import yaml
+
 from runner import config
+from runner import evidence
 
 STATUS_ORDER = ("QUEUED", "RUNNING", "READY_FOR_REVIEW", "REWORK",
                 "FAILED", "REJECTED", "MERGED", "ABANDONED")
@@ -73,6 +78,23 @@ def connect():
 
 # ---- add ------------------------------------------------------------------
 
+#: The fleet-spec block, if the spec carries one. Parsed with the same regex
+#: contracts/checks/draft_spec_shape.py uses; a spec queued by hand need not
+#: have one, and most do not.
+_BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
+
+
+def _spec_block(spec_md: str) -> dict | None:
+    m = _BLOCK_RE.search(spec_md or "")
+    if not m:
+        return None
+    try:
+        got = yaml.safe_load(m.group(1))
+    except Exception:
+        return None
+    return got if isinstance(got, dict) else None
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     spec_path = Path(args.spec)
     if not spec_path.exists():
@@ -89,6 +111,31 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     if args.base_branch and args.base_branch != contract["base_branch"]:
         contract = dict(contract, base_branch=args.base_branch)
+
+    # THE READINGS THE SPEC ASKS FOR, lifted the way console/autoqueue lifts
+    # them. Added 15 Sep 2026, because without it the two queueing paths
+    # disagree about the same spec: autoqueue reads `evidence_queries` off the
+    # fleet-spec block and freezes it onto the task, and this path froze only
+    # the contract file -- so a spec that declared its readings got a pack when
+    # the chain queued it and silence when a person did.
+    #
+    # Silence is the bad half. The spec tells the agent the pack exists and is
+    # its only view of the database; an agent handed no pack cannot satisfy the
+    # requirements that cite it, and fails for a reason that is not its fault.
+    # That is the defect draft_spec_shape.py rule 8 exists to prevent, arriving
+    # by a different route.
+    #
+    # Validated by the same function the draft check and autoqueue use, so all
+    # three refuse the same block.
+    block = _spec_block(spec_md)
+    if block and block.get("evidence_queries") is not None:
+        try:
+            checked = evidence.validate_task_queries(block["evidence_queries"])
+        except evidence.QueryRefused as exc:
+            print(f"{spec_path}: {exc}", file=sys.stderr)
+            return 2
+        contract = dict(contract, evidence_queries=(
+            list(contract.get("evidence_queries") or []) + checked))
 
     max_cost = args.max_cost or contract.get("max_cost_gbp")
     if max_cost is None:

@@ -118,3 +118,69 @@ class TestATaskMayNotReadTheSecrets:
         and a person wrote it into a protected file. Silently rewriting their
         reading would be the worse surprise."""
         assert "task_authored" not in {"key": "dd_tenants"}
+
+
+class TestBothQueueingPathsLiftTheBlock:
+    """15 Sep 2026. `console/autoqueue` learned to lift `evidence_queries` off a
+    fleet-spec block; `fleet task add` did not, and the two paths then disagreed
+    about the same spec.
+
+    Silence is the bad half of that disagreement. A spec that declares its
+    readings tells the agent the pack is its only view of the database; an agent
+    handed no pack cannot satisfy the requirements that cite it, and fails for a
+    reason that is not its fault. That is the defect draft_spec_shape rule 8
+    exists to prevent, arriving by a different route -- task 113 was queued into
+    exactly it and abandoned rather than run.
+    """
+
+    SPEC = (
+        "# A spec\n\n"
+        "```fleet-spec\n"
+        "work_type: research\n"
+        "repo: fleet\n"
+        "contract: research.yaml\n"
+        "title: probe\n"
+        "writable_paths:\n"
+        "  - research/probe.md\n"
+        "evidence_queries:\n"
+        "  - key: k1\n"
+        "    reader: deadly_digital\n"
+        "    sql: SELECT count(*) FROM analytics_2.orders\n"
+        "```\n\n"
+        "### 1. Something\n\nWords.\n")
+
+    def _cli(self):
+        """The CLI is an extensionless script, so spec_from_file_location
+        returns None for it and a loader has to be named explicitly."""
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        path = "/home/ubuntu/fleet/fleet"
+        spec = importlib.util.spec_from_loader(
+            "fleetcli", SourceFileLoader("fleetcli", path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_the_cli_finds_the_block(self):
+        got = self._cli()._spec_block(self.SPEC)
+        assert got is not None
+        assert len(got["evidence_queries"]) == 1
+
+    def test_a_spec_with_no_block_is_not_an_error(self):
+        """Most hand-queued specs carry no fleet-spec block and must still
+        queue."""
+        assert self._cli()._spec_block("# Just prose\n") is None
+
+    def test_a_malformed_block_is_not_an_error_either(self):
+        assert self._cli()._spec_block(
+            "```fleet-spec\n: : not yaml :\n```\n") is None
+
+    def test_the_block_it_finds_is_validated_by_the_shared_function(self):
+        """One definition, three readers: the draft check, autoqueue and the
+        CLI. A block the runner would refuse must be refused by all three."""
+        bad = self.SPEC.replace(
+            "SELECT count(*) FROM analytics_2.orders",
+            "SELECT api_key FROM public.tenants")
+        block = self._cli()._spec_block(bad)
+        with pytest.raises(evidence.QueryRefused, match="tenants"):
+            evidence.validate_task_queries(block["evidence_queries"])
