@@ -150,6 +150,15 @@ the five-row Costs & profit group and three of the ten cohort reports.
 > the cross-cutting paragraph it sits under are left as the 2026-09-15 run wrote
 > them. The standing counts are in *The corrected counts, final*, inside
 > *Correction (16 September 2026), second entry*.
+>
+> **A FIFTH FACT LANDED THE SAME DAY AND TAKES NO ROWS AT ALL.** 66,764 orders
+> carry a total of zero and they are the **legal free-entry route** a prize
+> competition must offer. They are real orders and stay in the denominator,
+> which is still 72. But they are inside the revenue statuses, so **every mean
+> of `orders.total` mixes them with paid entries — AOV reads £8.23 where
+> paid-only is £8.43** — and four rows carry a `MUST SPLIT FREE ENTRIES` mark
+> that is explicitly **not** a do-not-propose mark. See *Correction
+> (16 September 2026), third entry*.
 
 ## Correction (16 September 2026): HIB does not refund, so refunds are not a gap
 
@@ -518,6 +527,71 @@ ranking will put *Closed Competitions* on top, covering 96% of categorised
 products, and that is close to meaningless as a ranking. Whoever builds
 *Category comparison* should know that before choosing the default cut.
 
+## Correction (16 September 2026), third entry: 66,764 orders are free entries
+
+**Stated as fact by Eamonn (eamonn@hittinitbig.com) on 2026-09-16**, confirming
+what the data already showed: HIB runs prize competitions, and a prize
+competition must offer a free entry route by law. **The zero-total orders are
+that route.**
+
+**THIS IS NOT AN N/A RULING AND IT MARKS NO ROW `do not propose`.** The other
+four facts removed rows from the denominator. This one removes nothing. Free
+entries are real orders placed by real customers and they belong in every order
+count. What they do not belong in, unlabelled, is an average or a distribution
+of `orders.total`. The parity denominator is unchanged at **72** and the
+classification is unchanged at A 30 / B 30 / C 12.
+
+### The measurement, taken 2026-09-16 on analytics_2
+
+| Figure | Value |
+|---|---|
+| Orders with `total = 0` | **66,764** of 2,890,319 (2.3%) |
+| Of those, status `completed` | **66,676** — so they are inside `_REVENUE_STATUSES` |
+| Distinct customers placing one | 15,616 |
+| Span | 2023-03-15 to 2026-09-16, i.e. the whole history |
+| Line rows in them | 73,378, of which **71,122 are themselves zero-value** |
+| Mean quantity per line | **21.13** entries |
+
+**The product names are the evidence and they are not ambiguous.** The largest
+by line count: *£500 FOR FREE* (7,248), *FREE PLINKO EVERY 24HRS – Site Credit
+PLAY 2 Win!* (4,438), *FREE £50 VOUCHER (£100 IF YOUR ORDER IS OVER £5!)*
+(2,829), *Win £50 Site Credit* (2,467), *£200 FOR FREE* (1,930), *FREE GIVEAWAY
+- WESTLIFE FOR 2* (1,742). 17,507 of the 66,764 also carry a coupon code.
+
+This closes the question left open in *Measured 16 September 2026*, which
+recorded that status accounted for at most 1,991 of the 66,750 zero-total orders
+and said "it is a data question, I had no way to ask it". The answer is that
+they are not a data defect at all.
+
+### What it does to a figure already in front of a user
+
+**`AOV` reads £8.23 where paid-only is £8.43. It is understated by 2.4%, and
+nothing on the page says so.** Measured over `completed`, `processing` and
+`on-hold` — the statuses the platform's `_REVENUE_STATUSES` uses: 2,888,343
+orders, of which 2,821,656 are non-zero.
+
+Revenue **sums** are unaffected: a free entry contributes £0, so gross revenue,
+net revenue and every total are already correct. Order **counts** are also
+correct, and deliberately so — a free entry is an order. **The defect is
+confined to means and distributions**, and it is a labelling problem rather than
+a filtering one: the right repair is to show both figures, or to name the free
+bucket, not to drop 66,764 orders from the denominator and quietly change what
+"orders" means.
+
+### The rows this marks, and the mark is MUST SPLIT rather than do not propose
+
+Four rows take a `**MUST SPLIT FREE ENTRIES**` mark: the three bucket-A rows
+whose measure is a mean or a distribution of `orders.total`, and the one bucket
+C row with the same measure. Their buckets are unchanged and all four remain
+proposable.
+
+The general rule, because it reaches further than four rows: **any report whose
+measure is a mean of `orders.total`, or a distribution over it, must state
+whether free entries are in or out.** That includes per-group averages that have
+already shipped — the AOV column of the payment-method breakdown is the live
+example — and it will include any future one. A report that sums `orders.total`
+needs nothing.
+
 ## The classification
 
 ### Daily — Revenue (1 of 3)
@@ -572,14 +646,14 @@ products, and that is close to meaningless as a ranking. Whoever builds
 |---|---|---|
 | Orders over time | **A** | `orders.created_at`, 2,889,850 rows, 2023-03-12 to 2026-09-15. |
 | New vs returning customer orders | **A** | `orders.customer_id` populated across 157,311 distinct customers; first-order date derivable from `orders` alone. |
-| Average order gross over time | **A** † | `orders.total` over `orders.created_at`. `daily_metrics.aov` holds it precomputed; `total` was not measured. |
+| Average order gross over time | **A** † | **MUST SPLIT FREE ENTRIES (16 Sep 2026) — 66,764 zero-total orders are the legal free-entry route; see *Correction (16 September 2026), third entry*. This is NOT a do-not-propose mark: the row is still a candidate, but the report must say whether free entries are in or out.** AOV over all orders reads £8.23 against £8.43 paid-only. `orders.total` over `orders.created_at`. `daily_metrics.aov` holds it precomputed; `total` was not measured. |
 
 ### Weekly — Orders (7 of 10)
 
 | Report | Bucket | Why |
 |---|---|---|
 | Item count distribution | **A** † | `order_items` 4,549,662 rows keyed by `order_id`. Lines per order is measured; a true item count needs `order_items.quantity`, which the pack did not measure. |
-| Order value distribution | **A** † | `orders.total`, not measured by the pack. |
+| Order value distribution | **A** † | **MUST SPLIT FREE ENTRIES (16 Sep 2026) — 66,764 zero-total orders are the legal free-entry route; see *Correction (16 September 2026), third entry*. This is NOT a do-not-propose mark: the row is still a candidate, but the report must say whether free entries are in or out.** 66,764 orders land in the zero bucket and they are free entries, not £0 sales — the histogram must name that bucket rather than let a reader read it as failed checkouts. `orders.total`, not measured by the pack. |
 | Orders by day of week | **A** | `orders.created_at` is `DateTime(timezone=True)`. |
 | Orders by hour of day | **A** | As above — the column carries the time, not just the date. |
 | Orders heatmap (day × hour) | **A** | Same column, two-dimensional bucketing. |
@@ -678,7 +752,7 @@ products, and that is close to meaningless as a ranking. Whoever builds
 | Report | Bucket | Why |
 |---|---|---|
 | Orders made over customer lifetime | **A** | A count per `orders.customer_id` across 157,311 customers, bucketed. One `GROUP BY`, no per-customer dimension to choose. |
-| New vs returning customer KPIs | **A** † | Same derivation; the revenue KPIs among them need `orders.total`, unmeasured. |
+| New vs returning customer KPIs | **A** † | **MUST SPLIT FREE ENTRIES (16 Sep 2026) — 66,764 zero-total orders are the legal free-entry route; see *Correction (16 September 2026), third entry*. This is NOT a do-not-propose mark: the row is still a candidate, but the report must say whether free entries are in or out.** The revenue KPIs among them are means of `orders.total`. Same derivation; `orders.total` unmeasured by the pack. |
 | Time between repeat orders | **A** | A window function over `orders.created_at` partitioned by `customer_id`. Both columns populated. |
 | Items bought over customer lifetime | **A** † | `order_items` 4,549,662 rows joined to `orders` by `order_id`. A line count is covered; a unit count needs `quantity`, unmeasured. |
 
@@ -689,7 +763,7 @@ products, and that is close to meaningless as a ranking. Whoever builds
 | Returning customers | **C** | A cohort matrix: cohort key × elapsed period × metric, over `orders.customer_id` and `created_at`. Data held; the cohort key is the user's choice and `customer_segments` holds one fixed label. |
 | Customers by order count | **C** | Cohort matrix over a derived per-customer count. |
 | Orders per customer | **C** | As above, with orders as the measure. |
-| Average order value | **C** † | Same matrix; the measure is `orders.total`, unmeasured. |
+| Average order value | **C** † | **MUST SPLIT FREE ENTRIES (16 Sep 2026) — 66,764 zero-total orders are the legal free-entry route; see *Correction (16 September 2026), third entry*. This is NOT a do-not-propose mark: the row is still a candidate, but the report must say whether free entries are in or out.** Bucket unchanged: the engine blocks this row either way. Same matrix; the measure is `orders.total`, unmeasured by the pack. |
 | Average order profit | **B** `no model` | Spans B and C; B blocks it. No cost column exists, so no profit measure exists to put in the matrix. |
 | Customer lifetime value | **C** | `customers.total_spent` exists, and the lifetime-by-cohort curve is the matrix again. |
 | Customer lifetime profit | **B** `no model` | No cost column. |

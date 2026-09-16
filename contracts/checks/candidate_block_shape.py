@@ -217,6 +217,45 @@ def objective_ids() -> set[str]:
     return set(load(FLEET / "objectives-2026-Q4.yaml").by_id)
 
 
+def _unstorable(obj, path=""):
+    """First value json.dumps cannot encode, as (path, repr, typename), or None.
+
+    THE CHECK AND THE LOADER MUST AGREE ABOUT WHAT A LEGAL BLOCK IS, and on
+    16 Sep 2026 they did not. Batch 16 wrote `as_of: 2026-09-16` unquoted in
+    every hib_signal. YAML returns a datetime.date for that; the date is
+    truthy, so the `not sig.get("as_of")` test passed, and `str()` of it
+    matches ISO_DATE, so measured_impact's stricter test would have passed too.
+    The block verified, the branch merged -- and console/load_candidates.py
+    then died on json.dumps, AFTER the batch row was written and with the
+    document already on master.
+
+    --dry-run could not have warned: a dry run parses and validates and never
+    serialises, so it printed "would load 10 candidate(s)" and the real load
+    failed on the first row.
+
+    The loader now passes default=str as a safety net, because a merged
+    document cannot be edited to suit it. This is the other half: a producer
+    must write the string, so the two never diverge again. Walking the
+    structure rather than catching the TypeError is what makes the message name
+    the key -- "candidate 3 hib_signal.as_of" beats "Object of type date".
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            hit = _unstorable(v, f"{path}.{k}" if path else str(k))
+            if hit:
+                return hit
+        return None
+    if isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            hit = _unstorable(v, f"{path}[{i}]")
+            if hit:
+                return hit
+        return None
+    if obj is None or isinstance(obj, (str, bool, int, float)):
+        return None
+    return (path, repr(obj), type(obj).__name__)
+
+
 def check_coverage(where: str, sig: dict) -> list[str]:
     """`hib_signal.coverage`: the same figure as two numbers, or an explicit null.
 
@@ -518,6 +557,18 @@ def check_candidate(n: int, c, repo_name_ok, objectives, max_paths_missing) -> l
                 problems += check_coverage(where, sig)
 
     problems += check_measured_impact(where, c)
+
+    # Storable as written, which is a different question from well-shaped.
+    hit = _unstorable(c)
+    if hit:
+        where_in, shown, typename = hit
+        problems.append(
+            f"{where} carries a {typename} at {where_in or '(root)'}: {shown}. "
+            f"The loader stores this row as JSON and json.dumps cannot encode "
+            f"it. If this is a date, QUOTE IT -- `as_of: \"2026-09-16\"` is a "
+            f"string and `as_of: 2026-09-16` is a datetime.date, and every "
+            f"hib_signal already in the database holds the string. Batch 16 "
+            f"wrote it unquoted, passed this check, merged, and broke the load.")
 
     paths = c.get("suggested_paths") or []
     if not isinstance(paths, list):

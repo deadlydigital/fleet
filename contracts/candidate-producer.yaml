@@ -50,116 +50,52 @@
 # browser fact, and this store has both. They are proposable. Do not let the
 # shape of the list above tempt a later agent into extending it by analogy.
 #
-# Say it in the spec the way the `premise` paragraph below is said in a spec,
-# because NOTHING HERE CAN ENFORCE IT. candidate_block_shape.py's vocabulary is
-# path_exists, path_absent and grep_count over a source tree; there is no
-# database predicate. A candidate for "By refund reason" would probe "no reason
-# column in models.py", that probe WOULD HOLD, and the block would pass every
-# mechanical check while proposing work the business has no use for. The marks
-# in the document are the whole of the defence, and they only work if the agent
-# reads the row rather than the bucket column.
+# A FIFTH FACT MARKS FOUR ROWS `MUST SPLIT FREE ENTRIES` AND IS NOT A REFUSAL.
+# 66,764 orders carry total = 0 and are the legal free-entry route a prize
+# competition must offer. Those rows ARE candidates. What the mark requires is
+# that the report state whether free entries are in or out, because they sit
+# inside the revenue statuses and every mean of orders.total mixes them with
+# paid ones. Do not read `MUST SPLIT` as `do not propose`; the document says so
+# at each of the four rows and again in its third correction entry.
 #
-# A parser over specs/metorik-gap.md yields 50 rows, 14 of them already
-# shipped, and -- worse -- the 34 marked Missing or Partial are 11 days old.
-# Probed against platform HEAD ebe016c on 8 Sep 2026, two of four Daily-band
-# rows were already wrong: order filtering now accepts payment_method,
-# country, coupon and has_discount where the document says "nothing else", and
-# the location report has the page the document says it lacks. Those are
-# exactly the two a person caught by hand when batch 8 was assembled.
+# ============================================================================
+# WHY BATCH 16's CANDIDATES ALL KEY TO `topic:`, AND WHY THAT IS NOW HARMLESS
+# ============================================================================
 #
-# So parsing is trivial and RE-VERIFICATION IS THE WORK. Every candidate
-# declares predicates that candidate_block_shape.py re-executes at HEAD; a row
-# whose claim has stopped being true cannot be emitted.
+# Every one of batch 16's ten candidates keyed to `topic:` rather than `row:`,
+# and six of them share ONE key. Recorded here so the next person does not
+# rediscover it and, more importantly, DOES NOT TRY THE OBVIOUS FIX, WHICH
+# MAKES IT WORSE.
 #
-# AND SINCE 10 SEP 2026, A `premise` AS WELL AS `probes`. WHOEVER QUEUES THE
-# NEXT PRODUCER TASK MUST SAY SO IN ITS SPEC, the way task 50's spec carried a
-# section headed "Two things the check now requires that it did not for batch
-# 9". The check refuses a block without one, and an agent that has not been
-# told will spend a run discovering it.
+# Why it happens: console/work_key.py resolves a cited section heading against
+# the document to the TABLE ROW it names, and an ambiguous heading resolves to
+# nothing. In specs/metorik-gap.md a section heading named one row, so the
+# resolution was 1:1. In the classification a section heading is a GROUP
+# heading over as many as eighteen rows, so every candidate produced from it
+# keys to the group instead.
 #
-# What it is: what must ALREADY be true for the work to be the work described,
-# as a claim in words and one predicate from the same closed vocabulary.
-# `probes` show the GAP is real; a premise shows the GROUND is there. Candidate
-# 38 carried four probes that all held and rested on the order table having
-# three columns it had never had -- £2.25, and an agent that correctly added
-# them because they were the only way to do what it had been asked. See
-# specs/auto-approval.md §9.9.1 and 030_candidate_premise.sql.
+# THE OBVIOUS FIX DOES NOT WORK. Citing TWO evidence entries -- the group
+# heading for band_of and the row title for work_key -- was tried against the
+# real functions on 16 Sep 2026 and returns key=None, kind=None, which is
+# WEAKER than the topic key it replaces. derive() builds a key per citation and
+# refuses outright when they differ: "one candidate is one row, and choosing
+# between them here would be a guess." It cannot tell a group from a row it
+# contains, because document_rows() returns a flat list of row slugs with no
+# section membership. Citing the row ALONE keys correctly and then loses the
+# band, which is worse again -- rank.py sorts a band-less row last forever.
 #
-# AND SINCE 15 SEP 2026, A `measured_impact` AS WELL. THE SAME WARNING APPLIES:
-# WHOEVER QUEUES THE NEXT PRODUCER TASK MUST SAY SO IN ITS SPEC. The check
-# refuses a block that omits the key, and an agent that has not been told will
-# spend a run discovering it.
+# So the citation shape in batch 16 is correct as it stands: cite the row's own
+# `### Band — Group` heading, one entry, and accept a topic key.
 #
-# What it is: how much the work is worth, MEASURED NOW, as
-# {value, unit, what, dataset, as_of} -- or an explicit `null`. The key is
-# required; the value very often is null, because most work has no latency
-# figure and never will. A CSV export is worth building and is not worth
-# milliseconds.
+# WHAT WAS FIXED INSTEAD, because the harm was never the key -- it was one
+# consumer of it. 047 makes candidate_work_identity() ignore a non-`#row:` key
+# and fall back to (title, repo), which is what console/rank.py has always done
+# for supersede: "a topic key is stable only while the producer keeps quoting
+# the heading the same way, so it does not get to call two rows the same work."
+# The ceiling and the ranker now agree. Before 047 the ceiling fired at 2 on a
+# shared topic key, so two failures among those six reports would have stopped
+# four that were never tried.
 #
-#   measured_impact:
-#     value: 619
-#     unit: ms                    # the vocabulary is closed at this one member
-#     what: the top_products statement, per dashboard request
-#     dataset: tenant 166, dashboard at a 30-day window, median of three warm
-#              passes on a quiet box
-#     as_of: 2026-09-14
-#
-# THREE RULES, AND EACH COST SOMETHING TO LEARN:
-#
-#   * TRANSCRIBE, DO NOT ESTIMATE. The figure comes from the findings document
-#     you were given. This contract grants no Bash and no database, so you
-#     cannot measure anything -- and a number you reasoned your way to is not
-#     what this key is for. If the document states no figure, write `null`.
-#
-#   * MEASURED, NEVER PROJECTED. Candidate 67's loop is 89 ms today and its
-#     research argues it becomes ~1.8 s on a two-year store. The 89 goes here;
-#     the 1.8 s goes in `rationale`, where a reader weighs it. A producer free
-#     to choose the horizon is a producer choosing which row wins.
-#
-#   * THE DATASET AND THE DATE ARE NOT DECORATION. Nothing re-executes this
-#     number -- not this check, not the ranker, not the approval. Every other
-#     claim you make in a block is a predicate something runs against the tree.
-#     This one is a claim, and the dataset and date are the whole of what lets
-#     a reader check it against the document you took it from.
-#
-# Why it exists: console/rank.py's first four keys are all properties of a
-# row's FORM -- what kind of work, whether its data exists, how often it is
-# wanted, whether it has been tried. None is how much the work is WORTH.
-# Candidates 66 and 67 tied on all four for 15 consecutive sweeps and approved
-# nothing, while the document they were both loaded from timed them at 619 ms
-# and 89 ms. See 045_measured_impact.sql.
-#
-# THE PROHIBITIONS ARE IN THIS FILE, NOT IN A PROMPT
-#
-# §7 forbids a producer to set a disposition, to write to `tasks`, and to
-# deduplicate against previous batches. Four things enforce that here, and
-# none of them is an instruction the agent could disregard:
-#
-#   * agent_tools has NO Bash, so there is no shell
-#   * .env is gitignored and therefore absent from a fresh worktree, so there
-#     is no credential and no route to the database at all
-#   * writable_paths is ONE file per batch -- a dated pattern that
-#     matches one name, never a directory
-#   * candidate_block_shape.py REFUSES a block containing disposition,
-#     work_type, batch_id, spec_task_id or work_task_id -- the shape cannot
-#     express pre-approval
-#
-# The third prohibition follows from the second: the agent is given the
-# findings document and the platform repository, and never `candidates`. It
-# cannot deduplicate because it cannot see what came before -- which is what
-# keeps a reappearing candidate a signal.
-#
-# RE-RUN, DO NOT RECONCILE. A batch two weeks old is a new batch. This task is
-# run again against the same document; it does not update rows in place, for
-# the reason §5 keeps a NOT_NOW candidate's original batch_id -- a candidate
-# that reappears is signal, and quietly refreshing it erases that.
-#
-# NO WEB ACCESS, unlike research.yaml. This task re-verifies claims about a
-# repository, and the claims it cannot check -- whether Metorik still ships a
-# feature, whether merchants want one -- are not made more checkable by
-# fetching a marketing page. Dropping WebSearch and WebFetch removes the
-# reproducibility problem that contract has to manage rather than managing it.
-
 work_type: candidate_producer
 repo: fleet
 # `master` since 9 Sep 2026: track-2-foundation and spec/daily-brief were
