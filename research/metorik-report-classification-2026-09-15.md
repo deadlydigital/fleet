@@ -140,6 +140,16 @@ the five-row Costs & profit group and three of the ten cohort reports.
 > be proposed as gaps. The costs half is unaffected and stands. Corrected
 > counts, the seven rows involved, and what a producer may not emit are in
 > *Correction (16 September 2026)* immediately below.
+>
+> **AND THREE FURTHER RULINGS LANDED THE SAME DAY**, on the same terms and from
+> the same source: HIB **ships nothing** (it sells digital entries), **charges
+> no VAT** on entries, and **sells no recurring product**. Those take another 22
+> rows — the whole 18-row Subscriptions block, 3 shipping rows and 1 tax row.
+> **Twenty-eight of the 100 are N/A in total, the parity figure is 30 of 72, and
+> not one of the 28 may be proposed as a gap.** Both the Summary table above and
+> the cross-cutting paragraph it sits under are left as the 2026-09-15 run wrote
+> them. The standing counts are in *The corrected counts, final*, inside
+> *Correction (16 September 2026), second entry*.
 
 ## Correction (16 September 2026): HIB does not refund, so refunds are not a gap
 
@@ -221,6 +231,10 @@ same 100 rows after the correction:
 | **C** — needs the segmentation engine | 12 | 13% |
 | **N/A** — not applicable to HIB | 6 | (excluded) |
 
+> **SUPERSEDED THE SAME DAY.** Three further rulings landed on 16 Sep 2026 and
+> took another 22 rows. The figures in this table were correct for the refund
+> correction alone; the standing counts are in *The corrected counts, final*.
+
 Of the 52 in B, 51 are `no model` and **1 is `empty column`** — the refund
 correction collapses that class almost entirely. Before it there were five
 empty-column rows; *Net/gross revenue over time* is now A and three of the
@@ -237,7 +251,16 @@ of the ten cohort reports. Nothing above bears on it. With refunds and
 subscriptions set aside, costs becomes the largest single absent subject left
 in the document.
 
-### The shipping and tax columns, raised and deliberately not decided
+### The shipping and tax columns, raised here and decided in the second entry
+
+> **ANSWERED ON 16 SEPTEMBER 2026, a few hours after this section was written.**
+> Eamonn stated that HIB sells digital entries and ships nothing, and that no
+> VAT is charged on entries. Both columns are correct as they stand and four
+> rows became N/A. The section is kept as written because it records what was
+> and was not established before that fact existed, and because it is the
+> worked example of the only thing that settles a question of this shape: a
+> stated fact about the business, not another query. See *Correction
+> (16 September 2026), second entry*.
 
 `shipping_total` is non-zero on **0** of 2,889,850 and `shipping_country` is set
 on **0**; `tax_total` is non-zero on **0**. `research/EVIDENCE-metorik.md`,
@@ -256,6 +279,115 @@ method* under Costs & profit, and *By shipping location* under Customer groups
 name shipping as a dead half and are unaffected either way, since billing
 carries them.
 
+## Correction (16 September 2026), second entry: shipping, tax and subscriptions are N/A
+
+**Three further facts stated by Eamonn (eamonn@hittinitbig.com) on 2026-09-16,
+recorded on the same terms as the refund correction above and for the same
+reason: the candidate producer reads this document and nothing else.**
+
+| The fact, as stated | What it settles |
+|---|---|
+| **HIB sells digital entries and ships nothing.** | `shipping_total` non-zero on 0 of 2,889,850 and `shipping_country` set on 0 are the correct and complete record of a business with no shipments. Not an unfed column. |
+| **No VAT is charged on entries.** | `tax_total` non-zero on 0 of 2,889,850 is correct, not an unfed column. |
+| **HIB sells no recurring product.** | The absent subscription entity is one this business has no use for, not one DD is missing. |
+
+**The third confirms an inference rather than replacing one.** The refund
+correction above set subscriptions aside on my reading of HIB as a one-off
+purchase business, and flagged that it rested on inference and wanted a stated
+fact. It now has one, and the parity figure below no longer carries that
+qualifier.
+
+**These answer the question the section *The shipping and tax columns, raised
+and deliberately not decided* left open**, in the direction that section said
+only a stated fact could settle. No query was run and none would have helped: a
+pack cannot tell an empty column from an absent subject, which is exactly why
+that section refused to decide and asked instead.
+
+### The rows this takes, and it is twenty-two
+
+**Twenty-two rows, none of them overlapping the seven the refund correction
+already took.** Each is marked at its own row with the bucket the 2026-09-15
+run gave it, so no measurement is lost.
+
+| Ruling | Rows | Which |
+|---|---|---|
+| Ships nothing | 3 | *By shipping method* (Order groups), *Shipping costs by shipping method* (Costs & profit), *By shipping location* (Customer groups) |
+| No VAT | 1 | *Revenue by tax code, label or ID* (Revenue) |
+| No recurring product | 18 | the whole Subscriptions block |
+
+Two rows inside blocks already set aside also turn on these facts and needed no
+separate ruling: Refunds' *By shipping location* was already N/A on the refund
+fact and is now N/A twice over, and Subscriptions' *Active subs by shipping
+location* is inside the eighteen.
+
+**No cost row moves except one.** *Shipping costs by shipping method* leaves on
+the shipping ruling, not a cost ruling. The other seven cost rows stand as
+bucket B. Costs remains uncorrected, as it was after the first entry.
+
+### The two bucket-A rows that name shipping keep their bucket
+
+*Revenue by billing/shipping location or payment method* and *By
+billing/shipping location (country, state, city, ZIP)* both stay **A**. Tie-break
+rule 3 — a report offering alternative dimensions is A if any named dimension is
+populated — decides them on billing and payment method, and did so before this
+ruling. What changes is only the description of their shipping half: it is N/A
+rather than dead data. Their rows now say so.
+
+### Every remaining gap now needs a new entity or column, not a backfill
+
+**The `empty column` class is empty.** There were five such rows on 2026-09-15.
+*Net/gross revenue over time* became A, three were refund rows, and the last —
+*Customer groups by shipping location* — goes on the shipping ruling. **All
+thirty remaining B rows are `no model`.**
+
+That is worth stating plainly because it changes what the B bucket *means* for
+this business. Not one report is blocked by a column that exists and holds
+nothing, so no backfill, no connector re-sync and no repair of an existing feed
+would move the parity number by a single row. Every remaining data gap needs a
+table or a column that does not exist yet.
+
+### The corrected counts, final
+
+The Summary table near the top and the interim table in the first correction
+entry are both left as written and are both superseded by this one. These are
+the same 100 rows after both corrections:
+
+| Bucket | Rows | Share of the 72 |
+|---|---|---|
+| **A** — DD holds the data | 30 | 42% |
+| **B** — the data is not in DD, all `no model` | 30 | 42% |
+| **C** — needs the segmentation engine | 12 | 17% |
+| **N/A** — not applicable to HIB | 28 | (excluded) |
+
+**The parity figure is 30 of 72, or 42%**, and the 28 excluded are 18
+subscriptions, 6 refunds, 3 shipping and 1 tax.
+
+### What remains a genuine gap, and carts and devices are in it
+
+The thirty B rows, by subject:
+
+| Subject | Rows |
+|---|---|
+| Carts | 7 |
+| Costs and profit | 7 |
+| Products (variations, stock, bundles, vendors) | 5 |
+| Acquisition (referring site, landing path) | 4 |
+| Devices | 3 |
+| Custom fields and customer role | 3 |
+| Order status-transition history | 1 |
+
+**Carts and devices were considered for exclusion on 16 Sep 2026 and
+deliberately kept.** A cart is a funnel stage and a device split is a browser
+fact; HIB has both, and DD simply ingests neither. Excluding them would have
+made the parity figure look better by hiding ten rows of real work. They are
+gaps and a producer may propose them.
+
+**Costs and carts are now tied as the largest absent subject**, at 7 rows each,
+and together they are 14 of the 30. The first correction entry said costs would
+be the largest once refunds and subscriptions were set aside; the shipping
+ruling has since moved *Shipping costs by shipping method* out of the cost
+count, which is what produced the tie.
+
 ## The classification
 
 ### Daily — Revenue (1 of 3)
@@ -268,13 +400,13 @@ carries them.
 
 | Report | Bucket | Why |
 |---|---|---|
-| Revenue by billing/shipping location or payment method | **A** † | `orders.billing_country` 2,884,311, `orders.billing_city` 2,884,311, `orders.payment_method` 2,826,259. The shipping dimension is dead: `shipping_country` set on 0. Measure is `orders.total`, which the pack did not measure. |
+| Revenue by billing/shipping location or payment method | **A** † | `orders.billing_country` 2,884,311, `orders.billing_city` 2,884,311, `orders.payment_method` 2,826,259. Measure is `orders.total`, which the pack did not measure. **Amended 16 Sep 2026:** the shipping dimension is not dead data but N/A — HIB ships nothing, so `shipping_country` set on 0 is correct. Tie-break rule 3 keeps the row **A** on billing and payment method either way. |
 
 ### Rarely — Revenue (1 of 3)
 
 | Report | Bucket | Why |
 |---|---|---|
-| Revenue by tax code, label or ID | **B** `no model` | `models.py` has one tax field, `orders.tax_total`, and no code, label or ID anywhere. It is non-zero on 0 of 2,889,850, so even the amount is absent. |
+| Revenue by tax code, label or ID | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — no VAT is charged on entries; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** The schema fact stands: `models.py` has one tax field, `orders.tax_total`, and no code, label or ID. `tax_total` non-zero on 0 of 2,889,850 is the correct record of a business that charges no VAT, not an unfed column. |
 
 ### Daily — Costs & profit (1 of 5)
 
@@ -294,7 +426,7 @@ carries them.
 |---|---|---|
 | Operational costs by type | **B** `no model` | No cost entity of any kind. |
 | Transaction costs by payment method | **B** `no model` | `orders.payment_method` is populated on 2,826,259, but there is no fee column to group. The dimension exists and the measure does not. |
-| Shipping costs by shipping method | **B** `no model` | No shipping-method column on `orders`; `shipping_total` is non-zero on 0 of 2,889,850. Both halves missing. |
+| Shipping costs by shipping method | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB ships nothing; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** The readings stand and are now explained: no shipping-method column on `orders`, and `shipping_total` non-zero on 0 of 2,889,850. A store that ships nothing has no shipping cost to group. |
 
 ### Monthly — Forecasts (3 of 3)
 
@@ -335,8 +467,8 @@ carries them.
 | Report | Bucket | Why |
 |---|---|---|
 | By payment method | **A** | `orders.payment_method` set on 2,826,259 of 2,889,850. |
-| By shipping method | **B** `no model` | No shipping-method column exists on `orders`. |
-| By billing/shipping location (country, state, city, ZIP) | **A** † | Billing is populated — country 2,884,311, city 2,884,311, postcode 2,884,111. `billing_state` exists in `models.py` and was not measured. The shipping columns are the empty half: `shipping_country` 0. |
+| By shipping method | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB ships nothing; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** The schema fact stands: no shipping-method column on `orders`. There is also no shipping method to record. |
+| By billing/shipping location (country, state, city, ZIP) | **A** † | Billing is populated — country 2,884,311, city 2,884,311, postcode 2,884,111. `billing_state` exists in `models.py` and was not measured. **Amended 16 Sep 2026:** the shipping half is N/A rather than empty — HIB ships nothing. Tie-break rule 3 keeps the row **A** on billing. |
 
 ### Rarely — Order groups (2 of 6)
 
@@ -359,7 +491,7 @@ carries them.
 |---|---|---|
 | Time between order & refund | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** The schema fact stands: no refunded_at on `orders` and no refund entity to carry one. |
 | By billing location | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** The dimension is fine (`billing_country` 2,884,311); the measure is not a gap but an absent subject — 4 non-zero refunds, because HIB does not refund. |
-| By shipping location | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** Refunds are N/A for HIB, which settles the row on its own. The shipping half (`shipping_country` set on 0) is the separate, still-open question raised in *The shipping and tax columns*. |
+| By shipping location | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** Both halves are now N/A for either reason alone: HIB does not refund, and HIB ships nothing (ruled 16 Sep 2026, *Correction (16 September 2026), second entry*). |
 
 ### Weekly — Acquisition / sources (6 of 6)
 
@@ -402,7 +534,7 @@ carries them.
 |---|---|---|
 | By first product ordered | **C** | Held: `order_items.product_name` on all 4,549,662 lines, 3,743 distinct products, joined through `orders.created_at`. The grouping is a derived per-customer attribute. |
 | By billing location | **C** | Held on `orders`, absent on `customers`, same shape as the heatmap row. |
-| By shipping location | **B** `empty column` | Spans B and C; B blocks it. `shipping_country` is set on 0 of 2,889,850, so there is nothing for an engine to group. |
+| By shipping location | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — HIB ships nothing; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** `shipping_country` is set on 0 of 2,889,850 because there are no shipments, not because a column is unfed. This was the last `empty column` row in the document. |
 
 ### Rarely — Customer groups (2 of 5)
 
@@ -480,32 +612,38 @@ carries them.
 
 ### Rarely — Subscriptions (18 of 18)
 
-Every row here is **B** `no model` for the same reason, stated once: there is
+Every row here was **B** `no model` for the same reason, stated once: there is
 no subscription model in `api/analytics/models.py`, so there is no subscription,
 no plan, no billing interval, no renewal and no subscription event. No row in
 this block is blocked by a band, by the engine, or by an empty column — it is
 blocked by an entity DD has never had.
 
+**ALL EIGHTEEN BECAME N/A ON 16 SEPTEMBER 2026.** Eamonn stated that HIB sells
+no recurring product, so the absent entity is not one DD is missing — it is one
+this business has no use for. The eighteen leave the parity denominator
+entirely and none may be proposed. See *Correction (16 September 2026), second
+entry*.
+
 | Report | Bucket | Why |
 |---|---|---|
-| MRR over time | **B** `no model` | No subscription entity. |
-| Active subscriptions over time | **B** `no model` | No subscription entity. |
-| Subscription plans breakdown | **B** `no model` | No plan entity. |
-| Retention rate over time | **B** `no model` | No subscription entity. Distinct from customer retention, which is C above. |
-| Churn rate over time | **B** `no model` | `churn_scores` predicts *customer* churn from order recency; it is not subscription churn and has no subscription to cancel. |
-| Subscription cohort retention | **B** `no model` | No subscription entity. |
-| Subscription events over time | **B** `no model` | No subscription event log. |
-| Active subs by billing location | **B** `no model` | No subscription entity; the location would come from `orders` in any case. |
-| Active subs by shipping location | **B** `no model` | No subscription entity, and `shipping_country` is set on 0 orders. |
-| Active subs by payment method | **B** `no model` | No subscription entity. |
-| Active subs by billing period/interval | **B** `no model` | No interval is stored because no subscription is. |
-| Active subs by custom field | **B** `no model` | Neither the subscription nor a custom field exists. |
-| Active subscriptions heatmap | **B** `no model` | No subscription entity. |
-| Future renewals (expected revenue) | **B** `no model` | No renewal date exists to project from. |
-| Subs started by day of week | **B** `no model` | No subscription start timestamp. |
-| Subs started by hour | **B** `no model` | No subscription start timestamp. |
-| Subs cancelled by day | **B** `no model` | No cancellation timestamp. |
-| Subs cancelled by hour | **B** `no model` | No cancellation timestamp. |
+| MRR over time | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity. |
+| Active subscriptions over time | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity. |
+| Subscription plans breakdown | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No plan entity. |
+| Retention rate over time | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity. Distinct from customer retention, which is C above. |
+| Churn rate over time | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** `churn_scores` predicts *customer* churn from order recency; it is not subscription churn and has no subscription to cancel. |
+| Subscription cohort retention | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity. |
+| Subscription events over time | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription event log. |
+| Active subs by billing location | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity; the location would come from `orders` in any case. |
+| Active subs by shipping location | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity, and `shipping_country` is set on 0 orders. |
+| Active subs by payment method | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity. |
+| Active subs by billing period/interval | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No interval is stored because no subscription is. |
+| Active subs by custom field | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** Neither the subscription nor a custom field exists. |
+| Active subscriptions heatmap | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription entity. |
+| Future renewals (expected revenue) | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No renewal date exists to project from. |
+| Subs started by day of week | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription start timestamp. |
+| Subs started by hour | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No subscription start timestamp. |
+| Subs cancelled by day | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No cancellation timestamp. |
+| Subs cancelled by hour | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — HIB sells no recurring product; see *Correction (16 September 2026), second entry*. Not a gap; do not propose.** No cancellation timestamp. |
 
 ### Weekly — Carts (7 of 7)
 
@@ -541,8 +679,19 @@ could be drawn. Counting them in the same denominator as the 29 makes the gap
 look uniform when it is not.
 
 The same care applies one level down. Of the remaining 34 B rows, refunds
-account for 6 and costs for 8 across three groups — so two absent subjects,
+account for 6 and costs for 8 across two groups — so two absent subjects,
 neither of them an exotic one, carry 14 of the 34.
+
+> **Two corrections to the paragraph above, 16 September 2026.** *Three groups*
+> was wrong and is now *two*: the eight cost rows are the five-row Costs &
+> profit group and three of the ten Cohorts, which is two groups. The band
+> split of Costs & profit across Daily, Weekly and Monthly headings is three
+> **headings**, not three groups. **And the sentence is otherwise superseded:**
+> refunds are no longer among the B rows at all, and neither are the
+> subscriptions counted just above. Of the 25 named in this section, the 18
+> subscriptions are now N/A and only the 7 carts remain a real gap. Costs is
+> the last of the three subjects still standing. See both correction sections
+> above; the final counts are in *The corrected counts, final*.
 
 ## Bucket-A rows the pack does not fully cover
 
