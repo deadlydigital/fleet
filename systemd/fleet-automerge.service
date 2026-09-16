@@ -37,11 +37,26 @@ WorkingDirectory=/home/ubuntu/fleet
 ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_automerge.py
 
 # It merges and pushes, so it needs what the console needs and nothing more:
-# a trial clone in its own PrivateTmp, and no write to any checkout.
-# See console/merge.py -- the merge is published from the trial, not made here.
+# a trial clone, and no write to any checkout. See console/merge.py -- the
+# merge is published from the trial, not made here.
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
+# The trial root, and it is the console's grant for the console's reason. The
+# trial left /tmp on 16 Sep 2026 because the docker daemon does not share
+# PrivateTmp and resolved the test stack's relative bind mount against the host
+# /tmp, creating it there as root; console/config.py carries the measurements.
+#
+# WITHOUT THIS LINE THIS UNIT CANNOT BUILD A TRIAL AT ALL -- ProtectHome=read-only
+# denies the new root, create_trial_clone raises, and reverify.run returns
+# could_not_run for every task forever. It was missed when the root moved, and
+# found by TestTheInstalledUnitsAgree::test_the_documented_exception_still_holds
+# being rewritten to name the units that may write ONLY their trial: this is
+# one of them, and it had no grant.
+#
+# Nothing else changes. Every checkout on this filesystem is still read-only
+# here, which is the sentence above and still true.
+ReadWritePaths=/home/ubuntu/.fleet-trials
 NoNewPrivileges=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # THE VERIFICATION MEMORY CEILING, AND IT IS THE SAME NUMBER IN THREE UNITS.

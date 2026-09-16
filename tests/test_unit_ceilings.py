@@ -13,6 +13,7 @@ A comment saying they should match is what they had. This is a test.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,20 @@ class TestTheThreeAgreeOnEverythingThatDecidesAPass:
     #: repositories it exists not to write.
     MUST_DIFFER = ("ReadWritePaths",)
 
+    #: The units that build a trial and may write NOTHING ELSE. They merge and
+    #: publish from the trial; they do not build, so they have no worktree and
+    #: no reason to touch a checkout.
+    TRIAL_ONLY_UNITS = ("fleet-console", "fleet-automerge")
+
+    #: Trees that a grant may neither be inside nor swallow. Two checkouts and
+    #: the worktree root -- everything on this box that is a working copy of
+    #: code, including the code these units serve and import.
+    NO_GRANT_MAY_TOUCH = (
+        Path("/home/ubuntu/fleet"),
+        Path("/home/ubuntu/deadly-digital-platform"),
+        Path("/home/ubuntu/.fleet-worktrees"),
+    )
+
     def _show(self, unit, prop):
         import subprocess
         return subprocess.run(
@@ -240,19 +255,85 @@ class TestTheThreeAgreeOnEverythingThatDecidesAPass:
                         reason="no systemd on this host")
     @pytest.mark.parametrize("prop", MUST_DIFFER)
     def test_the_documented_exception_still_holds(self, prop):
-        """The runner writes worktrees; the other two may not write anything.
+        """The runner writes worktrees; the trial-only units write their trial.
 
-        Asserted rather than assumed: if the console ever gains a
-        ReadWritePath it has stopped being the thing its own unit file argues
-        it is, and that should fail here rather than be noticed later.
+        WHY THE ABSOLUTE BECAME A SPECIFIC, 16 Sep 2026.
+
+        This asserted `not self._show(u, prop)` -- no grant at all -- and that
+        was the right test for as long as the trial clone lived in the unit's
+        own PrivateTmp. It stopped being right when the trial had to LEAVE
+        /tmp. `contracts/checks/pytest_unit_per_file.sh` brings up a compose
+        file with a RELATIVE bind mount, and THE DOCKER DAEMON DOES NOT SHARE
+        PrivateTmp: it resolved the path against the host /tmp, found nothing,
+        and created it there as root -- poisoning the path for every non-root
+        caller and handing WireMock an empty directory. console/config.py
+        carries the measurements.
+
+        THE PROPERTY WAS NEVER "NO GRANTS". "No ReadWritePaths" was the
+        cheapest available way to say *the trial leaves nothing behind, and
+        this unit cannot write anything it might later execute, import or
+        serve*. That sentence is unchanged and is now said directly, because
+        the cheap encoding is no longer available:
+
+          * every grant is the trial root, EXACTLY, and it is the trial root
+            console/config.py names -- so moving one without the other fails
+            here rather than at 3am;
+          * no grant is inside one of this box's checkouts, and no grant
+            CONTAINS one. That is the 9 Sep rule, which is the whole reason
+            this exception is documented: the grant removed that day named
+            deadly-digital-platform, whose .git/hooks sits beside the code
+            this unit serves, and that is arbitrary code execution;
+          * no grant is on the import path.
+
+        A SECOND GRANT STILL FAILS THIS, and that is deliberate -- the point
+        is an allow-list of one, not "a grant is fine now".
+        fleet-console.service records StateDirectory=fleet-trials as the thing
+        to take instead if a second is ever wanted.
+
+        THIS REWRITE IMMEDIATELY EARNED ITSELF. Naming the units that may write
+        only their trial found that fleet-automerge had NO grant after the root
+        moved -- installed, ProtectHome=read-only, and therefore unable to
+        build a trial at all. The old absolute passed it, because an empty
+        ReadWritePaths was what it asked for.
         """
+        from console import config
+
         runner = self._show("fleet-runner", prop)
         assert runner, "the runner must be able to write its worktrees"
-        for u in ("fleet-console", "fleet-automerge"):
-            assert not self._show(u, prop), (
-                f"{u} has gained {prop}, so it can now write outside its "
-                f"trial clone -- which is the property that makes 'the trial "
-                f"leaves nothing' true")
+
+        trial_root = Path(config.TRIAL_ROOT)
+        for u in self._installed(self.TRIAL_ONLY_UNITS):
+            granted = [Path(g) for g in self._show(u, prop).split() if g]
+
+            assert granted, (
+                f"{u} has no {prop}, so it cannot create a trial clone under "
+                f"{trial_root} at all -- ProtectHome denies it, "
+                f"create_trial_clone raises, and reverify.run returns "
+                f"could_not_run for every task. An empty grant used to be the "
+                f"correct answer here and stopped being one when the trial "
+                f"left /tmp.")
+
+            assert granted == [trial_root], (
+                f"{u} is granted {[str(g) for g in granted]}, and the only "
+                f"path it may write is the trial root {trial_root} that "
+                f"console/config.py names. One of the two moved without the "
+                f"other, or a second grant was added -- for a second, take "
+                f"StateDirectory instead, as fleet-console.service records.")
+
+            for g in granted:
+                for tree in self.NO_GRANT_MAY_TOUCH:
+                    assert not (g == tree or tree in g.parents), (
+                        f"{u} is granted {g}, which is inside the checkout "
+                        f"{tree}. That is the 9 Sep 2026 grant again: write "
+                        f"access beside a .git/hooks is arbitrary code "
+                        f"execution.")
+                    assert g not in tree.parents, (
+                        f"{u} is granted {g}, which CONTAINS the checkout "
+                        f"{tree}. A grant that swallows a working copy is the "
+                        f"same grant wearing a shorter path.")
+                assert str(g) not in sys.path, (
+                    f"{u} is granted {g}, which is on the import path, so it "
+                    f"can write code it will itself import.")
 
     def test_the_deadline_is_not_a_constant_in_the_accept_path(self):
         """Time was the third dimension. The accept path took 900s from a
