@@ -60,6 +60,12 @@ ProtectHome=read-only
 #   trial clones       automerge's merge is made in a throwaway clone, under
 #                      the trial root, and promoted rather than rebuilt
 ReadWritePaths=/home/ubuntu/.fleet-worktrees
+# The trial clones re-verification builds. Out of /tmp on 16 Sep 2026: this
+# unit sets PrivateTmp, the docker daemon does not share it, and a relative
+# bind mount in the test stack was therefore resolved against the host /tmp
+# and created there as root. console/config.py carries the measurements.
+# Must exist before the unit starts, like every entry here.
+ReadWritePaths=/home/ubuntu/.fleet-trials
 ReadWritePaths=/home/ubuntu/deadly-digital-platform
 ReadWritePaths=/home/ubuntu/fleet
 ReadWritePaths=/home/ubuntu/.claude

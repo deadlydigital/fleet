@@ -52,9 +52,10 @@ RestartSec=5s
 # See console/merge.py and specs/merge-outside-the-checkout.md.
 ProtectSystem=strict
 ProtectHome=read-only
-# Load-bearing for Accept: re-verification builds its trial clone in
-# /tmp/fleet-console-trials, which is writable only because this is private.
-# Removing it breaks Accept.
+# Kept for the rest of /tmp. It is no longer what makes the trial writable --
+# the trial moved to /home/ubuntu/.fleet-trials on 16 Sep 2026 precisely
+# BECAUSE this setting hid the trial from the docker daemon. See the grant
+# below and console/config.py.
 #
 # It is NOT, on its own, what makes Accept work, and the comment here used to
 # imply that it was. A trial built as a linked worktree writes into the
@@ -65,6 +66,41 @@ ProtectHome=read-only
 # operation under this unit's real confinement rather than a mkdir that only
 # ever exercised the half that worked.
 PrivateTmp=true
+
+# THE ONE ReadWritePaths, ADDED 16 Sep 2026, AND THE ARGUMENT ABOVE IS ANSWERED
+# RATHER THAN IGNORED.
+#
+# Everything above stays true: this unit writes the fleet database, a git
+# remote, and its trial. What changed is WHERE the trial can live. It was
+# /tmp/fleet-console-trials, writable because PrivateTmp gives this unit its
+# own /tmp -- and THE DOCKER DAEMON IS NOT IN THAT NAMESPACE. The test stack's
+# compose file bind-mounts ./mocks/listmonk relatively, the daemon resolved it
+# against the HOST /tmp, and created the path as root at the trial's location.
+# That poisoned the path for every non-root caller and handed WireMock an empty
+# directory. See console/config.py, which carries the measurements.
+#
+# WHY THIS IS NOT THE GRANT THAT WAS REMOVED ON 9 Sep. That one named
+# /home/ubuntu/deadly-digital-platform -- A CHECKOUT, with a .git/hooks this
+# unit's own code is served next to, which is arbitrary code execution. This
+# names a directory that exists only to hold throwaway clones, contains no
+# checkout, is on no import path, and is written by nothing but
+# create_trial_clone. Every checkout on this filesystem is still READ-ONLY to
+# this unit, including the platform repository and the fleet repository it runs
+# from. The 9 Sep sentence -- "the grant bought nothing and was removed rather
+# than widened" -- is still the rule; this buys something specific and is the
+# narrowest path that buys it.
+#
+# IT IS STILL A GRANT, AND A NARROWER ONE EXISTS. `StateDirectory=fleet-trials`
+# would put the trials in /var/lib/fleet-trials, created and owned by systemd
+# for this unit, with no ReadWritePaths line at all and nothing under /home
+# reachable. That is the better posture and it was not taken here only because
+# it moves the directory for every caller at once, including by-hand runs. If
+# this file ever grows a second ReadWritePaths, take that instead of a third.
+#
+# The directory must EXIST before the unit starts: systemd fails a unit whose
+# ReadWritePaths names a missing path. `install -d -o ubuntu -g ubuntu -m 755
+# /home/ubuntu/.fleet-trials`.
+ReadWritePaths=/home/ubuntu/.fleet-trials
 NoNewPrivileges=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

@@ -76,7 +76,51 @@ def console_writer_dsn() -> str:
 #
 # test_console_decide.py ties this to the unit file, so pointing it back into
 # home fails a test rather than failing an Accept.
-TRIAL_ROOT = Path("/tmp/fleet-console-trials")
+#
+# OUT OF /tmp, 16 Sep 2026, AND THE REASON IS THE DOCKER DAEMON.
+#
+# It was /tmp/fleet-console-trials, which was right about confinement and wrong
+# about who else has to resolve the path. Every unit that builds a trial sets
+# PrivateTmp=true, so its /tmp is its own -- but `contracts/checks/
+# pytest_unit_per_file.sh` brings up api/tests/docker-compose.test.yml, which
+# bind-mounts `./mocks/listmonk` RELATIVELY, and THE DAEMON IS NOT IN THAT
+# NAMESPACE. It resolved the compose working directory against the HOST /tmp,
+# found nothing there, and created api/tests/mocks/listmonk as root at the
+# trial clone's path.
+#
+# Two things followed, both measured on 16 Sep 2026 from the containers' own
+# compose labels (working_dir=/tmp/fleet-console-trials/fleet-accept-trial-119/
+# api/tests, created by a unit that cannot see that directory):
+#
+#   * THE HOST PATH WAS POISONED FOR EVERY NON-ROOT CALLER. create_trial_clone
+#     does shutil.rmtree(path) when the path exists; ubuntu cannot remove a
+#     tree docker made as root, so it raised PermissionError and reverify.run
+#     returned could_not_run. `run_automerge.py` refused task 119 for that and
+#     nothing else, while the chain -- inside its own namespace, where the
+#     clone is real -- merged the same branch minutes later. The directory
+#     listing carried the signature: unit-made trials root-owned (69, 85, 119),
+#     by-hand ones ubuntu-owned (96).
+#
+#   * THE MOCK HAD NO STUBS. WireMock got an empty root-made directory instead
+#     of the three mappings in the repository. Latent -- neither tests/unit nor
+#     tests/analytics reaches the container by URL -- and it would have bitten
+#     the day tests/api or tests/integration entered a contract.
+#
+# A path under /home is the same directory in both namespaces: PrivateTmp
+# virtualises /tmp and /var/tmp and nothing else. So the clone the unit built
+# is the clone the daemon mounts, `mappings/` arrives with its three files, and
+# nothing is created as root except `__files/` -- which is UNTRACKED, because
+# git cannot store an empty directory, so docker makes it wherever the suite
+# runs. That one is harmless: its parent comes from the clone and is ours, and
+# a directory's own owner is not what governs unlinking it. The runner has
+# proved that daily since 3 Sep -- its worktrees live under
+# /home/ubuntu/.fleet-worktrees, every one of them gets a root-made __files,
+# and every one has been removed cleanly.
+#
+# THE COST IS A ReadWritePaths GRANT, and fleet-console.service had none by
+# design. That file's own argument is answered where it is made; read it there
+# before moving this again.
+TRIAL_ROOT = Path("/home/ubuntu/.fleet-trials")
 
 
 def trial_root() -> Path:
