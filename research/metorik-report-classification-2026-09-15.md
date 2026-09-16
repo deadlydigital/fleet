@@ -388,6 +388,70 @@ be the largest once refunds and subscriptions were set aside; the shipping
 ruling has since moved *Shipping costs by shipping method* out of the cost
 count, which is what produced the tie.
 
+## Measured 16 September 2026: the twelve unverified columns, and billing_state is empty
+
+**Taken by Claude at Eamonn's direction on 2026-09-16, on `analytics_2` as the
+`deadly_digital` reader, before queueing the producer batch that reads this
+document.** The 2026-09-15 pack could name only what its five queries measured,
+and the `†` and `‡` tables below record what it could not. Most of that is now
+measured. The row counts have moved since 15 Sep because the tenant is live:
+**2,890,319 orders** (was 2,889,850) and **4,550,334 order item rows** (was
+4,549,662).
+
+| Column | Measured | Verdict |
+|---|---|---|
+| `orders.total` | NOT NULL on **2,890,319 of 2,890,319**; non-zero on **2,823,569** (97.7%) | **Populated.** |
+| `order_items.quantity` | NOT NULL on all 4,550,334; non-zero on **4,550,326** (all but 8) | **Populated.** |
+| `order_items.total` | NOT NULL on all 4,550,334; non-zero on **4,447,939** (97.8%) | **Populated.** |
+| `orders.billing_state` | set on **0 of 2,890,319** | **EMPTY.** |
+
+### `orders.total` is populated, which was the document's own biggest open risk
+
+*Bucket-A rows the pack does not fully cover* calls `orders.total` "the single
+most load-bearing unmeasured column in this document: it is the measure behind
+six A rows. It is `Numeric(10, 2)` and nullable in `models.py`, and nothing in
+this pack says how often it is set." It is set on every row and non-zero on
+97.7% of them. **All six of those A rows stand, and so does the seventh that
+the refund correction added** (*Net/gross revenue over time*, on its gross
+half). With `order_items.quantity` and `order_items.total` also populated,
+**every `†` mark in this document is now discharged.** The mark is left on the
+rows because it records what the 2026-09-15 pack could see, which is a
+different claim from what is true; this section is where the answer lives.
+
+The 2.3% of orders with `total` at zero are not investigated here. `status`
+carries 1,971 cancelled and 20 pending, which does not account for 66,750, so
+there is a real question about zero-total orders — it is a data question and
+not a classification one, and no row above turns on it.
+
+### `orders.billing_state` is empty, and this is a new finding
+
+The `†` table records `billing_state` as unmeasured for *By billing/shipping
+location (country, state, city, ZIP)*. **It is set on 0 of 2,890,319 rows.**
+
+That row **stays bucket A**. Tie-break rule 3 decides it on the dimensions that
+are populated — country 2,884,311, city 2,884,311, postcode 2,884,111 — exactly
+as it already did for the shipping half. But the row now has **two** dead
+dimensions rather than one, and a candidate proposing *orders grouped by billing
+state* would be proposing an empty report. **A producer must not emit one.**
+
+This is an empty column and **not** an N/A ruling. Nothing has been stated about
+whether HIB collects a state or region, and unlike shipping and tax there is no
+business fact here: `billing_state` may be empty because the store does not
+collect it, because WooCommerce does not send it, or because the connector does
+not map it. That is the open question this document could not answer for tax and
+shipping either, and it is recorded rather than decided.
+
+### Two tables could not be read at all, and now for a specific reason
+
+`analytics_2.products`, `analytics_2.product_categories` and
+`analytics_2.customers` all return **permission denied** for the
+`deadly_digital` reader. So the two `‡` rows — *Top selling categories* and
+*Category comparison* — remain unverified, and the reason is now precise: not
+"the pack did not query them" but **the reader has no SELECT on them**. No query
+available to this document can close that, and a candidate resting on
+`product_categories` being populated is resting on something nobody here has
+checked. The `‡` mark stands and means what it says.
+
 ## The classification
 
 ### Daily — Revenue (1 of 3)
@@ -723,7 +787,7 @@ contain.
 | Order value distribution | `orders.total` |
 | New vs returning customer KPIs | `orders.total` |
 | Coupon usage, amount discounted and sales generated | `orders.total` |
-| By billing/shipping location (country, state, city, ZIP) | `orders.billing_state` |
+| By billing/shipping location (country, state, city, ZIP) | `orders.billing_state` — **MEASURED 16 Sep 2026: set on 0 of 2,890,319, i.e. EMPTY.** The row stays A on country, city and postcode; do not propose a by-state grouping. |
 | Item count distribution | `order_items.quantity` |
 | Average order item count | `order_items.quantity` |
 | Items bought over customer lifetime | `order_items.quantity` |
@@ -737,6 +801,11 @@ since the engine blocks them either way.
 `orders.total` is the single most load-bearing unmeasured column in this
 document: it is the measure behind six A rows. It is `Numeric(10, 2)` and
 nullable in `models.py`, and nothing in this pack says how often it is set.
+
+> **MEASURED 16 SEPTEMBER 2026: set on every row and non-zero on 97.7%.** So is
+> `order_items.quantity` and so is `order_items.total`. Every `†` mark in this
+> table is discharged; see *Measured 16 September 2026*. The marks are left in
+> place because they record what the 2026-09-15 pack could see.
 
 ## The live page, checked
 
