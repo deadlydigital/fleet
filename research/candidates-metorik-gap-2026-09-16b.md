@@ -102,7 +102,7 @@ candidates:
     evidence:
       - document: specs/metorik-gap.md
         sha: 4926937
-        section: Daily — an agency would open this most working days
+        section: Daily — CSV export of orders / customers / products
     hib_signal:
       value: >-
         analytics_2 holds 197,407 customers and 2,890,822 orders, so the export
@@ -157,7 +157,7 @@ candidates:
     evidence:
       - document: specs/metorik-gap.md
         sha: 4926937
-        section: Daily — an agency would open this most working days
+        section: Daily — Export with chosen columns, reordered, incl. custom fields
     hib_signal:
       value: >-
         Not a population question — the export writes whatever the product
