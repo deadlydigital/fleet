@@ -592,6 +592,64 @@ already shipped — the AOV column of the payment-method breakdown is the live
 example — and it will include any future one. A report that sums `orders.total`
 needs nothing.
 
+## Correction (16 September 2026), fourth entry: this document covers no export, and DD has shipped three
+
+**Grep this file for `export` and nothing comes back.** Zero occurrences in
+1,040 lines. That is not an oversight in the classifying; it is inherited from
+the input and was never stated, so a reader takes the document's silence for
+Metorik's.
+
+**Where it comes from.** The 100 rows are
+`research/metorik-report-catalogue-2026-09-15.md`, and that document's source is
+`https://metorik.com/reports` — a page of REPORTS. An export is not a report, so
+no export appears as a row, so nothing here classifies one. The catalogue did
+notice them, in prose rather than in the table:
+
+> **The surrounding machinery may be the harder half.** CSV export on any
+> report, scheduled email digests (daily/weekly/monthly), a REST API and
+> webhooks, custom dashboards, multi-store reporting, and all processing done
+> off-site so the store's database is not queried.
+
+— followed immediately by *"None of that paragraph was verified either."* This
+document carried the hundred rows forward and left the paragraph behind. The
+single mention in the catalogue became none here.
+
+**Why it matters more than a missing row usually would.** The category is not
+theoretical and it is not idle. DD has shipped **three** CSV exports since this
+pipeline started — the order list (tasks 67, 84, 96), the product performance
+report (task 108) and the segment export with a validated column list (task
+111) — and two more are in the pool as candidates 80 and 81. Every one of those
+candidates was read off `specs/metorik-gap.md`, the 28 August document this one
+was written to supersede, because it is the only one with export rows in it:
+
+| `specs/metorik-gap.md` row | Band | Not in this document |
+|---|---|---|
+| CSV export of orders / customers / products | Daily | — |
+| Export with chosen columns, reordered, incl. custom fields | Daily | — |
+| Recurring exports on a schedule to email / Slack / webhook | Weekly | — |
+
+So the producer has been running off two documents at once without either
+saying so, and the older one — the one whose status column has been wrong
+before, and which this file's own *What this was built from* cites only for its
+empty-column rule and its band sense — is the one driving a live category of
+work.
+
+**What this correction does NOT do.** It does not classify the three rows. They
+would need the A/B/C judgement this document applies to everything else, and
+that judgement needs the same evidence pack — which for exports is a question
+about *surfaces*, not about columns, and the buckets were defined for columns.
+Bucket A means "DD already holds the data", and for an export the data is
+whatever report it writes, so every export row is trivially A and the bucket
+says nothing useful about it. **That is a reason to classify exports on a
+different axis, not a reason to leave them out silently.**
+
+**What to do with this.** Whoever next produces a batch should read both
+documents and say which row came from which, as batch 22 did. Whoever next
+extends this one should either take the export rows in with an axis that fits
+them, or state in *What this document deliberately does not do* that exports,
+digests, webhooks, the REST API, custom dashboards and multi-store are out of
+scope and live in `specs/metorik-gap.md`. Either is fine. The silence is not.
+
 ## The classification
 
 ### Daily — Revenue (1 of 3)
