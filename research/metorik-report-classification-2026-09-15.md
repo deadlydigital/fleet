@@ -297,6 +297,35 @@ purchase business, and flagged that it rested on inference and wanted a stated
 fact. It now has one, and the parity figure below no longer carries that
 qualifier.
 
+### A correction to my own reasoning, after reading geography.py
+
+**I claimed the shipping zeros were "stronger numbers" than the refund four.
+They are not evidence about the business at all, and the ruling above does not
+need them to be.** `api/analytics/services/geography.py` in
+`deadly-digital-platform` carries a `_UNAVAILABLE` map that already names
+`shipping_country`, `shipping_city`, `shipping_state` and `shipping_postcode` —
+together with `billing_state` — as **`connector_never_sends`**. Found
+2026-09-16 by the producer run reading this document.
+
+So the shipping columns would read zero whether or not HIB shipped anything: the
+connector never sends them, and a pipeline explanation was sitting in the
+platform code the whole time. **The shipping ruling stands entirely on Eamonn's
+stated fact and on nothing measured here.** That is a sound basis and it is the
+only one; the arithmetic I offered alongside it was not doing the work I said it
+was.
+
+**The refund case is genuinely different and the distinction is the point.**
+There, `specs/refund-hook.md` shows the feed demonstrably carrying a refund end
+to end, so a sparse column with a working feed *is* informative about the
+business. Shipping had no such evidence. **Tax is different again:** `tax_total`
+is NOT in that `_UNAVAILABLE` map, so the connector does send it and the zero is
+informative — the tax ruling and the refund ruling rest on the same kind of
+ground, and the shipping ruling does not.
+
+The general rule this repeats, from *What I could not verify*: a pack cannot
+tell an empty column from an absent subject. Reading the *pipeline* is what
+separates them, and it is a different question from reading the data.
+
 **These answer the question the section *The shipping and tax columns, raised
 and deliberately not decided* left open**, in the direction that section said
 only a stated fact could settle. No query was run and none would have helped: a
