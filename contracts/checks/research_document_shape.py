@@ -93,6 +93,17 @@ def fail(msg: str) -> int:
     return 1
 
 
+def could_not_run(msg: str) -> int:
+    """Exit 2. THE CHECK DID NOT JUDGE THE TREE, so nothing may stand on it.
+
+    See the empty-change guard in main() for why this vocabulary matters here;
+    contracts/checks/spec_requirements_cited.py states the rule in full.
+    """
+    print(f"COULD NOT RUN: {msg}")
+    print("      Reported as 'could not run' (2), never as a pass.")
+    return 2
+
+
 def repo_roots() -> set[str]:
     """Top-level directory names of the repositories actually on disk.
 
@@ -171,6 +182,28 @@ def resolves(rel: str) -> bool:
 def main() -> int:
     changed = [p for p in os.environ.get("FLEET_CHANGED_FILES", "").splitlines()
                if p.strip()]
+    # AN EMPTY CHANGE IS NOT A VERDICT, IT IS A BASE RUN. 16 Sep 2026.
+    #
+    # console/adopt.corroborate() re-runs a failing check in a clone AT THE
+    # BASE, with FLEET_BASE_SHA and FLEET_HEAD_SHA set to the same commit and
+    # FLEET_CHANGED_FILES narrowed to the files that EXIST there. This task's
+    # artifact is a file the branch ADDS, so it is not there, so this check
+    # runs with an empty list -- and returns the same refusal for EVERY
+    # branch, whatever the branch did. adopt._corroboration_for() and
+    # 042_a_check_that_fails_on_the_base_is_not_evidence.sql both match on
+    # command and exit code and neither compares output, so a 1 here excuses
+    # this check for anything that runs it. Both refuse a 2.
+    #
+    # ONLY THE EMPTY CASE. A change that touches files none of which is the
+    # artifact is a real refusal about a real branch, and still exits 1 below.
+    # spec_requirements_cited.py carries the full statement of this rule; it
+    # was fixed there on 15 Sep 2026 and the class was not swept until now.
+    if not changed:
+        return could_not_run(
+            "the change lists no files at all, so there is no document to read. THIS IS ALSO WHAT A "
+            "BASE-CORROBORATION RUN LOOKS LIKE, and that is the reason it is "
+            "a 2 rather than a 1.")
+
     docs = [p for p in changed if p.endswith(".md")]
     if not docs:
         return fail("the change contains no markdown document. A research task "

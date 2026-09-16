@@ -154,6 +154,15 @@ PROBE_KINDS = ("path_exists", "path_absent", "grep_count")
 def fail(msg: str) -> int:
     print(f"FAIL: {msg}")
     return 1
+def could_not_run(msg: str) -> int:
+    """Exit 2. THE CHECK DID NOT JUDGE THE TREE, so nothing may stand on it.
+
+    The same vocabulary the BandUncheckable branch in main() already uses; see
+    the empty-change guard there for why it matters on an empty change too.
+    """
+    print(f"COULD NOT RUN: {msg}")
+    print("      Reported as 'could not run' (2), never as a pass.")
+    return 2
 
 
 def git(repo: Path, *args: str) -> str | None:
@@ -680,8 +689,32 @@ def main(argv=None) -> int:
     ap.add_argument("--max-candidates", type=int, default=10)
     args = ap.parse_args(argv)
 
-    changed = [f for f in (os.environ.get("FLEET_CHANGED_FILES") or "").split()
-               if f.endswith(".md")]
+    listed = [f for f in (os.environ.get("FLEET_CHANGED_FILES") or "").split()
+              if f.strip()]
+
+    # AN EMPTY CHANGE IS NOT A VERDICT, IT IS A BASE RUN. 16 Sep 2026.
+    #
+    # console/adopt.corroborate() re-runs a failing check in a clone AT THE
+    # BASE, with FLEET_BASE_SHA and FLEET_HEAD_SHA set to the same commit and
+    # FLEET_CHANGED_FILES narrowed to the files that EXIST there. A candidate
+    # producer's artifact is a document the branch ADDS, so it is not there,
+    # so this check runs with an empty list -- and returns the same refusal
+    # for EVERY branch, whatever the branch did. adopt._corroboration_for()
+    # and 042_a_check_that_fails_on_the_base_is_not_evidence.sql both match on
+    # command and exit code and neither compares output, so a 1 here excuses
+    # this check for anything that runs it. Both refuse a 2.
+    #
+    # ONLY THE EMPTY CASE. A change that lists files none of which is markdown
+    # is a real refusal about a real branch, and still exits 1 below.
+    # spec_requirements_cited.py carries the full statement of this rule; it
+    # was fixed there on 15 Sep 2026 and the class was not swept until now.
+    if not listed:
+        return could_not_run(
+            "the change lists no files at all, so there is no document to "
+            "read. THIS IS ALSO WHAT A BASE-CORROBORATION RUN LOOKS LIKE, "
+            "and that is the reason it is a 2 rather than a 1.")
+
+    changed = [f for f in listed if f.endswith(".md")]
     if not changed:
         return fail("no markdown file in the change; a candidate producer "
                     "produces a document")

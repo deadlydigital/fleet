@@ -103,6 +103,41 @@ trap stop_services EXIT
                            "pre-change tree to test against"; exit 2; }
 [ -d .git ] || [ -f .git ] || { echo "FAIL: not a git worktree"; exit 2; }
 
+# ---- 0. AN EMPTY DIFF IS NOT A VERDICT, IT IS A BASE RUN ----------------
+#
+# 16 Sep 2026. console/adopt.corroborate() re-runs a failing check in a clone
+# AT THE BASE, with FLEET_BASE_SHA and FLEET_HEAD_SHA set to the SAME COMMIT,
+# to establish whether the check fails without the branch applied. For a check
+# that reads the TREE -- pytest_unit_per_file.sh, and the shape checks that
+# read files -- that is a real question, and answering it is the whole point of
+# 042_a_check_that_fails_on_the_base_is_not_evidence.sql.
+#
+# For THIS check it is not a question at all. Its entire subject is the diff.
+# At the base the diff is empty by construction, so no test was added, so the
+# answer is FAIL for EVERY branch, whatever the branch did. adopt's
+# _corroboration_for() and 042 both match on the COMMAND and the EXIT CODE and
+# neither compares output, so a 1 here made this check corroborate ITSELF --
+# excusing the one gate that says the branch's own added test does not pass.
+#
+# Found on task 118, which failed on exactly that check and could have been
+# adopted past it. spec_requirements_cited.py was fixed for this on 15 Sep
+# 2026 and states the rule in full; the class was not swept until now.
+#
+# The guard is on the WHOLE diff, not on the added-test list, and that is
+# deliberate: a real branch that changes code and adds no test has a non-empty
+# diff and must still be refused with 1 below. Only "there is no change here
+# at all" is could-not-run.
+mapfile -t ALL_CHANGED < <(git diff --name-only "$BASE..HEAD")
+if [ "${#ALL_CHANGED[@]}" -eq 0 ]; then
+    echo "COULD NOT RUN: $BASE..HEAD is empty, so there is no change for this"
+    echo "      check to read and no added test it could find."
+    echo "      THIS IS WHAT A BASE-CORROBORATION RUN LOOKS LIKE, and that is"
+    echo "      the reason it is a 2 rather than a 1. Returning 1 here let this"
+    echo "      check excuse itself for every branch -- see the comment above."
+    echo "      Reported as 'could not run' (2), never as a pass."
+    exit 2
+fi
+
 # ---- 1. what was added --------------------------------------------------
 # --diff-filter=A: ADDED only. A modified test is refused by the boundary
 # before this runs, and asking git for the status again here means this check

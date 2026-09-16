@@ -102,6 +102,29 @@ def main() -> None:
 
     changed = {line.strip() for line in out.splitlines() if line.strip()}
 
+    # AN EMPTY DIFF IS NOT A VERDICT, IT IS A BASE RUN. 16 Sep 2026.
+    #
+    # console/adopt.corroborate() sets FLEET_BASE_SHA and FLEET_HEAD_SHA to the
+    # same commit, so `base..HEAD` is empty, so every group below is
+    # "untouched" and this prints PASS over a tree it was never asked about.
+    #
+    # That cannot excuse a failing branch -- adopt._corroboration_for() and 042
+    # match on the exit code, and 0 never equals a failing check's. It is here
+    # because a PASS line in a BASE_CHECK_RUN step is read by the person who
+    # accepts, and this one would tell them something it did not establish.
+    #
+    # It is also the sentence this file already makes two branches above, for a
+    # contract that declares no paired_paths: a check that cannot fail is worse
+    # than an absent one, and is reported as could-not-run rather than passed.
+    # A real run always has a diff, so this is unreachable outside a
+    # corroboration run.
+    if not changed:
+        die(2, "FAIL: {base}..HEAD is empty, so no group was touched and "
+               "nothing was established.".format(base=base[:12]),
+               "      THIS IS WHAT A BASE-CORROBORATION RUN LOOKS LIKE. A "
+               "PASS here would report agreement this check never tested.",
+               "      Reported as 'could not run' (2), never as a pass.")
+
     broken: list[str] = []
     whole = 0
     untouched = 0

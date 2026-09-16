@@ -220,6 +220,33 @@ def test_a_change_that_adds_no_test_is_refused(repo):
     assert "adds no test matching" in r.stdout
 
 
+def test_a_base_corroboration_run_is_could_not_run_not_a_refusal(repo):
+    """THE SECOND REGRESSION GUARD, 16 Sep 2026, and the same shape as the
+    first one two tests up: a non-zero exit that is not about the branch.
+
+    console/adopt.corroborate() re-runs a failing check in a clone AT THE BASE
+    with FLEET_BASE_SHA and FLEET_HEAD_SHA set to the SAME COMMIT. This check's
+    whole subject is the diff, so there the diff is empty, no test was added,
+    and the answer was 1 -- for every branch, whatever the branch did.
+    adopt._corroboration_for() and 042 match on command and exit code and
+    neither compares output, so that 1 excused THIS check, the one that says
+    the branch's own added test does not pass. Found on task 118.
+
+    Both refuse a 2, which is what this asserts. The distinction that makes it
+    safe is asserted by the test above: a real change that adds no test has a
+    NON-EMPTY diff and is still a 1.
+    """
+    base = base_sha(repo)
+    change(repo, label=CHANGED_LABEL, test=BITING_TEST)
+    r = run_bites(repo, sh(repo, "git", "rev-parse", "HEAD").stdout.strip())
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "COULD NOT RUN" in r.stdout
+    assert "bites" not in r.stdout
+    # And the ordinary path from the same fixture is still a pass, so the
+    # guard is about the empty diff and not about this tree.
+    assert run_bites(repo, base).returncode == 0
+
+
 def test_touching_the_suite_beyond_the_added_test_is_refused(repo):
     """The suite directory is an argument now: platform/__tests__, not
     platform/tests. A check looking in the wrong place would find nothing and
