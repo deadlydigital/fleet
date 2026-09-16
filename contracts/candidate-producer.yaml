@@ -27,6 +27,22 @@
 # when it lands, and not before. Until then `specs/metorik-gap.md` remains the
 # document with the two columns this pipeline needs.
 #
+# IT LANDED ON 15 SEP 2026 (task 114, merged as 92fad95), AND IT CARRIES A
+# CORRECTION THAT THE NEXT PRODUCER SPEC MUST REPEAT. On 16 Sep 2026 Eamonn
+# stated as fact that HIB does not refund tickets. The document's section
+# `Correction (16 September 2026)` marks seven rows accordingly: the six-row
+# Refunds group is N/A rather than bucket B, and `Net/gross revenue over time`
+# is A on its gross half. NONE OF THE SEVEN IS A GAP AND NONE MAY BE EMITTED.
+#
+# Say it in the spec the way the `premise` paragraph below is said in a spec,
+# because NOTHING HERE CAN ENFORCE IT. candidate_block_shape.py's vocabulary is
+# path_exists, path_absent and grep_count over a source tree; there is no
+# database predicate. A candidate for "By refund reason" would probe "no reason
+# column in models.py", that probe WOULD HOLD, and the block would pass every
+# mechanical check while proposing work the business has no use for. The marks
+# in the document are the whole of the defence, and they only work if the agent
+# reads the row rather than the bucket column.
+#
 # A parser over specs/metorik-gap.md yields 50 rows, 14 of them already
 # shipped, and -- worse -- the 34 marked Missing or Partial are 11 days old.
 # Probed against platform HEAD ebe016c on 8 Sep 2026, two of four Daily-band

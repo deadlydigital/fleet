@@ -133,13 +133,136 @@ whole six-row Refunds group and the net half of the headline revenue report.
 **Costs are absent** — no table in `models.py` has a cost column, which takes
 the five-row Costs & profit group and three of the ten cohort reports.
 
+> **THE FIRST OF THOSE TWO FACTS WAS CORRECTED ON 16 SEPTEMBER 2026 AND THIS
+> SUMMARY IS LEFT AS THE RUN WROTE IT.** HIB does not refund tickets, so the
+> six-row Refunds group and the net half of the headline revenue report are
+> **not applicable to this business** rather than blocked on data, and must not
+> be proposed as gaps. The costs half is unaffected and stands. Corrected
+> counts, the seven rows involved, and what a producer may not emit are in
+> *Correction (16 September 2026)* immediately below.
+
+## Correction (16 September 2026): HIB does not refund, so refunds are not a gap
+
+**Stated as fact by Eamonn (eamonn@hittinitbig.com) on 2026-09-16, and recorded
+here rather than in a separate file because this is the only document the
+candidate producer can read: `contracts/candidate-producer.yaml` gives that
+agent no Bash, no credential and no web, so a correction it cannot open is a
+correction that does not exist.**
+
+**The fact.** HIB does not refund tickets.
+
+**What it changes, and it is an interpretation and not a figure.** Every
+measurement in this document stands. `refund_total` is still non-zero on 4
+orders of 2,889,850, and `models.py` still defines no refund entity, no refund
+reason and no refund timestamp. What changes is what those readings *mean*.
+This document filed refunds under *absent* — the language of something missing
+that ought to be there. Four refunds in 2,889,850 is not an absence. It is the
+correct and complete record of a business that does not refund.
+
+**This settles one of the open questions above in the "no such data"
+direction.** *What I could not verify* closes by saying that whether an empty
+column is empty because the store has no such data or because the pipeline does
+not deliver it "is a question this pack cannot answer, and the two have
+different consequences". For refunds it is now answered, and two independent
+things answer it:
+
+* the stated fact above; and
+* `specs/refund-hook.md`, which read the connector source and found both
+  `woocommerce_order_refunded` and `woocommerce_refund_created` registered on
+  every commit, the payload carrying `refund_total` from `get_total_refunded()`,
+  the guards deliberately bypassed so a partial refund cannot be swallowed, and
+  the `wp dd sync-refunds` backfill implemented. It also records `refund_total`
+  arriving as `0.69` on `analytics_2.orders` for order `3570823`. **The refund
+  feed is wired and has demonstrably carried a refund end to end.** The column
+  is sparse because the business is, not because the pipeline drops anything.
+
+So the four are evidence that the path works, not evidence that it is broken.
+
+### The rows this applies to, and the only two effects it has
+
+**Seven rows, and no others.** *Refunds are absent* in the Summary above names
+its own blast radius exactly — "the whole six-row Refunds group and the net half
+of the headline revenue report" — and that is the whole of it. Nothing in
+Subscriptions, Carts, Costs & profit, Cohorts or anywhere else turns on refunds.
+
+1. **The six-row Refunds group becomes N/A** — not applicable to this business,
+   rather than blocked on data. Each row below keeps the bucket the 2026-09-15
+   run gave it, named inside its Why cell, so nothing that was measured is lost.
+   Three of the six were `no model` on schema facts that remain true: there is
+   still no refund reason column, no refund timestamp and no line-level refund
+   attribution. Those facts did not stop being true. They stopped being worth
+   repairing, because the reports they block would return an empty result for
+   HIB even if every one of them were built.
+
+2. **Net/gross revenue over time becomes A**, on its gross half. Tie-break rule
+   2 sent it to B because "the half that cannot be built decides" — but the half
+   that cannot be built is now the half that should not be built. Gross revenue
+   is `orders.total` over `orders.created_at`, both present, and it carries the
+   `†` mark for `orders.total` like every other row resting on that column. Net
+   revenue is N/A for HIB.
+
+**A producer must not emit a candidate for any of the seven.** They are not
+gaps, and `candidate_block_shape.py` cannot catch this by itself: its
+vocabulary is `path_exists`, `path_absent` and `grep_count` over a source tree,
+so a probe asserting "no refund reason column exists in `models.py`" would
+*hold*, and the candidate would pass every mechanical check while proposing
+work this business has no use for. This paragraph is the only thing standing
+between that document and that batch.
+
+### The corrected counts
+
+The Summary table above is left as the 2026-09-15 run found it. These are the
+same 100 rows after the correction:
+
+| Bucket | Rows | Share of the 94 |
+|---|---|---|
+| **A** — DD holds the data | 30 | 32% |
+| **B** — the data is not in DD | 52 | 55% |
+| **C** — needs the segmentation engine | 12 | 13% |
+| **N/A** — not applicable to HIB | 6 | (excluded) |
+
+Of the 52 in B, 51 are `no model` and **1 is `empty column`** — the refund
+correction collapses that class almost entirely. Before it there were five
+empty-column rows; *Net/gross revenue over time* is now A and three of the
+others were refund rows, leaving *Customer groups by shipping location* alone
+in the category. **Every remaining "the column exists and holds nothing" row in
+this document is now a shipping row**, which makes shipping the next question
+of exactly this shape — see *The shipping and tax columns* below.
+
+### What is NOT corrected
+
+**Costs.** The second cross-cutting fact is untouched. No table in `models.py`
+has a cost column, and that takes the five-row Costs & profit group and three
+of the ten cohort reports. Nothing above bears on it. With refunds and
+subscriptions set aside, costs becomes the largest single absent subject left
+in the document.
+
+### The shipping and tax columns, raised and deliberately not decided
+
+`shipping_total` is non-zero on **0** of 2,889,850 and `shipping_country` is set
+on **0**; `tax_total` is non-zero on **0**. `research/EVIDENCE-metorik.md`,
+taken 2026-08-30, shows the same three at zero on the same tenant, so this is
+not one bad reading. That is the identical shape of question the refund fact
+just answered, on stronger numbers — zero twice over 1,283 days, against four.
+
+**It is not answered here, and no row above has been changed for it.** This
+document's own rule is that a pack cannot tell an empty column from an absent
+subject, and `specs/metorik-gap.md` separated tax and shipping for that reason.
+Settling it needs a stated fact about the business in the way refunds did, not
+another query. Three rows outside the groups already set aside turn on shipping
+alone — *By shipping method* under Order groups, *Shipping costs by shipping
+method* under Costs & profit, and *By shipping location* under Customer groups
+— and one turns on tax, *Revenue by tax code, label or ID*. Two bucket-A rows
+name shipping as a dead half and are unaffected either way, since billing
+carries them.
+
 ## The classification
 
 ### Daily — Revenue (1 of 3)
 
 | Report | Bucket | Why |
 |---|---|---|
-| Net/gross revenue over time | **B** `empty column` | Spans A and B; B blocks it. Gross is `orders.total` over `orders.created_at`, both present. Net needs `orders.refund_total`, non-zero on 4 of 2,889,850. No refund entity exists to fix that from. |
+| Net/gross revenue over time | **A** † (was **B** `empty column`) | **Corrected 16 Sep 2026 — see *Correction (16 September 2026)*.** Gross is `orders.total` over `orders.created_at`, both present, and is the buildable half. The net half needs `orders.refund_total`, non-zero on 4 of 2,889,850 — and HIB does not refund, so net revenue is N/A for this business rather than blocked. Tie-break rule 2 no longer sends this row to B, because the half that cannot be built is the half that should not be built. `orders.total` unmeasured, hence †. |
 
 ### Weekly — Revenue (1 of 3)
 
@@ -226,17 +349,17 @@ the five-row Costs & profit group and three of the ten cohort reports.
 
 | Report | Bucket | Why |
 |---|---|---|
-| Refunds over time | **B** `empty column` | `orders.refund_total` non-zero on 4 of 2,889,850; one order carries status `refunded`. |
-| Most refunded products | **B** `no model` | `refund_total` is order-level. `order_items` has no refund column, so a refund cannot be attributed to a line even when it exists. |
-| By refund reason | **B** `no model` | No reason column anywhere in `models.py`. |
+| Refunds over time | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — HIB does not refund tickets; see *Correction (16 September 2026)*. Not a gap; do not propose.** The reading is unchanged and correct: `orders.refund_total` non-zero on 4 of 2,889,850, one order carrying status `refunded`. That is the complete record of a business that does not refund, not a missing feed. |
+| Most refunded products | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** The schema fact stands: `refund_total` is order-level and `order_items` has no refund column, so a refund cannot be attributed to a line. Building it would return an empty report for HIB. |
+| By refund reason | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** The schema fact stands: no reason column anywhere in `models.py`. There is also no refund to give a reason for. |
 
 ### Rarely — Refunds (3 of 6)
 
 | Report | Bucket | Why |
 |---|---|---|
-| Time between order & refund | **B** `no model` | No refund timestamp exists. `orders` has no refunded_at and there is no refund entity to carry one. |
-| By billing location | **B** `empty column` | The dimension is fine (`billing_country` 2,884,311); the measure is not — 4 non-zero refunds. |
-| By shipping location | **B** `empty column` | Both halves empty: `shipping_country` 0 and `refund_total` non-zero on 4. |
+| Time between order & refund | **N/A** (was **B**) `no model` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** The schema fact stands: no refunded_at on `orders` and no refund entity to carry one. |
+| By billing location | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** The dimension is fine (`billing_country` 2,884,311); the measure is not a gap but an absent subject — 4 non-zero refunds, because HIB does not refund. |
+| By shipping location | **N/A** (was **B**) `empty column` | **N/A 16 Sep 2026 — see *Correction*. Not a gap; do not propose.** Refunds are N/A for HIB, which settles the row on its own. The shipping half (`shipping_country` set on 0) is the separate, still-open question raised in *The shipping and tax columns*. |
 
 ### Weekly — Acquisition / sources (6 of 6)
 
@@ -444,6 +567,7 @@ contain.
 
 | Row | Unverified column |
 |---|---|
+| Net/gross revenue over time (gross half; A since the 16 Sep 2026 correction) | `orders.total` |
 | Revenue by billing/shipping location or payment method | `orders.total` |
 | Sales forecast (12 months) | `orders.total` |
 | Average order gross over time | `orders.total` |
