@@ -18,6 +18,28 @@ gate rather than for the reader.
 So: if the honest fix is "delete this", or is otherwise outside what a contract
 can be written to accept, it belongs here and a person does it by hand.
 
+**THE GENERAL FORM, NAMED 16 September 2026 because a second instance arrived
+that is not a deletion.** The class is: *work whose correct form requires
+editing a file its own contract PROTECTS.* A deletion is one shape of it — the
+gate demands an added test and the change removes the thing to test. Entry 2 is
+another: the change is a deliberate correction to a number, and a protected
+test asserts the old number on purpose.
+
+It is worth separating from the three blockers that get confused with it,
+because none of the usual remedies touches it:
+
+| Blocker | What moves it |
+|---|---|
+| The migration floor | A migration contract wider than `CreateIndexStep` |
+| A data-collection project | Somebody collects the data |
+| A contract's diff ceiling | A bigger number, or splitting the task |
+| **A protected file the fix must edit** | **Nothing here. Not budget, not attempts, not a bigger cap.** |
+
+That last row is why these are parked rather than queued. A candidate for one
+of them is a row a human will approve, a spec task will describe and a work
+task will fail — the first three cost money and produce something; this one
+cannot produce anything, ever, under the contract that would run it.
+
 This file is not a backlog of everything unfixed. It is specifically the set
 where **the machine is structurally the wrong tool**, which is a much smaller
 set and worth keeping separate for that reason.
@@ -73,3 +95,68 @@ page would otherwise inherit — a proxy that looks like it exists and works.
 work and does not belong in this file: it needs a route on the API first, and
 then this proxy rewritten to call it. The defect and the feature are separate
 decisions and only the first one is parked here.
+
+---
+
+## 2. The sources page and the LTV distribution can disagree, and the guard that would catch it is the thing the fix must edit
+
+**Found 16 September 2026**, landing task 62's work by hand. Recorded at the
+helper in `api/analytics/services/analytics_engine.py`, where a reader meets it.
+
+`analytics/routes/sources.py` computes its per-source `average_ltv` from
+`customers.total_spent`. `GET /customers/ltv`, shipped in the same session,
+computes lifetime value from the orders themselves via `lifetime_spend_sql()`.
+**They are two numbers for one quantity and they can disagree** — by exactly the
+drift the stored column carries, which is what task 62's own 4.1 block exists
+to measure.
+
+Task 62's spec asked for this in requirements 5.1 and 5.2: sources uses the
+shared helper, and its 365-day lookback does not change. The branch did it in
+seventeen lines. **That hunk was not taken, and the requirements are recorded
+as DEFERRED rather than met.**
+
+### Why it cannot be landed by a task
+
+`16e1d8a` — *"perf(sources): the LTV panel ranked every order to keep 24% of
+them"* — added `api/tests/analytics/test_sources_ltv_window.py`. It reproduces
+the pre-optimisation sources query in full and requires the shipped query to
+return identical rows:
+
+> *If the two ever disagree, the bounded form has changed the answer and not
+> merely the cost — which is the only claim the rewrite makes.*
+
+That guard is correct and it is doing its job. 5.1 is a **deliberate** change of
+the answer, so the guard fires. Measured against one running database, minutes
+apart: base `7 passed`; the same file with the sources hunk applied,
+`1 failed, 6 passed`, an `AssertionError` on row sets. Not an environment
+artefact, and not the `public.utm_source_alias` warning that appears beside it
+in the output — that is logged on the base too.
+
+Making both true means editing the guard's reference query so it computes what
+5.1 computes. `api/tests/**` is protected by
+`contracts/deadly-digital-platform-api.yaml`, whose `creatable_paths` admits
+`api/tests/analytics/test_fleet_*.py` and nothing else. **So no task under that
+contract can make this change correct — not at a higher cap, not on a third
+attempt, not with a longer timeout.**
+
+### What would unpark it
+
+A contract that can write both `api/analytics/routes/sources.py` and
+`api/tests/analytics/test_sources_ltv_window.py`, and whose acceptance can
+express *"this changes an existing figure on purpose, and here is the guard
+updated to the new definition with the old one recorded"*. That is a different
+shape of task from anything in `contracts/` today: every existing one either
+forbids touching an existing test or has no business near a guard.
+
+**It is deliberately NOT a candidate.** A candidate here is a row somebody
+approves, a spec task describes, and a work task fails — which is what already
+happened once. When such a contract exists, queue it then; the work is
+seventeen lines of query plus a reference query in the guard, and both are
+written down: the query is on `fleet/task-62.2` at `d564126` and the guard is
+on `main`.
+
+### What is true today, so nobody reads this as fixed
+
+The sources page still reads `customers.total_spent`. `/customers/ltv` reads
+the orders. A merchant comparing the two can see different numbers for the same
+customer, and neither surface says so.
