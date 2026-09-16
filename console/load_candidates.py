@@ -87,6 +87,24 @@ BANDS = ("daily", "weekly", "monthly", "rarely")
 _BAND_RE = re.compile(r"^\s*(" + "|".join(BANDS) + r")\s*[—–-]", re.I)
 
 
+def _json(obj: Any) -> str:
+    """`json.dumps` that survives a YAML date.
+
+    A producer writing `as_of: 2026-09-16` unquoted gets a `datetime.date` from
+    `yaml.safe_load`, and the default encoder raises on it. Every batch before
+    16 quoted it, so nothing hit this until the first batch produced from
+    research/metorik-report-classification-2026-09-15.md -- and `--dry-run`
+    could not warn, because a dry run never serialises.
+
+    `default=str` renders a date as its ISO form, which is exactly the string
+    every hib_signal already in the database holds. So this normalises to the
+    stored convention rather than inventing one, and it is deliberately narrow:
+    anything else unserialisable still raises, because a silent str() of an
+    unexpected object is how a wrong value gets stored looking right.
+    """
+    return json.dumps(obj, default=str)
+
+
 def band_of(cand: Dict[str, Any]) -> str | None:
     """The frequency word from the evidence section heading, or None.
 
@@ -522,12 +540,12 @@ def load(document: Path, *, source_sha: str, note: str | None = None,
                 " probes, premise, work_key, measured_impact)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (batch_id, r["title"], r["rationale"], r["repo"],
-                 r["objective_ref"], json.dumps(r["evidence"]),
+                 r["objective_ref"], _json(r["evidence"]),
                  r["suggested_paths"], r["band"],
-                 json.dumps(r["hib_signal"]) if r["hib_signal"] else None,
-                 json.dumps(r["probes"]), json.dumps(r["premise"]),
+                 _json(r["hib_signal"]) if r["hib_signal"] else None,
+                 _json(r["probes"]), _json(r["premise"]),
                  r["work_key"],
-                 json.dumps(r["measured_impact"])
+                 _json(r["measured_impact"])
                  if r["measured_impact"] else None))
             ids.append(conn.execute(
                 "SELECT currval('candidates_id_seq') AS id").fetchone()["id"])
@@ -610,8 +628,8 @@ def backfill(document: Path, batch_id: int, *, dry_run: bool = False) -> Dict[st
                     "UPDATE candidates SET band=%s, hib_signal=%s, probes=%s"
                     " WHERE id=%s AND band IS NULL AND hib_signal IS NULL"
                     " AND probes='[]'::jsonb",
-                    (r["band"], json.dumps(r["hib_signal"]) if r["hib_signal"]
-                     else None, json.dumps(r["probes"]), cid))
+                    (r["band"], _json(r["hib_signal"]) if r["hib_signal"]
+                     else None, _json(r["probes"]), cid))
 
     return {
         "batch_id": batch_id, "filled": [cid for cid, _ in plan],
