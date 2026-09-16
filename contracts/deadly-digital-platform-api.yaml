@@ -643,15 +643,61 @@ max_test_diff_lines: 1200
 #                             thinner headroom than this comment assumed, and
 #                             it is the strongest argument for re-measuring
 #                             soon rather than eventually.
+#   task 118, run 93  £5.79   ADDED 16 Sep 2026. 601 diff lines (229
+#                             production, 372 test), ran to completion and
+#                             produced its patch, then failed verification on
+#                             two checks -- one of them a hand-maintained
+#                             migration tally that was red on the base. A
+#                             COMPLETED observation: 96.5% of the cap, £0.21
+#                             of headroom.
+#   task 118, run 94  £6.03   ADDED 16 Sep 2026, and it is not like the others.
+#                             THE CAP FIRED AND STOPPED THE AGENT. No diff, no
+#                             file_status, no branch: PATCH_PROPOSED records
+#                             agent_exit_code 1 and BUDGET EXHAUSTED at 546s,
+#                             42,729 completion tokens against run 93's 45,475
+#                             at completion. £6.00 was spent and NOTHING was
+#                             produced.
 #
-# 6.00 clears all three, but only just -- run 38 came within £0.11 of it. It
-# still refuses: ~2.7x the median completed code task (£2.22), and above any
-# code work yet observed.
+#                             Same task, same contract, ~£0.24 more than run
+#                             93. What moved between them was the SPEC: a
+#                             rework note appended after run 93 grew spec_md by
+#                             3,252 characters, 18%, and spec_md is
+#                             APPEND-ONLY -- it cannot be shortened back. Every
+#                             turn of a long agent session carries it.
+#
+# 6.00 cleared the first three, but only just -- run 38 came within £0.11 of it,
+# run 93 within £0.21. It still refuses: ~2.7x the median completed code task
+# (£2.22).
+#
+# RUN 94 IS THE FIRST OBSERVATION OF THE CAP DELETING THE WORK RATHER THAN
+# REFUSING IT, and the distinction is the whole of what this comment is for.
+# Runs 32 and 38 ran to completion and were then refused on size: the work
+# existed and a gate judged it. Run 94 was stopped mid-sentence. There is
+# nothing to judge, nothing to adopt, nothing to read, and £6.00 is spent
+# either way. A cap that refuses output is a gate; a cap that prevents output
+# is a tax, and the only evidence it leaves is its own absence -- which is why
+# this was invisible until a task was re-run with a longer spec and it happened
+# twice to the same work.
+#
+# THE NUMBER IS DELIBERATELY NOT CHANGED HERE, 16 Sep 2026. Raising it would
+# spend money against an estimate: £8 is a guess from two points, and the
+# month's pool had £30.06 left when this was written (£270.00 read by hand on
+# 10 Sep, £239.94 committed). A ceiling moved on argument is what the first
+# line of this comment already warns against, and moving it on a guess made
+# under a budget squeeze would be worse than leaving it. The observations are
+# recorded so whoever has budget can decide from them.
 #
 # TO WHOEVER RE-MEASURES: the right tail above £3.00 has never been visible,
-# because the cap removed it. Let several code tasks run at 6.00, then replace
-# this comment with their spread. Three points is not a distribution, and two
-# of the three were refused on size before they could be judged on merit.
+# because the cap removed it -- and run 94 is that sentence happening rather
+# than being predicted. Let several code tasks run at their ceiling, then
+# replace this comment with their spread. Five points is still not a
+# distribution: two were refused on size before they could be judged on merit,
+# and one never produced anything to judge.
+#
+# AND MEASURE THE SPEC, NOT ONLY THE DIFF. Runs 93 and 94 are the same task and
+# the same agent against specs 18,052 and 21,304 characters long, and the
+# longer one did not finish. Nothing in this file bounds spec_md, and
+# rework_task() and any hand-appended note can only make it longer.
 max_cost_gbp: 6.00
 # 3600, not 1800. timeout_seconds is ONE clock for the agent and for
 # verification -- runner/cycle.py sets deadline = started + timeout_seconds and
