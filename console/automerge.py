@@ -293,8 +293,30 @@ def eligible(task: dict, reverification: Any,
             f"re-verification did not run ({reverification.skipped_reason}), "
             f"so a green here would mean nothing was checked"))
     if getattr(reverification, "could_not_run", False):
+        # NAME IT. 16 Sep 2026, and it is task 84's defect in the one place
+        # that fix could not reach.
+        #
+        # log_failing_checks() below puts a failing check's own output_tail
+        # where the refusal is read. It walks `reverification.checks`, and
+        # when the trial clone itself could not be built there ARE no checks
+        # -- reverify.run returns before anything is executed. So this branch
+        # printed nine words and the operator got no reason at all, while
+        # reverify had already written a full one and handed it over.
+        #
+        # Measured: task 119 was refused with exactly that, and the sentence
+        # sitting unread in `reason` was "the trial clone could not be created
+        # under /tmp/fleet-console-trials ... [Errno 13] Permission denied".
+        # That names the cause, the path and the errno, and finding it instead
+        # took reading docker's container labels.
+        #
+        # THE BRANCHES EITHER SIDE OF THIS ONE ALREADY DO IT: skipped_reason
+        # above interpolates, `not ok` below interpolates. This was the only
+        # one that did not, which is why it was not noticed.
         return Eligibility(False, (
-            "re-verification could not run, which is not the same as passing"))
+            "re-verification could not run, which is not the same as passing: "
+            + (getattr(reverification, "reason", "").strip()
+               or "and it recorded no reason, which is its own defect -- "
+                  "reverify.run must never set could_not_run without one")))
     if not getattr(reverification, "ok", False):
         return Eligibility(False, (
             f"re-verification did not pass, so this is not merging: "
@@ -380,7 +402,22 @@ def log_failing_checks(reverification: Any, log) -> None:
     refusal is the same refusal. The only difference is that it says what
     happened.
     """
-    for c in (getattr(reverification, "checks", None) or []):
+    checks = getattr(reverification, "checks", None) or []
+
+    # A RUN THAT REACHED NO CHECK AT ALL, said out loud. Without this the
+    # operator sees a refusal followed by silence, and silence here is
+    # indistinguishable from "every check was green" -- which is the reading
+    # this whole function exists to prevent. The trial clone failing, a merge
+    # conflict and a contract with no verification all land here with an empty
+    # list, and they are not the same as a clean sweep.
+    if not checks:
+        if getattr(reverification, "could_not_run", False):
+            log("    no check ran: the trial never got that far. "
+                "The reason is on the refusal line above.")
+        return
+
+    printed = False
+    for c in checks:
         exit_code = c.get("exit_code")
         failed = (c.get("timed_out") or c.get("unresolved_reason")
                   or c.get("undecided_reason")
@@ -389,10 +426,17 @@ def log_failing_checks(reverification: Any, log) -> None:
             continue
         why = (c.get("unresolved_reason") or c.get("undecided_reason")
                or ("timed out" if c.get("timed_out") else f"exit {exit_code}"))
+        printed = True
         log(f"    {why}: {c.get('command', '?')}")
         tail = (c.get("output_tail") or "").strip()
         for line in tail.splitlines():
             log(f"      {line}")
+
+    # Checks were recorded and none of them was the problem. That happens when
+    # the refusal is about the MERGE rather than about a check -- a conflict, a
+    # moved base, a boundary verdict -- and saying so beats printing nothing.
+    if not printed:
+        log("    no check failed: the refusal above is not about a check.")
 
 
 def _log(msg: str) -> None:

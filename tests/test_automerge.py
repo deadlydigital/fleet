@@ -186,6 +186,63 @@ def test_could_not_run_is_refused_and_not_treated_as_a_pass():
     assert "not the same as passing" in v.reason
 
 
+def test_could_not_run_says_WHY_it_could_not_run():
+    """THE REGRESSION GUARD, 16 Sep 2026.
+
+    This branch used to return nine fixed words. reverify.run had already
+    written the whole story into `reason` and handed it over, and it was
+    dropped on the floor -- while the branch above it (skipped_reason) and the
+    branch below it (not ok) both interpolate theirs.
+
+    It is task 84's defect in the one place that fix could not reach:
+    log_failing_checks() prints a failing check's output_tail, and when the
+    TRIAL CLONE could not be built there are no checks to walk. Task 119 was
+    refused on 16 Sep with the bare string, and the unread sentence named the
+    path and the errno.
+    """
+    rv = _rv(ok=False, could_not_run=True, checks=[],
+             reason=("the trial clone could not be created under "
+                     "/tmp/fleet-console-trials, so the merge into main was "
+                     "NOT re-verified and has not been made: [Errno 13] "
+                     "Permission denied"))
+    v = automerge.eligible(_task(), rv)
+    assert not v.ok
+    assert "not the same as passing" in v.reason
+    # The whole of what reverify knew, not a summary of it.
+    assert rv.reason in v.reason
+
+
+def test_could_not_run_with_no_reason_says_THAT_is_the_defect():
+    """reverify.run sets a reason at all three of its could_not_run sites, so
+    this is unreachable today. It is asserted anyway: the failure mode being
+    fixed is a refusal that names nothing, and silently reintroducing it from
+    the other side would be the same defect wearing a different hat."""
+    v = automerge.eligible(_task(), _rv(ok=False, could_not_run=True,
+                                        reason="", checks=[]))
+    assert not v.ok
+    assert "recorded no reason" in v.reason
+
+
+def test_a_refusal_with_no_checks_at_all_does_not_print_silence(capsys):
+    """Silence after a refusal reads as "every check was green", which is the
+    reading log_failing_checks exists to prevent. A trial that never ran has
+    an empty `checks`, and that is exactly when the operator most needs a
+    line."""
+    lines = []
+    automerge.log_failing_checks(
+        _rv(ok=False, could_not_run=True, checks=[], reason="x"), lines.append)
+    assert lines and "never got that far" in lines[0]
+
+
+def test_a_refusal_whose_checks_all_passed_says_it_is_not_about_a_check():
+    """A conflict or a moved base refuses with green checks recorded. Printing
+    nothing there sends the reader to look for a failing test that is not
+    there."""
+    lines = []
+    automerge.log_failing_checks(_rv(ok=False, checks=[BITE_OK]), lines.append)
+    assert lines and "not about a check" in lines[0]
+
+
 def test_a_failed_reverification_is_refused():
     assert not automerge.eligible(_task(), _rv(ok=False)).ok
 
