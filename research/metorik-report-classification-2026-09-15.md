@@ -474,12 +474,49 @@ shipping either, and it is recorded rather than decided.
 
 `analytics_2.products`, `analytics_2.product_categories` and
 `analytics_2.customers` all return **permission denied** for the
-`deadly_digital` reader. So the two `‡` rows — *Top selling categories* and
-*Category comparison* — remain unverified, and the reason is now precise: not
-"the pack did not query them" but **the reader has no SELECT on them**. No query
-available to this document can close that, and a candidate resting on
-`product_categories` being populated is resting on something nobody here has
-checked. The `‡` mark stands and means what it says.
+`deadly_digital` reader (`dd_detector_login`, whose grants in `analytics_2` are
+`orders`, `order_items` and `reconciliation_manifests` and nothing else). So the
+reason the `‡` rows were unverified is precise: not "the pack did not query
+them" but **the reader has no SELECT on them**.
+
+> **I WROTE "NO QUERY AVAILABLE TO THIS DOCUMENT CAN CLOSE THAT" AND IT WAS
+> WRONG.** The platform's own `DATABASE_URL` in `deadly-digital-platform/api/.env`
+> reads those tables — the API could hardly serve `/products/categories`
+> otherwise. The limit was the credential I reached for first, not the box.
+> Measured below on 16 Sep 2026 with that credential, read-only.
+
+### The two double dagger rows are grounded, and the coverage is half
+
+**`analytics_2.product_categories` is not empty: 4,059 rows over 1,770 distinct
+products and 47 distinct categories.** So *Top selling categories* — already
+shipped as `GET /products/categories` — is returning real rows, and *Category
+comparison* is not resting on an empty table. **Both `‡` marks are discharged.**
+
+Two things the count does not say, and both bear on any category report:
+
+* **Coverage is 51.5%.** `analytics_2.products` holds 3,750 rows and only 1,770
+  carry a category, so **2,344,861 of 4,550,393 line items (51.5%) and £12.24M
+  of £23.82M (51.4%) sit behind a category**. Nearly half of sales are
+  uncategorised. The shipped report handles this correctly and deliberately —
+  `product_category_report` uses LEFT joins for exactly this reason, leads its
+  response with a `coverage` block, and carries an `uncategorised` bucket. **Any
+  new category report must inherit that treatment or it will silently compare
+  halves.**
+* **The fan-out is near total. 1,768 of the 1,770 categorised products (99.9%)
+  carry more than one category**, averaging 2.29 and reaching 6. Each category
+  is credited the product's full line revenue, so category revenues do not sum
+  to the total and **two categories cannot be differenced naively**. The shipped
+  docstring estimates this at "~98%"; measured, it is 99.9%.
+
+**And the category names are a fact about the business, not about the schema.**
+The six largest are *Closed Competitions* (1,696 products), *Cash Competitions*
+(723), *Tech Competitions* (319), *Mini Draw* (236), *Featured Competitions*
+(200) and *Scratchcard Competitions* (118). HIB runs prize competitions, which
+is what "digital entries" means and why nothing ships. Note that the largest
+category by far is a **lifecycle state** rather than a product type: a category
+ranking will put *Closed Competitions* on top, covering 96% of categorised
+products, and that is close to meaningless as a ranking. Whoever builds
+*Category comparison* should know that before choosing the default cut.
 
 ## The classification
 
