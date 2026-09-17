@@ -735,23 +735,152 @@ def test_an_overshoot_with_no_exhaustion_is_named_as_a_dead_breaker(
     assert result.cost_gbp == pytest.approx(3.00)
 
 
-def test_model_usage_is_the_token_source_when_usage_is_zeroed():
-    """A budget-exhausted payload zeroes `usage` but keeps `modelUsage`."""
-    raw = {"usage": {"input_tokens": 0, "output_tokens": 0, "iterations": []},
-           "modelUsage": {
-               "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 964,
-                                     "cacheReadInputTokens": 18774,
-                                     "cacheCreationInputTokens": 4380},
-               "claude-haiku-4-5": {"inputTokens": 537, "outputTokens": 19,
-                                    "cacheReadInputTokens": 0,
-                                    "cacheCreationInputTokens": 0}}}
+#: A payload shaped like the real thing: the top-level block carries the
+#: UNCACHED REMAINDER of the input, and `modelUsage` carries the classes.
+#: These are the proportions of an actual run -- the cache read is three
+#: orders of magnitude larger than the uncached input, which is why reading
+#: only the top-level block understated September by 54,000x.
+REAL_SHAPED_RAW = {
+    "model": "fake",
+    "usage": {"input_tokens": 2, "output_tokens": 964,
+              "cache_read_input_tokens": 18774,
+              "cache_creation_input_tokens": 4380},
+    "modelUsage": {
+        "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 964,
+                              "cacheReadInputTokens": 18774,
+                              "cacheCreationInputTokens": 4380},
+        "claude-haiku-4-5": {"inputTokens": 537, "outputTokens": 19,
+                             "cacheReadInputTokens": 0,
+                             "cacheCreationInputTokens": 0}},
+}
 
-    prompt, completion = cycle._model_usage_totals(raw)
+
+def test_the_classes_are_kept_apart_and_summed_across_every_model():
+    c = cycle._model_usage_classes(REAL_SHAPED_RAW)
 
     # Every model the run billed, not just the one the contract named.
-    assert prompt == 2 + 18774 + 4380 + 537
+    assert c["input_tokens"] == 2 + 537
+    assert c["cache_read_tokens"] == 18774
+    assert c["cache_creation_tokens"] == 4380
+    assert c["completion_tokens"] == 964 + 19
+    # The sum is what `prompt_tokens` has always claimed to be.
+    assert c["prompt_tokens"] == 2 + 537 + 18774 + 4380
+
+
+def test_no_model_usage_is_none_rather_than_zero():
+    """None means 'ask something else'; zeros would mean 'the run used none'."""
+    assert cycle._model_usage_classes({}) is None
+    assert cycle._model_usage_classes({"modelUsage": "not a map"}) is None
+
+
+def test_an_ordinary_run_records_the_classes_not_the_uncached_remainder(
+        dsns, settings, console, monkeypatch):
+    """The regression. `usage` is POPULATED here, as it is on every run that
+    did not exhaust its budget -- and it must still lose to `modelUsage`.
+
+    Until 17 Sep 2026 the top-level block won whenever it was non-empty, so
+    this row would have stored prompt_tokens=2: the uncached remainder, with
+    the 18,774 cache reads and 4,380 cache writes discarded.
+    """
+    import psycopg
+    from tests import conftest as ct
+
+    queue_task(console, max_cost_gbp=3.00)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        (worktree / "api/analytics/services/analytics_engine.py").write_text(
+            "def app():\n    '''new'''\n    return 1\n")
+        return agent_mod.AgentResult(
+            exit_code=0, timed_out=False, duration_ms=900,
+            text="done", cost_usd=0.10, raw=REAL_SHAPED_RAW)
+
+    run_tick(monkeypatch, invoke)
+
+    with psycopg.connect(ct.FLEET_TEST_DSN) as conn:
+        row = conn.execute(
+            "SELECT input_tokens, cache_read_tokens, cache_creation_tokens,"
+            "       prompt_tokens, completion_tokens, token_source"
+            "  FROM model_calls ORDER BY id DESC LIMIT 1").fetchone()
+
+    assert row is not None, "the tick recorded no model call"
+    inp, cread, cwrite, prompt, completion, source = row
+    assert source == "modelUsage", "the weak path won"
+    assert (inp, cread, cwrite) == (2 + 537, 18774, 4380)
     assert completion == 964 + 19
-    assert cycle._model_usage_totals({}) == (0, 0)
+    assert prompt == inp + cread + cwrite, "048's CHECK is the same sum"
+    assert prompt != 2, "this is the defect: the uncached remainder alone"
+
+
+# ---------------------------------------------------------------------------
+# The provider refusing to run is not the task failing.
+#
+# Usage credits are off on the account these runs authenticate as and the
+# balance is zero, so there is no spend path past the plan's weekly window:
+# the request is refused and the run stops where it stands. A task must not
+# spend an attempt on that -- task 120 ran at 1/1, and one refusal would have
+# exhausted it over work nobody judged.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("payload,text,expect", [
+    ({"api_error_status": 429}, "", "HTTP 429"),
+    ({"subtype": "usage_limit_reached"}, "", "usage_limit_reached"),
+    ({"terminal_reason": "rate_limit_error"}, "", "rate_limit_error"),
+    ({}, "You've hit your weekly limit. Resets Sunday.", "weekly limit"),
+    ({}, "you've hit your session limit", "session limit"),
+])
+def test_a_usage_window_refusal_is_recognised(payload, text, expect):
+    reason = agent_mod.classify_could_not_run(payload, text)
+    assert reason is not None, "the refusal was not recognised"
+    assert expect in reason, reason
+
+
+@pytest.mark.parametrize("payload,text", [
+    ({}, ""),
+    ({"api_error_status": 500}, "internal server error"),
+    ({"api_error_status": 400}, "bad request"),
+    ({"subtype": "error_max_budget_usd"}, "budget exhausted"),
+    ({"is_error": True}, "the tests failed and I could not fix them"),
+    ({"stop_reason": "end_turn"}, "I hit a wall on the weekly report feature"),
+])
+def test_an_ordinary_failure_is_not_mistaken_for_one(payload, text):
+    """A false positive requeues a genuinely failing task forever, so this
+    direction matters more than recall."""
+    assert agent_mod.classify_could_not_run(payload, text) is None
+
+
+def test_the_spend_cap_outranks_it():
+    """fleet's own ceiling is a verdict about the task's size. The provider
+    declining to run is not. If both look true, the cap wins."""
+    result = agent_mod.AgentResult(
+        exit_code=1, timed_out=False, duration_ms=1,
+        budget_exhausted=True, could_not_run=None)
+    assert not result.ok
+
+
+def test_a_refused_run_requeues_and_refunds_the_attempt(
+        dsns, settings, console, monkeypatch):
+    tid = queue_task(console, max_attempts=1)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        return agent_mod.AgentResult(
+            exit_code=1, timed_out=False, duration_ms=400, cost_usd=0.02,
+            text="You've hit your weekly limit.",
+            could_not_run="the provider said 'hit your weekly limit'",
+            raw={"model": "fake"})
+
+    result = run_tick(monkeypatch, invoke)
+
+    row = console.execute(
+        "SELECT status, attempts FROM tasks WHERE id=%s", (tid,)).fetchone()
+    # QUEUED, not FAILED: max_attempts is 1 and the attempt was handed back,
+    # so the task is claimable again rather than exhausted.
+    assert row["status"] == "QUEUED", row
+    assert row["attempts"] == 0, "the attempt was not refunded"
+    assert result.requeued is True
+    assert "could not run" in (result.reason or ""), result.reason
+    assert "weekly limit" in (result.reason or ""), result.reason
 
 
 # ---------------------------------------------------------------------------

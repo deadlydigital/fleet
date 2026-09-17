@@ -55,6 +55,10 @@ class AgentResult:
     timed_out: bool
     duration_ms: int
     budget_exhausted: bool = False
+    #: Why the run produced no evidence about the task, or None if it did.
+    #: A STRING rather than a bool so the reason reaches the row: "could not
+    #: run" is only useful to a reader who is told what stopped it.
+    could_not_run: str | None = None
     text: str = ""
     cost_usd: float | None = None
     num_turns: int | None = None
@@ -66,7 +70,8 @@ class AgentResult:
     @property
     def ok(self) -> bool:
         return (self.exit_code == 0 and not self.timed_out
-                and not self.budget_exhausted)
+                and not self.budget_exhausted
+                and self.could_not_run is None)
 
 
 
@@ -466,8 +471,62 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
             or payload.get("terminal_reason") == "budget_exhausted")
     if not result.text:
         result.text = (out or "")[-8000:]
+    # CLASSIFIED AFTER `text` IS FINAL, so the fallback is covered: a run the
+    # provider refused outright may never produce parseable JSON at all, and
+    # that is exactly the run whose reason is only in the raw output.
+    #
+    # Read AFTER budget_exhausted and never over it: the spend cap is fleet's
+    # own ceiling and is a real verdict about the task's size, while a
+    # usage-window refusal is the provider declining to run. Only the second
+    # is a could-not-run.
+    if not result.budget_exhausted:
+        result.could_not_run = classify_could_not_run(result.raw, result.text)
     result.reported_paths = parse_report(result.text)
     return result
+
+
+#: What the provider says when the plan's usage window is spent. The account
+#: these runs authenticate as has usage credits OFF and a zero balance, so
+#: there is no spend path past the window: the request is refused and the run
+#: stops where it stands. See 048 for why nothing here is billed.
+_USAGE_LIMIT_TEXT = (
+    "hit your session limit",
+    "hit your weekly limit",
+    "hit your usage limit",
+    "usage limit reached",
+)
+
+
+def classify_could_not_run(payload: dict, text: str) -> str | None:
+    """Why this run produced no evidence about the task, or None.
+
+    THE DISTINCTION IS runner/verify.py's, ONE LAYER UP. That module separates
+    a check that FAILED from a check that COULD NOT RUN -- "a check that cannot
+    write is not a check that failed" -- and records the second as undecided
+    rather than as a verdict. An agent stopped because the plan's usage window
+    was spent is the same class: the tree was never judged, so the run is not
+    evidence about it, and a task must not spend an attempt on it.
+
+    DELIBERATELY NARROW. A false positive here is worse than a false negative:
+    it requeues a task that genuinely failed, forever. Only signals that can
+    ONLY mean the provider refused the request count, and the reason names
+    which one matched so a reader can check the call rather than trust it.
+    """
+    status = payload.get("api_error_status")
+    if status == 429:
+        return "the provider rate-limited the request (HTTP 429)"
+
+    for field in ("subtype", "terminal_reason", "stop_reason"):
+        value = payload.get(field)
+        if isinstance(value, str) and value in (
+                "usage_limit_reached", "rate_limit_error", "error_usage_limit"):
+            return f"the provider reported {field}={value!r}"
+
+    low = (text or "").lower()
+    for phrase in _USAGE_LIMIT_TEXT:
+        if phrase in low:
+            return f"the provider said {phrase!r}"
+    return None
 
 
 def _own_group(pgid: int) -> bool:

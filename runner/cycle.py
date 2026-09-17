@@ -371,6 +371,25 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                           self_checks=self_checks)
             return
 
+        if outcome.could_not_run:
+            # NOT A VERDICT ABOUT THE TASK, and the queue must not read it as
+            # one. runner/verify.py already makes this distinction for checks
+            # -- exit 2 is could-not-run and is recorded as undecided rather
+            # than as a failure -- and an agent the provider refused to run is
+            # the same class: nothing was attempted, so nothing was learned.
+            #
+            # The RUN still settles as FAILED, because the run did fail and
+            # that is the true thing to say about it. What changes is the
+            # TASK: the attempt is handed back below, since `claim` spends it
+            # up front and this one bought no evidence.
+            result.outcome = "COULD_NOT_RUN"
+            result.reason = (f"could not run: {outcome.could_not_run}. "
+                             f"No attempt was spent and the task was requeued")
+            _record_patch(task, run_id, base_sha, None, outcome, log,
+                          branch_point_sha=branch_point_sha,
+                          self_checks=self_checks)
+            return
+
         if outcome.budget_exhausted:
             # Its own outcome, not a generic non-zero exit. A task stopped for
             # spending its budget and a task stopped by a crash need different
@@ -631,25 +650,37 @@ def _reserve(task, run_id, log) -> tuple[str | None, float]:
     return token, reserved
 
 
-def _model_usage_totals(raw: dict) -> tuple[int, int]:
-    """Sum input and output tokens across every model a run billed.
+def _model_usage_classes(raw: dict) -> dict[str, int] | None:
+    """The token classes, summed across every model a run billed.
 
     Every model, not just the one named in the contract: a single turn also
     bills the small models the CLI uses for its own housekeeping, and a total
     that silently omits them is not the total.
+
+    THE CLASSES ARE KEPT APART because they are priced apart -- a cache read is
+    a tenth of an uncached input token and a cache write is more than one -- so
+    a single "prompt" figure cannot be repriced afterwards. `prompt_tokens` is
+    their sum and is what every reader of that column has always believed it
+    held.
+
+    Returns None when the CLI reported no `modelUsage` at all, which is the
+    only case in which the caller has anything weaker to fall back to.
     """
     models = raw.get("modelUsage")
     if not isinstance(models, dict):
-        return 0, 0
-    prompt = completion = 0
+        return None
+    c = {"input_tokens": 0, "cache_read_tokens": 0,
+         "cache_creation_tokens": 0, "completion_tokens": 0}
     for entry in models.values():
         if not isinstance(entry, dict):
             continue
-        prompt += int(entry.get("inputTokens") or 0)
-        prompt += int(entry.get("cacheReadInputTokens") or 0)
-        prompt += int(entry.get("cacheCreationInputTokens") or 0)
-        completion += int(entry.get("outputTokens") or 0)
-    return prompt, completion
+        c["input_tokens"] += int(entry.get("inputTokens") or 0)
+        c["cache_read_tokens"] += int(entry.get("cacheReadInputTokens") or 0)
+        c["cache_creation_tokens"] += int(entry.get("cacheCreationInputTokens") or 0)
+        c["completion_tokens"] += int(entry.get("outputTokens") or 0)
+    c["prompt_tokens"] = (c["input_tokens"] + c["cache_read_tokens"]
+                          + c["cache_creation_tokens"])
+    return c
 
 
 def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
@@ -692,20 +723,39 @@ def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
         "total_duration_ms": outcome.duration_ms,
         "ok": outcome.ok,
     }
-    # On a budget-exhausted result the CLI zeroes the top-level `usage` block
-    # (and empties `iterations`) while `modelUsage` still carries the real
-    # figures. Reading only `usage` would record 0 tokens for precisely the
-    # runs most worth looking at, so fall back to the per-model totals.
-    usage = outcome.raw.get("usage") or {}
-    if isinstance(usage, dict):
-        call["prompt_tokens"] = usage.get("input_tokens")
-        call["completion_tokens"] = usage.get("output_tokens")
-    if not call.get("prompt_tokens") and not call.get("completion_tokens"):
-        prompt_tokens, completion_tokens = _model_usage_totals(outcome.raw)
-        if prompt_tokens or completion_tokens:
-            call["prompt_tokens"] = prompt_tokens
-            call["completion_tokens"] = completion_tokens
-            call["token_source"] = "modelUsage"
+    # THE PER-MODEL MAP FIRST; THE TOP-LEVEL BLOCK ONLY IF IT IS ABSENT.
+    #
+    # It was the other way round until 17 Sep 2026, and the top-level block is
+    # the UNCACHED REMAINDER of the input -- `usage.input_tokens` omits cache
+    # reads and cache writes entirely. Across September's 88 runs that recorded
+    # 5,626 prompt tokens against an actual 305,972,760, and it did so quietly,
+    # because a small integer in an int column looks like a measurement.
+    #
+    # The summation below was already correct and already here. It was guarded
+    # by "if not prompt_tokens and not completion_tokens", so it ran only when
+    # the top-level block came back empty -- which happens only on a
+    # budget-exhausted run. The good accounting was reachable exactly when the
+    # run had already failed. See 048.
+    #
+    # It also keeps the property the old ordering was written for: on a
+    # budget-exhausted result the CLI zeroes the top-level block (and empties
+    # `iterations`) while `modelUsage` still carries the real figures, so the
+    # runs most worth looking at would otherwise record nothing at all. That
+    # case is now served by the same branch as every other.
+    classes = _model_usage_classes(outcome.raw)
+    if classes is not None:
+        call.update(classes)
+        call["token_source"] = "modelUsage"
+    else:
+        # No modelUsage at all. Record the weak figure AND say that is what it
+        # is: `input_tokens` stays NULL, which is the signal that the classes
+        # were never known for this row rather than that they were zero, and
+        # 048's CHECK declines to judge a row that says so.
+        usage = outcome.raw.get("usage") or {}
+        if isinstance(usage, dict):
+            call["prompt_tokens"] = usage.get("input_tokens")
+            call["completion_tokens"] = usage.get("output_tokens")
+            call["token_source"] = "usage"
 
     with _connect(config.model_gateway_dsn()) as gw:
         gw.execute("SELECT settle_model_budget(%s::uuid, %s::numeric, %s::jsonb)",
@@ -943,6 +993,27 @@ def _settle_task(runner, task, settings, result, log) -> None:
             "UPDATE tasks SET status='READY_FOR_REVIEW', branch_name=%s,"
             " completed_at=now() WHERE id=%s", (branch, task["id"]))
         log(f"  -> READY_FOR_REVIEW  {branch}")
+        return
+
+    if result.outcome == "COULD_NOT_RUN":
+        # REQUEUED REGARDLESS OF max_attempts, AND THE ATTEMPT GOES BACK.
+        #
+        # `claim` does `attempts = attempts + 1` before the agent starts, so by
+        # here the attempt is already spent. Leaving it spent would let a
+        # provider-side refusal exhaust a task -- task 120 ran at 1/1 -- and
+        # the row would then read FAILED over work nobody judged, which is the
+        # §9.6 defect arriving by a new route.
+        #
+        # The decrement is floored at zero so this can never manufacture an
+        # attempt that was not taken.
+        runner.execute(
+            "UPDATE tasks SET status='QUEUED', branch_name=%s, claimed_at=NULL,"
+            " attempts = GREATEST(attempts - 1, 0) WHERE id=%s",
+            (branch, task["id"]))
+        result.requeued = True
+        log(f"  -> QUEUED again, attempt refunded "
+            f"({task['attempts'] - 1}/{task['max_attempts']} used)  "
+            f"{result.reason}")
         return
 
     if task["attempts"] < task["max_attempts"]:
