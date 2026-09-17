@@ -111,12 +111,20 @@ class TestWhatTheReaderSees:
         md = _render(self._claims(monkeypatch, self._rows(signal=None)))
         assert "none stated in the source document" in md
 
-    def test_the_reserved_spend_and_the_unattended_line_are_both_shown(
+    def test_the_pool_clauses_are_gone_and_the_reserve_says_it_is_notional(
             self, monkeypatch):
+        """The approvals claim went to v2 when 050 removed the money gates.
+
+        v1 ended "GBP X remains of the pool, of which GBP Y is reachable
+        before the unattended path stops". The second clause named a mechanism
+        that no longer exists and the first reported a balance that
+        auto-reloads. What is left is the reserve, labelled as the notional
+        list price it always was.
+        """
         md = _render(self._claims(monkeypatch, self._rows()))
-        assert "GBP 2.00 reserved" in md
-        assert "GBP 139.09 remains" in md
-        assert "GBP 75.89" in md and "before the unattended path stops" in md
+        assert "GBP 2.00 of notional list price reserved" in md
+        assert "remains of the pool" not in md
+        assert "before the unattended path stops" not in md
 
     def test_the_top_row_it_passed_over_is_named_with_the_rule(
             self, monkeypatch):

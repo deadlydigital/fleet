@@ -289,29 +289,26 @@ def _approval_claims(r: S.Reader, since) -> List[Claim]:
         probes_held += (m.get("probes") or {}).get("held", 0)
         reserved += float((m.get("credit") or {}).get("reserved", 0) or 0)
 
-    credit = r.probe("fleet:model_credit_pool",
-                     S.row("SELECT * FROM fleet_month_credit()"))
-    # Positional: `row` returns a tuple. remaining_gbp is 6 and the unattended
-    # figure is 8, appended by 026 at the END precisely so these indexes did not
-    # move. The FIGURE is read; the fraction behind it is not named in the
-    # sentence, because 039 moved it and a brief that hardcodes a percentage
-    # starts lying on the morning somebody changes it.
-    remaining = credit[6] if credit and credit[1] == "COMPUTED" else None
-    autonomous = credit[8] if credit and credit[1] == "COMPUTED" else None
-
+    # THE POOL CLAUSES ARE GONE, AND THE VERSION IS BUMPED RATHER THAN THE
+    # SENTENCE EDITED (v1 -> v2).
+    #
+    # v1 ended "GBP X remains of the pool, of which GBP Y is reachable before
+    # the unattended path stops". The second clause asserted a mechanism 050
+    # removed -- the unattended path no longer stops on the pool -- and the
+    # first reported a balance that auto-reloads. A recorded claim is a record
+    # of what was said on a morning, so what v1 rows say is left alone; this
+    # is a new version that says something true.
+    #
+    # What bounds the unattended path now is the pace and the queue depth, and
+    # what bounds a RUN is the window -- reported by overnight.window below.
     versions = ", ".join(f"rank_v{v}" for v in sorted(rank_versions) if v)
     statement = (f"{approved_total} candidate(s) auto-approved in "
                  f"{len(rows)} decision(s) ({versions or 'unknown ranking'})"
-                 f" — GBP {reserved:.2f} reserved")
-    if remaining is not None:
-        statement += f", GBP {remaining:.2f} remains of the pool"
-        if autonomous is not None:
-            statement += (f", of which GBP {autonomous:.2f} is reachable "
-                          f"before the unattended path stops")
+                 f" — GBP {reserved:.2f} of notional list price reserved")
     out.append(Claim.overnight(
         key, statement, source="fleet:decision_log", as_of=now,
         value_num=approved_total, query_key="overnight_approvals",
-        query_version=1))
+        query_version=2))
 
     for x in rows:
         m = x["mechanics"] or {}
@@ -518,7 +515,6 @@ def _overnight_claims(r: S.Reader, since) -> List[Claim]:
     unattended = [x for x in merged if x["decided_via"] == "unattended"]
     failed = [x for x in rows if x["task_status"] == "FAILED"]
     waiting = [x for x in rows if x["task_status"] == "READY_FOR_REVIEW"]
-    spent = sum((x["committed_gbp"] or 0) for x in rows)
 
     merged_part = f"{len(merged)} merged"
     if unattended:
@@ -589,24 +585,39 @@ def _overnight_claims(r: S.Reader, since) -> List[Claim]:
             source="fleet:runs", as_of=x["completed_at"] or now,
             value_text=verdict, query_key="overnight_task", query_version=1))
 
-    # SPEND AS A RATE. "GBP 141 left" is useless without "how many nights".
-    # A number that only becomes alarming on the last day is not a control.
-    credit = r.probe("fleet:model_credit_pool",
-                     S.row("SELECT * FROM fleet_month_credit()"))
-    if credit is None or credit[1] != "COMPUTED":
+    # CONSUMPTION AS A RATE, AGAINST SOMETHING THAT ACTUALLY DEPLETES.
+    #
+    # v1 was "GBP X spent since the last brief; GBP Y remains — N more
+    # night(s) at this rate", and every part of it stopped being true. The
+    # pool auto-reloads, so "remains" described a float; nothing is billed, so
+    # "spent" was notional; and dividing one by the other produced a depletion
+    # rate for something that does not deplete. "N more nights" is exactly the
+    # kind of figure a brief gets believed for.
+    #
+    # The window does deplete and it does reset -- on Sunday -- so the same
+    # sentence is worth saying about it. Recorded under a NEW key as well as a
+    # new version: this is a different measurement, not a correction of the
+    # old one, and a reader comparing overnight.spend across the change should
+    # see it stop rather than silently change meaning.
+    window = r.probe("fleet:model_window_target",
+                     S.row("SELECT * FROM fleet_window_position()"))
+    # Positional: window_start 0, status 1, target 2, committed 5, remaining 6.
+    if window is None or window[1] != "COMPUTED":
         out.append(Claim.uncomputed(
-            "overnight.spend", "spend since the last brief, against the pool",
-            reason=("the monthly credit position is unknown, so what was spent "
-                    "cannot be set against what remains")))
+            "overnight.window",
+            "output tokens used this window, against the target",
+            reason=("no output-token target is in effect, so what the fleet "
+                    "consumed cannot be set against what it may")))
     else:
-        remaining = credit[6]
-        nights = int(remaining / spent) if spent else None
-        statement = f"GBP {spent:.2f} spent since the last brief; GBP {remaining:.2f} remains"
-        if nights is not None:
-            statement += f" — {nights} more night(s) at this rate"
+        start, target, committed, remaining = (
+            window[0], int(window[2]), int(window[5]), int(window[6]))
+        statement = (
+            f"{committed:,} output tokens committed of the {target:,} target "
+            f"for the window that began {start:%a %d %b}; {remaining:,} remain "
+            f"and it resets Sunday")
         out.append(Claim.overnight(
-            "overnight.spend", statement, source="fleet:model_credit_pool",
-            as_of=now, value_num=spent, query_key="overnight_spend",
+            "overnight.window", statement, source="fleet:model_window_target",
+            as_of=now, value_num=committed, query_key="overnight_window",
             query_version=1))
 
     return out

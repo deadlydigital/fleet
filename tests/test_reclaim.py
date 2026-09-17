@@ -150,19 +150,87 @@ def test_it_requeues_below_max_attempts(dsns, console, runner, admin):
                           (tid,)).fetchone()
     assert row["status"] == "QUEUED"
     assert row["claimed_at"] is None
-    assert row["attempts"] == 1, "reclaim charged the attempt a second time"
+    assert row["attempts"] == 0, (
+        "the attempt was not handed back; a tick that died judged nothing")
 
 
-def test_it_fails_the_task_at_the_limit(dsns, console, runner, admin):
+def test_a_dead_tick_at_the_limit_is_requeued_not_failed(dsns, console, runner,
+                                                         admin):
+    """TASK 123'S SHAPE, 17 Sep 2026: claimed 12:46, tick died, reclaimed into
+    FAILED at 1/1 with nothing about the work having been judged.
+
+    `claim_task()` spends the attempt up front, so the try was charged and
+    never happened. That is 9.6's defect -- a row reading FAILED over work
+    nobody looked at -- arriving through the reclaim path.
+    """
     tid = queue(console, max_attempts=1)
     runner.execute("SELECT claim_task(NULL)")
     runner.commit()
     make_stale(admin, tid)
-    out = runner.execute("SELECT reclaim_stale_task(%s) AS o", (tid,)).fetchone()["o"]
+
+    out = runner.execute("SELECT reclaim_stale_task(%s) AS o",
+                         (tid,)).fetchone()["o"]
     runner.commit()
+
+    assert out == "requeued"
+    row = console.execute("SELECT status, attempts FROM tasks WHERE id=%s",
+                          (tid,)).fetchone()
+    assert row["status"] == "QUEUED"
+    assert row["attempts"] == 0
+
+
+def test_the_refund_is_bounded_and_the_deaths_eventually_count(
+        dsns, console, runner, admin):
+    """A window refusal is transient by construction -- the window resets. A
+    dead tick is not: a task that reliably kills the tick around it would be
+    refunded and retried forever, and an unbounded retry is how a small
+    failure becomes a total one.
+
+    027's argument in another currency: no single death is evidence, and
+    dying repeatedly is.
+    """
+    ceiling = console.execute(
+        "SELECT fleet_reclaim_refund_ceiling() AS n").fetchone()["n"]
+    tid = queue(console, max_attempts=1)
+
+    for _ in range(ceiling):
+        runner.execute("SELECT claim_task(NULL)")
+        runner.commit()
+        make_stale(admin, tid)
+        assert runner.execute("SELECT reclaim_stale_task(%s) AS o",
+                              (tid,)).fetchone()["o"] == "requeued"
+        runner.commit()
+
+    # One death past the ceiling, and it counts.
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    make_stale(admin, tid)
+    out = runner.execute("SELECT reclaim_stale_task(%s) AS o",
+                         (tid,)).fetchone()["o"]
+    runner.commit()
+
     assert out == "failed"
     assert console.execute("SELECT status FROM tasks WHERE id=%s",
                            (tid,)).fetchone()["status"] == "FAILED"
+
+
+def test_the_row_says_the_dead_ticks_count_and_whether_it_refunded(
+        dsns, console, runner, admin):
+    """`attempts` keeps meaning the dead tick's count across 051, so rows
+    compare across the migration; `attempt_refunded` says what was done."""
+    tid = queue(console, max_attempts=1)
+    runner.execute("SELECT claim_task(NULL)")
+    runner.commit()
+    make_stale(admin, tid)
+    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
+    runner.commit()
+
+    row = console.execute(
+        "SELECT attempts, attempt_refunded, outcome FROM task_reclaims"
+        " WHERE task_id=%s ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+    assert row["attempts"] == 1, "the row should hold the dead tick's count"
+    assert row["attempt_refunded"] is True
+    assert row["outcome"] == "requeued"
 
 
 def test_it_closes_the_run_holding_the_one_per_task_slot(dsns, console, runner,
@@ -196,8 +264,13 @@ def test_it_closes_the_run_holding_the_one_per_task_slot(dsns, console, runner,
 
 def test_attempts_are_not_double_counted_across_reclaims(dsns, console, runner,
                                                          admin):
-    """claim_task() counts the try. Two claims and two reclaims spend two
-    attempts, not four."""
+    """claim_task() counts the try and 051 hands it back when the tick died.
+
+    Two claims and two reclaims spend two attempts and refund both, so the
+    count returns to zero rather than to four or to two. The property this
+    test was written for -- that a reclaim never charges a second time --
+    still holds and is what makes the arithmetic legible.
+    """
     tid = queue(console, max_attempts=3)
     for _ in range(2):
         runner.execute("SELECT claim_task(NULL)")
@@ -206,7 +279,7 @@ def test_attempts_are_not_double_counted_across_reclaims(dsns, console, runner,
         runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
         runner.commit()
     assert console.execute("SELECT attempts FROM tasks WHERE id=%s",
-                           (tid,)).fetchone()["attempts"] == 2
+                           (tid,)).fetchone()["attempts"] == 0
 
 
 # ---- worktrees ------------------------------------------------------------
@@ -317,7 +390,8 @@ def test_a_killed_tick_is_recovered(dsns, settings, console, runner, admin,
     row = admin.execute("SELECT status, attempts FROM tasks WHERE id=%s",
                         (tid,)).fetchone()
     assert row["status"] == "QUEUED"
-    assert row["attempts"] == 1
+    # 051 hands the attempt back: the tick died, so the try did not happen.
+    assert row["attempts"] == 0
     assert admin.execute(
         "SELECT count(*) AS n FROM runs WHERE task_id=%s AND status='ACTIVE'",
         (tid,)).fetchone()["n"] == 0
@@ -398,16 +472,25 @@ def test_a_refused_reclaim_writes_nothing(dsns, console, runner, admin):
                          (tid,)).fetchone()["n"] == 0
 
 
-def test_failing_at_the_limit_is_recorded_too(dsns, console, runner, admin):
+def test_failing_past_the_refund_ceiling_is_recorded_too(dsns, console, runner,
+                                                         admin):
+    """Still a recorded 'failed', but it takes more than one death to get
+    there since 051: the first two hand the attempt back."""
+    ceiling = console.execute(
+        "SELECT fleet_reclaim_refund_ceiling() AS n").fetchone()["n"]
     tid = queue(console, max_attempts=1)
-    runner.execute("SELECT claim_task(NULL)")
-    runner.commit()
-    make_stale(admin, tid)
-    runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
-    runner.commit()
-    r = admin.execute("SELECT outcome FROM task_reclaims WHERE task_id=%s",
-                      (tid,)).fetchone()
+    for _ in range(ceiling + 1):
+        runner.execute("SELECT claim_task(NULL)")
+        runner.commit()
+        make_stale(admin, tid)
+        runner.execute("SELECT reclaim_stale_task(%s)", (tid,))
+        runner.commit()
+    r = admin.execute(
+        "SELECT outcome, attempt_refunded FROM task_reclaims"
+        " WHERE task_id=%s ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
     assert r["outcome"] == "failed"
+    assert r["attempt_refunded"] is False, (
+        "the ceiling was reached, so this death should count")
 
 
 def test_the_runner_cannot_rewrite_a_reclaim(dsns, runner, console, admin):
