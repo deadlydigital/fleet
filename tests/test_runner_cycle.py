@@ -1018,6 +1018,120 @@ def test_a_contract_refusal_still_surfaces_rather_than_idling(
 
 
 # ---------------------------------------------------------------------------
+# 052: the third instance. A run that judged nothing is not the task failing,
+# and the discriminator is the DECLARED refusal rather than the empty diff.
+# ---------------------------------------------------------------------------
+
+REFUSAL_REPLY = (
+    "I am stopping rather than editing the protected suite.\n\n"
+    '```json\n{"refused": "the signature assertion still forbids a columns '
+    'parameter and api/tests/** is protected"}\n```\n')
+
+
+def test_a_declared_refusal_is_read_out_of_the_reply_block():
+    """The same fenced block `changed_files` uses -- not a second protocol."""
+    assert agent_mod.parse_refusal(REFUSAL_REPLY).startswith(
+        "the signature assertion")
+    assert agent_mod.parse_refusal("I gave up, sorry") is None
+    assert agent_mod.parse_refusal('```json\n{"changed_files": []}\n```') is None
+
+
+def test_an_empty_diff_without_a_declared_refusal_is_still_a_failure(
+        dsns, settings, console, monkeypatch):
+    """THE NARROWNESS. An agent that tried and produced nothing HAS judged the
+    work. Only a declared refusal is forgiven, never the empty diff itself."""
+    tid = queue_task(console, max_attempts=1)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        return agent_mod.AgentResult(
+            exit_code=0, timed_out=False, duration_ms=900, cost_usd=0.02,
+            text="I could not work out how to do this.", raw={"model": "fake"})
+
+    result = run_tick(monkeypatch, invoke)
+
+    assert result.outcome == "FAILED"
+    assert "changed nothing" in (result.reason or "")
+    row = console.execute("SELECT status, attempts FROM tasks WHERE id=%s",
+                          (tid,)).fetchone()
+    assert row["status"] == "FAILED" and row["attempts"] == 1
+
+
+def test_a_refusal_on_instruction_requeues_and_refunds(
+        dsns, settings, console, monkeypatch):
+    """TASK 125'S SHAPE. Its spec told the agent to stop and explain rather
+    than edit the suite that judges it; doing so produced an empty diff and
+    scored identically to giving up."""
+    tid = queue_task(console, max_attempts=1)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        return agent_mod.AgentResult(
+            exit_code=0, timed_out=False, duration_ms=64_000, cost_usd=0.02,
+            text=REFUSAL_REPLY, refused="the signature assertion still forbids it",
+            raw={"model": "fake"})
+
+    result = run_tick(monkeypatch, invoke)
+
+    assert result.outcome == "COULD_NOT_RUN", result.reason
+    assert "declined and said why" in (result.reason or "")
+    row = console.execute("SELECT status, attempts FROM tasks WHERE id=%s",
+                          (tid,)).fetchone()
+    assert row["status"] == "QUEUED", "a refusal on instruction exhausted the task"
+    assert row["attempts"] == 0
+    # and the run says so in a column, not in the wording of a sentence
+    assert console.execute(
+        "SELECT unjudged_reason FROM runs WHERE task_id=%s ORDER BY id DESC"
+        " LIMIT 1", (tid,)).fetchone()["unjudged_reason"]
+
+
+def test_the_refund_stops_at_the_ceiling(dsns, settings, console, monkeypatch):
+    """An agent refusing on a precondition nobody satisfies would otherwise be
+    requeued forever, and each refusal costs a run and a worktree."""
+    ceiling = console.execute(
+        "SELECT fleet_unjudged_refund_ceiling() AS n").fetchone()["n"]
+    tid = queue_task(console, max_attempts=1)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_cost_usd=None):
+        return agent_mod.AgentResult(
+            exit_code=0, timed_out=False, duration_ms=900, cost_usd=0.02,
+            text=REFUSAL_REPLY, refused="the precondition is still unmet",
+            raw={"model": "fake"})
+
+    for _ in range(ceiling):
+        assert run_tick(monkeypatch, invoke).outcome == "COULD_NOT_RUN"
+        assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                               (tid,)).fetchone()["status"] == "QUEUED"
+
+    run_tick(monkeypatch, invoke)          # one past the ceiling
+
+    assert console.execute("SELECT status FROM tasks WHERE id=%s",
+                           (tid,)).fetchone()["status"] == "FAILED", (
+        "the refund never stopped; a task that always refuses would loop")
+
+
+def test_the_two_live_detectors_share_one_answer():
+    """052's consolidation: the provider refusing and the agent refusing are
+    the same question, asked in one place."""
+    provider = agent_mod.AgentResult(
+        exit_code=1, timed_out=False, duration_ms=1,
+        could_not_run="the provider rate-limited the request (HTTP 429)")
+    assert cycle._judged_the_work(provider, None)
+
+    class _Empty:
+        empty = True
+
+    declined = agent_mod.AgentResult(
+        exit_code=0, timed_out=False, duration_ms=1, refused="a precondition")
+    assert cycle._judged_the_work(declined, _Empty())
+
+    # An empty diff on its own is not an answer to the question.
+    silent = agent_mod.AgentResult(exit_code=0, timed_out=False, duration_ms=1)
+    assert cycle._judged_the_work(silent, _Empty()) is None
+
+
+# ---------------------------------------------------------------------------
 # §9.6: the FAILED path used to discard everything the run knew.
 #
 # specs/auto-approval.md §9.6, named 10 Sep 2026 and unscheduled every time.

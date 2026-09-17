@@ -409,7 +409,7 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                           self_checks=self_checks)
             return
 
-        if outcome.could_not_run:
+        if _judged_the_work(outcome, None):
             # NOT A VERDICT ABOUT THE TASK, and the queue must not read it as
             # one. runner/verify.py already makes this distinction for checks
             # -- exit 2 is could-not-run and is recorded as undecided rather
@@ -421,7 +421,7 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             # TASK: the attempt is handed back below, since `claim` spends it
             # up front and this one bought no evidence.
             result.outcome = "COULD_NOT_RUN"
-            result.reason = (f"could not run: {outcome.could_not_run}. "
+            result.reason = (f"could not run: {_judged_the_work(outcome, None)}. "
                              f"No attempt was spent and the task was requeued")
             _record_patch(task, run_id, base_sha, None, outcome, log,
                           branch_point_sha=branch_point_sha,
@@ -452,6 +452,17 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                       self_checks=self_checks)
 
         if change.empty:
+            unjudged = _judged_the_work(outcome, change)
+            if unjudged:
+                # THE THIRD INSTANCE, AND THE ONE THAT SCORED CORRECT
+                # BEHAVIOUR AS FAILURE. A spec that sets a precondition the
+                # agent may not satisfy tells it to stop and explain rather
+                # than edit the suite that judges it. Doing that produced an
+                # empty diff, and an empty diff read as "changed nothing".
+                result.outcome = "COULD_NOT_RUN"
+                result.reason = (f"could not run: {unjudged}. No attempt was "
+                                 f"spent and the task was requeued")
+                return
             result.outcome = "FAILED"
             result.reason = "the agent changed nothing"
             return
@@ -719,6 +730,58 @@ def _model_usage_classes(raw: dict) -> dict[str, int] | None:
     c["prompt_tokens"] = (c["input_tokens"] + c["cache_read_tokens"]
                           + c["cache_creation_tokens"])
     return c
+
+
+def _requeue_unjudged(runner, task, branch, result, log) -> None:
+    """Hand the attempt back and put the task back in the queue.
+
+    `claim` does `attempts = attempts + 1` before the agent starts, so by here
+    the attempt is already spent. Leaving it spent lets a run that judged
+    nothing exhaust a task -- task 120 at 1/1 on a provider refusal, task 125
+    at 1/1 on a refusal its own spec asked for -- and the row then reads FAILED
+    over work nobody looked at, which is the §9.6 defect arriving by a new
+    route each time.
+
+    The decrement is floored at zero so this can never manufacture an attempt
+    that was not taken.
+    """
+    runner.execute(
+        "UPDATE tasks SET status='QUEUED', branch_name=%s, claimed_at=NULL,"
+        " attempts = GREATEST(attempts - 1, 0) WHERE id=%s",
+        (branch, task["id"]))
+    result.requeued = True
+    log(f"  -> QUEUED again, attempt refunded "
+        f"({max(task['attempts'] - 1, 0)}/{task['max_attempts']} used)  "
+        f"{result.reason}")
+
+
+def _judged_the_work(outcome, change) -> str | None:
+    """Why this run is not evidence about the task, or None if it is.
+
+    THE ONE PLACE A LIVE RUNNER ASKS IT. Two things reach this function that
+    look unrelated and are the same question:
+
+      the PROVIDER refused before the agent started -- the plan's usage window
+      was spent, so nothing about the task was attempted;
+
+      the AGENT refused on the spec's own instruction -- a precondition it has
+      no permission to satisfy, which specs tell it to report rather than work
+      around. Task 125, 17 Sep 2026: 64 seconds, no diff, a reply saying why,
+      recorded as "the agent changed nothing" and FAILED at 1/1.
+
+    A run that died has no runner left to ask, so it is answered from outside
+    by reclaim_stale_task() instead. That is two sites and not one, and 052
+    says why it cannot be fewer.
+
+    NOT A JUDGEMENT ABOUT QUALITY. An agent that tried and produced nothing
+    useful HAS judged the work, and gets FAILED. The discriminator is the
+    declared refusal, never the size or shape of the diff.
+    """
+    if outcome.could_not_run:
+        return outcome.could_not_run
+    if change is not None and change.empty and outcome.refused:
+        return f"the agent declined and said why: {outcome.refused}"
+    return None
 
 
 def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
@@ -1034,25 +1097,30 @@ def _settle_task(runner, task, settings, result, log) -> None:
         return
 
     if result.outcome == "COULD_NOT_RUN":
-        # REQUEUED REGARDLESS OF max_attempts, AND THE ATTEMPT GOES BACK.
+        # RECORDED ON THE RUN FIRST, so the ceiling below counts a column
+        # rather than the front of a human sentence -- 052 states why.
+        if result.run_id is not None:
+            runner.execute("UPDATE runs SET unjudged_reason=%s WHERE id=%s",
+                           (result.reason, result.run_id))
+        prior = runner.execute(
+            "SELECT fleet_task_unjudged_runs(%s) AS n",
+            (task["id"],)).fetchone()["n"]
+        ceiling = runner.execute(
+            "SELECT fleet_unjudged_refund_ceiling() AS n").fetchone()["n"]
+
+        # BOUNDED FOR 051'S REASON, and the row above is already counted, so
+        # this forgives `ceiling` runs and not one more. An agent that refuses
+        # on a precondition nobody ever satisfies would otherwise be requeued
+        # forever, and each refusal costs a run, a worktree and wall clock.
         #
-        # `claim` does `attempts = attempts + 1` before the agent starts, so by
-        # here the attempt is already spent. Leaving it spent would let a
-        # provider-side refusal exhaust a task -- task 120 ran at 1/1 -- and
-        # the row would then read FAILED over work nobody judged, which is the
-        # §9.6 defect arriving by a new route.
-        #
-        # The decrement is floored at zero so this can never manufacture an
-        # attempt that was not taken.
-        runner.execute(
-            "UPDATE tasks SET status='QUEUED', branch_name=%s, claimed_at=NULL,"
-            " attempts = GREATEST(attempts - 1, 0) WHERE id=%s",
-            (branch, task["id"]))
-        result.requeued = True
-        log(f"  -> QUEUED again, attempt refunded "
-            f"({task['attempts'] - 1}/{task['max_attempts']} used)  "
-            f"{result.reason}")
-        return
+        # Past the ceiling the refund stops and the ordinary path below
+        # applies: the attempt stands and max_attempts decides. A task whose
+        # runs keep judging nothing is telling you something about the task.
+        if prior > ceiling:
+            log(f"  {prior} run(s) of this task have judged nothing, over the "
+                f"ceiling of {ceiling}; the attempt stands")
+        else:
+            return _requeue_unjudged(runner, task, branch, result, log)
 
     if task["attempts"] < task["max_attempts"]:
         # The branch is recorded here too. A requeued task keeps the ref its

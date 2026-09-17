@@ -60,6 +60,10 @@ class AgentResult:
     #: A STRING rather than a bool so the reason reaches the row: "could not
     #: run" is only useful to a reader who is told what stopped it.
     could_not_run: str | None = None
+    #: What the agent said when it declined to change anything, or None.
+    #: Carried in the SAME fenced json block `changed_files` uses -- a second
+    #: convention would be a second thing for a spec author to get wrong.
+    refused: str | None = None
     text: str = ""
     cost_usd: float | None = None
     num_turns: int | None = None
@@ -376,6 +380,30 @@ better than cutting a case that earns its place, and much better than padding
 one that does not."""
 
 
+def parse_refusal(text: str) -> str | None:
+    """Why the agent declined to change anything, if it said so.
+
+    THE SAME BLOCK AS `changed_files`, deliberately. The agent already ends a
+    run with a fenced json object; a refusal is another key in it rather than
+    a second protocol, so a spec that wants one has nothing new to teach.
+
+    DECLARED, NOT INFERRED. The alternative is guessing from the reply -- its
+    length, its turn count, whether it "sounds like" a refusal -- and a guess
+    here decides whether a task spends an attempt. An agent that refuses
+    without saying so in the block is recorded as having changed nothing,
+    which is what it did.
+    """
+    for match in reversed(list(REPORT_RE.finditer(text or ""))):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        reason = payload.get("refused")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()[:500]
+    return None
+
+
 def parse_report(text: str) -> list[str] | None:
     """The agent's account of what it changed, if it gave one."""
     for match in reversed(list(REPORT_RE.finditer(text or ""))):
@@ -494,6 +522,7 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
     if not result.budget_exhausted:
         result.could_not_run = classify_could_not_run(result.raw, result.text)
     result.reported_paths = parse_report(result.text)
+    result.refused = parse_refusal(result.text)
     return result
 
 
