@@ -221,27 +221,25 @@ class TestTheMonthlyCredit:
                 " read_at) VALUES (date_trunc('month', now())::date,%s,%s,now())",
                 (gbp, source))
 
-    def test_no_reading_refuses_the_batch_rather_than_assuming_a_number(
-        self, console, admin
-    ):
-        """The one that matters. An absent pool is a refusal, never a default.
+    def test_no_reading_no_longer_refuses_the_batch(self, console, admin):
+        """INVERTED BY 050, and kept as the regression against re-adding it.
 
-        This is where the design differs from the brief, which prints the AWS
-        figure as UNCOMPUTED and lets a reader supply the judgement. A ceiling
-        is consulted when nobody is reading, so it has nothing to fall back on.
+        014's rule -- an absent reading is a refusal, never a default -- is
+        still right, and 049 still applies it to the window at the claim. It
+        was wrong HERE once the pool stopped describing an account: there is
+        no limit left at this gate for the missing reading to be a reading of,
+        so refusing on it held work for a number nobody could have spent.
         """
         self._pool(admin, None)
         b = _batch(console)
         cid = _cand(console, b)
 
-        with pytest.raises(approve.ApprovalRefused, match="unknown"):
-            approve.approve_batch(reason="r", approve_ids=[cid], reject={},
-                                  not_now_ids=[], decided_by="test")
+        approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                              not_now_ids=[], decided_by="test")
 
-        # Whole, like every other refusal here: nothing half-written.
         c = console.execute("SELECT disposition FROM candidates WHERE id=%s",
                             (cid,)).fetchone()
-        assert c["disposition"] == "PENDING"
+        assert c["disposition"] == "APPROVED"
 
     def test_an_unknown_pool_reports_no_figures_at_all(self, console, admin):
         """UNCOMPUTED carries a reason and NULLs, not a reason and a zero.
@@ -260,22 +258,26 @@ class TestTheMonthlyCredit:
         # pool, not the spend, and blanking both would hide a real figure.
         assert k["committed_gbp"] is not None
 
-    def test_a_batch_beyond_the_remaining_credit_is_refused(self, console, admin):
-        committed = console.execute(
-            "SELECT fleet_month_committed_gbp() AS n").fetchone()["n"]
-        # Room for one draft-spec task at the contract's ceiling, and not
-        # for two, at any ceiling below £3.
-        self._pool(admin, committed + 3)
-        b = _batch(console)
-        ids = [_cand(console, b, "one"), _cand(console, b, "two")]
+    def test_a_batch_beyond_the_remaining_credit_is_no_longer_refused(
+        self, console, admin
+    ):
+        """The pool is a reading nothing gates on since 050.
 
-        with pytest.raises(approve.ApprovalRefused, match="remains"):
-            approve.approve_batch(reason="r", approve_ids=ids, reject={},
-                                  not_now_ids=[], decided_by="test")
+        A candidate has no size to check against a balance: the old test
+        arranged a pool smaller than `task_max_cost * len(approve_ids)`, which
+        reserved a flat contract default against a task whose spec did not
+        exist yet.
+        """
+        self._pool(admin, "0.01")
+        b = _batch(console)
+        cid = _cand(console, b)
+
+        approve.approve_batch(reason="r", approve_ids=[cid], reject={},
+                              not_now_ids=[], decided_by="test")
 
         assert console.execute(
-            "SELECT count(*) AS n FROM tasks WHERE title LIKE 'Draft spec:%'"
-        ).fetchone()["n"] == 0
+            "SELECT disposition FROM candidates WHERE id=%s",
+            (cid,)).fetchone()["disposition"] == "APPROVED"
 
     def test_a_batch_within_the_remaining_credit_is_queued(self, console, admin):
         committed = console.execute(
@@ -319,28 +321,33 @@ class TestTheMonthlyCredit:
         )["max_cost_gbp"])
         assert round(after - before, 2) == round(cap, 2)
 
-    def test_the_ceiling_is_on_tasks_and_not_only_in_the_surface(
+    def test_the_resource_ceiling_is_still_on_tasks_and_not_only_in_a_surface(
         self, console, admin
     ):
-        """A direct insert is refused too.
+        """013's argument survives 050; only which ceiling it is about moved.
 
-        approve_batch() only makes draft-spec tasks, so code tasks are inserted
-        directly — that has already happened on this host. A ceiling that only
-        the surface respected would not have been consulted at all.
+        "The surface is not the only thing that could ever insert a task, and
+        a ceiling that only one caller respects is a convention, not a
+        ceiling." That is why 014 put the money ceiling on the table. The
+        money ceiling is gone, so this asserts the same property of the one
+        that replaced it: 049's admission control, on `tasks`, reached by the
+        claim whoever makes it.
         """
-        self._pool(admin, None)
-        floor = console.execute(
-            "SELECT jsonb_agg(glob) AS g FROM protected_path_floor"
-            " WHERE repo='fleet'").fetchone()["g"]
-        contract = json.dumps({
-            "work_type": "research", "writable_paths": ["research/x.md"],
-            "protected_paths": floor, "verification": ["true"],
-            "max_diff_lines": 10})
-        with pytest.raises(Exception, match="credit is unknown"):
-            console.execute(
-                "INSERT INTO tasks (title, spec_md, repo, acceptance_contract,"
-                " max_cost_gbp) VALUES ('direct','x','fleet',%s,0.01)",
-                (contract,))
+        wired = console.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_trigger t"
+            "  WHERE t.tgrelid = 'tasks'::regclass"
+            "    AND t.tgname = 'tasks_window_admission'"
+            "    AND NOT t.tgisinternal) AS w").fetchone()["w"]
+        assert wired, "049's admission control is not on tasks"
+
+        gone = console.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_trigger t"
+            "  WHERE t.tgrelid = 'tasks'::regclass"
+            "    AND t.tgname = 'tasks_credit_ceiling'"
+            "    AND NOT t.tgisinternal) AS w").fetchone()["w"]
+        assert not gone, (
+            "014's money ceiling is back on tasks; it refused ten eligible "
+            "candidates on a balance that cannot be spent -- see 050")
 
     def test_the_spending_identity_cannot_write_its_own_ceiling(self, console):
         """Same rule as a runner that cannot set MERGED on its own branch."""

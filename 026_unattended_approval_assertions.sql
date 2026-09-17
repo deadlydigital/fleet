@@ -216,6 +216,23 @@ DO $$ DECLARE k record; m date := date_trunc('month', now())::date;
 RAISE NOTICE 'Q10 pass  an UNCOMPUTED position states no autonomous figure'; END $$;
 
 -- ---------------------------------------------------------------- Q11
+-- RETIRED BY 050_approval_bounds_the_queue_not_the_money.sql, and kept rather
+-- than deleted because the reason it existed is the reason it no longer holds.
+--
+-- It asserted that 014's credit ceiling still fires after this migration
+-- replaced the function underneath it. 050 unwires that trigger on purpose:
+-- the pool it reads auto-reloads, nothing is billed against it, and the
+-- resource question moved to the claim where a task's size is known. An
+-- operator runs this file against the CURRENT schema, so leaving Q11 live
+-- would be an alarm that is deliberately false -- which trains people to
+-- ignore alarms.
+--
+-- The block below is disabled by its own guard. Re-enable it only alongside
+-- re-wiring tasks_credit_ceiling, and read 050 first.
+DO $$ BEGIN RAISE NOTICE 'Q11 retired by 050; tasks_credit_ceiling is '
+                         'deliberately unwired'; END $$;
+
+/* RETIRED -- see above.
 -- 014's credit ceiling still fires. fleet_month_credit() was DROPped and
 -- recreated in this migration, and enforce_credit_ceiling() calls it -- so this
 -- asserts the trigger survived a change to the function underneath it rather
@@ -252,3 +269,4 @@ DO $$ DECLARE ok bool := false; m date := date_trunc('month', now())::date;
                         'fleet_month_credit() was recreated';
     END IF;
 RAISE NOTICE 'Q11 pass  014s credit ceiling survives the function being replaced'; END $$;
+*/

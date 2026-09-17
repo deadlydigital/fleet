@@ -537,52 +537,56 @@ class TestTheCut:
         assert "per_night" in p["cut"]["bound_by"]
         assert len(p["approve_ids"]) == 1
 
-    @pytest.mark.parametrize("fraction", ["0.60", "0.85"])
-    def test_the_unattended_stop_binds_before_the_100_percent_ceiling(
-            self, dsns, console, admin, fraction):
-        """specs/unattended-operation.md §5.1, which nothing built until 026.
+    def test_a_pool_below_the_unattended_line_no_longer_stops_the_cut(
+            self, dsns, console, admin):
+        """THE INVERSION, AND THE REGRESSION AGAINST RE-ADDING IT.
 
-        A pool of £3 -- £1 of it committed to the producer task the batch
-        points at -- has room for a £2 draft spec at 100% and none at the
-        unattended line. A person keeps the larger number, which is what
-        "leaving room for work a person chooses" means.
+        This test used to assert the opposite: a £3.00 pool put
+        `autonomous_remaining_gbp` below a £2.00 draft, and the cut went to 0
+        bound by `autonomous_credit`. 050 removed that term. The pool
+        auto-reloads, nothing is billed against it, and a candidate has no
+        size to check against a balance anyway -- the resource question moved
+        to the claim, where 049 asks it of a task that has a contract and a
+        spec.
 
-        RUN AT BOTH FRACTIONS, because this is the test the move in 039 could
-        have broken and did not. Green at 0.60 alone would not have shown that:
-        a lower fraction binds more easily, so the old value is the permissive
-        direction for this assertion and passing there proves nothing about
-        production. The arrangement is asserted before the behaviour is, so a
-        future fraction that makes a £3 pool stop producing this situation
-        fails saying the fixture no longer sets up the case -- rather than
-        going green because nothing was approved for some other reason.
+        On 17 Sep 2026 the live version of this arrangement held ten eligible
+        candidates for two days on minus £20.52 of an account that cannot be
+        spent.
         """
-        _pool(admin, "3.00", fraction=fraction)
+        _pool(admin, "3.00", fraction="0.60")
         b = _batch(console)
         _cand(console, b)
-        p = autoapprove.plan()
-        c = p["credit"]
-        assert c["remaining"] >= 2.00, "a person could still tick this"
-        assert c["autonomous_remaining"] < 2.00, (
-            f"at a fraction of {fraction} a £3.00 pool no longer puts the "
-            f"unattended line below a £2.00 draft, so this arrangement is not "
-            f"the one the test is about; resize the pool deliberately")
-        assert p["cut"]["n"] == 0
-        assert p["approve_ids"] == []
-        assert "autonomous_credit" in p["cut"]["bound_by"]
 
-    def test_an_uncomputed_pool_approves_nothing(self, dsns, console, admin):
-        # The batch first. Since 034 `_batch` creates the candidate_producer
-        # task it points at, and enforce_credit_ceiling() refuses a task
-        # insert while the pool is unknown -- which is the behaviour a
-        # different test asserts, and would fail this one in the fixture
-        # rather than in the thing it is about.
+        p = autoapprove.plan()
+
+        c = p["credit"]
+        assert c["autonomous_remaining"] < 2.00, (
+            "the fixture no longer puts the unattended line below a £2.00 "
+            "draft, so this test is not exercising the case it is about")
+        assert p["cut"]["n"] >= 1, "a pool below the line still bound the cut"
+        assert "autonomous_credit" not in p["cut"]["limits"], (
+            "the money term is back in the cut")
+        assert "autonomous_credit" not in p["cut"]["bound_by"]
+
+    def test_an_uncomputed_pool_no_longer_stops_approval(
+            self, dsns, console, admin):
+        """A reading nobody took is not a reason to refuse work.
+
+        014's rule -- "a ceiling that cannot read its limit refuses" -- is
+        still right, and 049 still applies it to the window at the claim. It
+        is wrong HERE, because there is no longer a limit at this gate for the
+        missing reading to be a reading of.
+        """
         b = _batch(console)
         _cand(console, b)
         admin.execute("DELETE FROM model_credit_pool")
         admin.commit()
+
         p = autoapprove.plan()
-        assert p["cut"]["n"] == 0
-        assert p["approve_ids"] == []
+
+        assert p["credit"]["status"] == "UNCOMPUTED"
+        assert p["cut"]["n"] >= 1, "an unread pool still stopped the cut"
+        assert p["approve_ids"], "nothing was approved"
 
 
 class TestTheReasonOrNothing:

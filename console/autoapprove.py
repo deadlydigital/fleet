@@ -144,24 +144,37 @@ def _ceilings(conn) -> Dict[str, Any]:
     return {"caps": caps, "credit": credit}
 
 
-def _cut(ceilings: Dict[str, Any], task_max_cost: float) -> Dict[str, Any]:
+def _cut(ceilings: Dict[str, Any]) -> Dict[str, Any]:
     """How many may be ticked tonight, and WHICH ceiling decided it.
 
-    The effective number is the smallest of four, and which one bound is worth
-    recording: "1 tonight" reads the same whether the pace chose it or the pool
-    did, and those want different responses in the morning.
+    The effective number is the smallest of three, and which one bound is worth
+    recording: "1 tonight" reads the same whether the pace chose it or the
+    depth did, and those want different responses in the morning.
+
+    THERE WAS A FOURTH, AND IT WAS A MONEY TERM. `autonomous_credit` was
+    `int(autonomous_remaining_gbp // task_max_cost)` -- a balance that
+    describes no account, divided by a flat contract default standing in for a
+    size nobody knows, to yield a count of tasks. It bound the cut to 0 on 17
+    Sep 2026 with ten candidates eligible and an empty queue, and the log said
+    so in a sentence that was true and useless.
+
+    IT IS REMOVED RATHER THAN RE-DENOMINATED. A candidate has no size, so no
+    resource term belongs here; 049 asks that question at the claim, where a
+    contract and a spec exist to answer it. Approval bounds how much work
+    EXISTS, the claim bounds how much RUNS this window, and depth becomes
+    window consumption at the moment size becomes knowable. See 050.
+
+    The unattended line survives the removal: every limit below is already an
+    unattended-only limit -- a person approving by hand does not pass through
+    this function -- so 026's "the machine stops while a human still has room"
+    is now the pace and the depth cap rather than 85% of a balance.
     """
-    caps, credit = ceilings["caps"], ceilings["credit"]
+    caps = ceilings["caps"]
     limits = {
         "per_night": caps["per_night"],
         "max_approval_batch": caps["max_batch"],
         "queue_room": max(0, caps["max_queued"] - caps["queued_now"]),
     }
-    if credit["status"] == "UNCOMPUTED":
-        limits["autonomous_credit"] = 0
-    else:
-        room = credit["autonomous_remaining_gbp"]
-        limits["autonomous_credit"] = max(0, int(float(room) // task_max_cost))
     n = min(limits.values())
     bound_by = sorted(k for k, v in limits.items() if v == n)
     return {"n": n, "limits": limits, "bound_by": bound_by}
@@ -391,7 +404,7 @@ def plan(*, decided_by: str | None = None) -> Dict[str, Any]:
     ineligible = sorted([s for s in scored if not s["gate"]["eligible"]],
                         key=lambda s: s["sort"])
 
-    cut = _cut(ceilings, float(task_max_cost))
+    cut = _cut(ceilings)
     take = eligible[:cut["n"]]
     below = eligible[cut["n"]:] + ineligible
 
@@ -661,11 +674,14 @@ def _print(p: Dict[str, Any], *, dry_run: bool) -> None:
               f"about the ground they stand on was checked. That is the state "
               f"every row loaded before 10 Sep 2026 is in.")
     c = p["credit"]
+    # PRINTED AS A READING, NOT AS A CEILING. Nothing gates on it since 050:
+    # the pool auto-reloads and nothing is billed against it. It stays in the
+    # output because it is the contemporaneous record of what was read.
     if c["status"] == "COMPUTED":
-        print(f"credit: GBP {c['remaining']:.2f} remains of GBP {c['pool']:.2f}; "
-              f"the unattended line leaves GBP {c['autonomous_remaining']:.2f}")
+        print(f"credit (notional, governs nothing since 050): "
+              f"GBP {c['remaining']:.2f} of GBP {c['pool']:.2f}")
     else:
-        print("credit: UNCOMPUTED -- nothing may be approved")
+        print("credit: UNCOMPUTED -- a reading nobody took; nothing gates on it")
     print(f"cut: {p['cut']['n']}, bound by {', '.join(p['cut']['bound_by'])} "
           f"{p['cut']['limits']}")
     rk = p["repeat"]

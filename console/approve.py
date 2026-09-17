@@ -423,47 +423,31 @@ def approve_batch(*, reason: str, approve_ids: List[int],
 
         contract, task_max_cost, task_timeout, base_branch = _draft_spec_contract()
 
-        # THE THIRD CEILING (spec section 6, ceiling 2; built in 014).
+        # THE THIRD CEILING IS GONE, AND THIS IS WHERE IT WAS (014; removed
+        # by 050).
         #
-        # Checked here AND enforced by a trigger on `tasks`, the same pairing
-        # the queue depth already has. The trigger is what makes it a ceiling
-        # rather than a convention -- it fires for any caller, including the
-        # direct inserts that exist because this function only makes draft-spec
-        # tasks. This pre-check is what makes the refusal a sentence the
-        # reviewer can act on instead of a constraint violation arriving as a
-        # 500.
+        # It refused a batch whose draft-spec tasks would cost more than the
+        # month's remaining pool. Every term in that sentence has stopped
+        # describing anything: the pool auto-reloads, usage credits are off
+        # against a zero balance so nothing is billed, and `committed_gbp`
+        # sums `marginal_cost_gbp`, which 048 relabelled as accurate list
+        # price and notional.
         #
-        # Reserved at max_cost_gbp, NOT at the candidate's est_cost_gbp, which
-        # is why est_cost_gbp is still only displayed. Five of the thirty-five
-        # settled runs on this host landed at exactly their max_cost_gbp
-        # (re-counted 11 Sep 2026; it was two of eight), because
-        # settle_model_budget() refuses an actual above the reservation and
-        # settles at the bound. An estimate calibrated against figures that are
-        # themselves clipped at the cap under-counts precisely the runs worth
-        # counting.
-        if approve_ids:
-            credit = conn.execute("SELECT * FROM fleet_month_credit()").fetchone()
-            if credit["status"] == "UNCOMPUTED":
-                raise ApprovalRefused(
-                    "The monthly credit position is unknown, so nothing can be "
-                    "approved. " + credit["uncomputed_reason"] + " This refuses "
-                    "rather than assuming, because the pool does not roll over "
-                    "and a batch approved against a number nobody read is the "
-                    "one mistake this ceiling exists to prevent.")
-            wanted = task_max_cost * len(approve_ids)
-            if wanted > credit["remaining_gbp"]:
-                raise ApprovalRefused(
-                    f"£{credit['remaining_gbp']:.2f} remains of the "
-                    f"£{credit['pool_gbp']:.2f} pool for "
-                    f"{credit['period_month']:%Y-%m} "
-                    f"(£{credit['committed_gbp']:.2f} already committed, "
-                    f"counting queued and running tasks at what they may "
-                    f"spend). {len(approve_ids)} draft-spec task(s) at "
-                    f"£{task_max_cost:.2f} each would need £{wanted:.2f}. "
-                    "Tick fewer, let some drain, or record a new reading if "
-                    "the pool has actually changed — the figure was read at "
-                    f"{credit['read_at']:%Y-%m-%d %H:%M} from "
-                    f"{credit['source']}.")
+        # It is removed rather than re-denominated because a candidate has no
+        # size. `task_max_cost * len(approve_ids)` multiplied a flat contract
+        # default by a count -- a reservation against a task whose spec does
+        # not exist yet, and on this fleet the spec is itself a task.
+        #
+        # The resource question is asked once now, at the claim, where a
+        # contract and a spec exist to answer it: 049's admission control on
+        # `tasks`, which is on the table for exactly the reason this pairing
+        # was -- a ceiling only one caller respects is a convention.
+        #
+        # APPROVAL BOUNDS HOW MUCH WORK EXISTS. THE CLAIM BOUNDS HOW MUCH RUNS
+        # THIS WINDOW. Depth becomes window consumption at the moment size
+        # becomes knowable. The limits that remain here are the batch cap and
+        # the queue depth above, and for the unattended path the pace in
+        # console/autoapprove._cut().
 
         decision_id = None
 
