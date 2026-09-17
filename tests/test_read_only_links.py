@@ -238,17 +238,38 @@ class TestItSurvivesBeingFrozen:
     """The opt-out travels with the link or it does not apply to a queued task,
     which is 9.4's flattened objective_ref by another route."""
 
-    def test_approve_carries_it(self):
-        import inspect
+    # ASKED OF THE CONTRACT THESE PRODUCE, NOT OF THEIR SOURCE. Both of these
+    # grepped for the string "read_only_links" in the freezing code until
+    # 17 Sep 2026, which tested the MECHANISM of the day: a hand-typed list
+    # with the key name in it. The freeze is a copy-minus-exclusions now, so
+    # the name appears nowhere and the old assertion failed while the key was
+    # carried correctly -- a test that says no when the answer is yes.
+    #
+    # It could also say yes when the answer was no: the string was present in
+    # autoqueue for the whole nine days `self_check` was being dropped by the
+    # very same list.
 
+    def test_approve_carries_it(self):
         from console import approve
-        src = inspect.getsource(approve._draft_spec_contract)
-        assert "read_only_links" in src
-        assert "worktree_links" in src
+        contract, *_ = approve._draft_spec_contract()
+        declared = yaml.safe_load(Path("contracts/draft-spec.yaml").read_text())
+        assert contract["read_only_links"] == declared["read_only_links"]
+        assert set(contract["read_only_links"]) <= set(contract["worktree_links"]), (
+            "the opt-out must travel WITH the link, or the frozen contract "
+            "keeps the link and loses the opt-out -- the write probe refusing "
+            "an accept for a write nobody makes")
 
     def test_autoqueue_carries_it(self):
-        import inspect
-
+        """The same question of the other freeze site. It carries everything a
+        contract declares except EXCLUDED_FROM_FROZEN, so the property is that
+        this key is not excluded -- and tests/test_frozen_contract.py asserts
+        the copy-minus-exclusions form itself."""
         from console import autoqueue
-        src = inspect.getsource(autoqueue)
-        assert "read_only_links" in src
+        assert "read_only_links" not in autoqueue.EXCLUDED_FROM_FROZEN
+        for path in sorted(Path("contracts").glob("*.yaml")):
+            data = yaml.safe_load(path.read_text())
+            if data.get("read_only_links") is not None:
+                frozen = {k: v for k, v in data.items()
+                          if k not in autoqueue.EXCLUDED_FROM_FROZEN}
+                assert frozen["read_only_links"] == data["read_only_links"]
+                assert "worktree_links" in frozen
