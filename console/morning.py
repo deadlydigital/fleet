@@ -633,18 +633,19 @@ def fleet_blocked(credit: Optional[Dict[str, Any]],
     """
     asks: List[Ask] = []
 
-    # 1. The monthly credit reading. fleet_month_credit() answers UNCOMPUTED
-    #    when no reading exists for the month, and refuses every task insert
-    #    while it does -- so this is not advisory, it is the queue being shut.
-    if credit is not None and credit.get("status") == "UNCOMPUTED":
-        asks.append(Ask(
-            kind="CREDIT_READING",
-            headline="Record this month's credit pool reading",
-            detail=(credit.get("uncomputed_reason") or "")
-            + " Until it is recorded nothing can be queued at all: the "
-              "ceiling refuses rather than assuming a number nobody read.",
-            needs="NEEDS_YOU",
-            meta=[("committed so far", money(credit.get("committed_gbp")))]))
+    # 1. THE MONTHLY CREDIT READING IS NO LONGER AN ASK (removed by 050).
+    #
+    #    It was a NEEDS_YOU, on the grounds that an UNCOMPUTED pool "refuses
+    #    every task insert -- so this is not advisory, it is the queue being
+    #    shut". That was true of 014's trigger. 050 dropped it: an unread pool
+    #    now shuts nothing, and the resource question is asked at the claim
+    #    against a window target instead.
+    #
+    #    Leaving it would put a standing demand on the page for work that
+    #    changes nothing -- and this list's own docstring is the reason that
+    #    matters: "if one of these clears, it disappears from the page because
+    #    the thing that knows it started saying something else". This one
+    #    stopped knowing anything, so it goes rather than waits to clear.
 
     # 2. The frontend deploy stamp. drift-frontend.state answers UNKNOWN
     #    because the image carries no GIT_SHA, so no merged frontend branch can

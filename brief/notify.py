@@ -121,24 +121,22 @@ def read_blockers(fleet_dsn: str) -> Dict[str, int]:
 
 
 def credit_line(fleet_dsn: str) -> Optional[str]:
-    """One line about the month's ceiling, when it is shut.
+    """Nothing. Kept as a named no-op so the removal is visible at the call
+    site rather than as an absence.
 
-    Only when it is UNCOMPUTED, because that state stops every task insert --
-    it is the one ceiling whose absence means nothing can be queued at all, so
-    it belongs in a message whose purpose is "do I need to act this morning".
-    A healthy pool is a number for the page, not for a notification.
+    It used to ping when the pool was UNCOMPUTED, on the grounds that "that
+    state stops every task insert -- it is the one ceiling whose absence means
+    nothing can be queued at all". That was true of 014's trigger and stopped
+    being true when 050 dropped it: an unread pool now stops nothing, so the
+    ping asked somebody to act on a morning when there was nothing to do.
+
+    A notification whose purpose is "do I need to act this morning" is exactly
+    the surface where a false alarm costs most -- it is the one that trains
+    people to stop reading. The pool is still on the console page as a
+    reading; it is no longer news.
     """
-    try:
-        with psycopg.connect(fleet_dsn, row_factory=dict_row) as conn:
-            conn.read_only = True
-            row = conn.execute("SELECT * FROM fleet_month_credit()").fetchone()
-    except Exception as exc:                                  # noqa: BLE001
-        log.warning("could not read the credit position for the ping: %s", exc)
-        return None
-    if row and row.get("status") == "UNCOMPUTED":
-        return ("No credit pool reading for this month — nothing can be "
-                "queued until one is recorded.")
     return None
+
 
 
 # ---------------------------------------------------------------------------

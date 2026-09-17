@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+
+import psycopg
 from pathlib import Path
 
 import pytest
@@ -964,6 +966,55 @@ def test_a_broken_transcript_never_breaks_the_run(tmp_path, monkeypatch):
     stop = _th.Event()
     agent_mod._watch_output_tokens(  # must not raise
         tmp_path, 0.0, stop, lambda *a: None)
+
+
+def test_a_window_refusal_is_an_idle_with_a_reason_and_not_a_crash(
+        dsns, settings, console, admin, monkeypatch):
+    """049's ceiling is a trigger, so a declined claim arrives as an exception
+    from the UPDATE. `_claim` runs in a try whose only clause is `finally`, so
+    before this it escaped tick() entirely -- and chain.py would have spent its
+    pass ceiling re-raising once per pass.
+
+    There is work and it may not start yet. That is an idle with a reason, not
+    a fault.
+    """
+    queue_task(console, max_cost_gbp=3.00)
+    admin.execute(
+        "INSERT INTO model_window_target (output_tokens_per_week, set_by,"
+        " effective_from, rationale) VALUES (1, 'test', now(), 'test')")
+    admin.commit()
+
+    result = run_tick(monkeypatch, fake_agent(
+        {"api/analytics/services/analytics_engine.py": "x\n"}))
+
+    assert result.outcome == "IDLE"
+    assert "usage window" in result.reason, result.reason
+    assert result.task_id is None, "a refused claim must not name a task"
+
+
+def test_a_contract_refusal_still_surfaces_rather_than_idling(
+        dsns, settings, console, admin, monkeypatch):
+    """THE NARROWNESS OF THE CATCH, which is the part worth guarding.
+
+    The contract floor, the transition rules and the queue depth all raise the
+    same exception type from the same table, and each of those IS a fault in
+    the caller. A catch that swallowed them would turn a bug into a quiet idle
+    night -- a check that cannot fail, which is the defect this codebase keeps
+    naming.
+    """
+    from runner import cycle as cycle_mod
+
+    class Boom(psycopg.errors.RaiseException):
+        pass
+
+    def exploding_claim(runner, queue, only_task, log):
+        raise Boom("contract for x does not protect y")
+
+    monkeypatch.setattr(cycle_mod, "_claim", exploding_claim)
+    queue_task(console)
+
+    with pytest.raises(psycopg.errors.RaiseException, match="does not protect"):
+        run_tick(monkeypatch, fake_agent())
 
 
 # ---------------------------------------------------------------------------

@@ -68,7 +68,6 @@ CONFIG_PATH = Path(__file__).resolve().parent / "chain.yaml"
 #: journal is not an answer anything can read back.
 IDLE = "nothing left to do"
 WALL_CLOCK = "the loop's own deadline"
-CREDIT = "the next task costs more than the month's autonomous credit"
 REPEAT_FAILURE = "the same task failed twice in one pass"
 MAX_PASSES = "the pass ceiling, which should be unreachable"
 DRY_RUN_ONE_PASS = "a dry run is one pass -- nothing changed, so nothing new could be decided"
@@ -157,20 +156,6 @@ def next_claimable(conn, queue: str | None) -> dict[str, Any] | None:
         {"q": queue}).fetchone()
 
 
-def autonomous_credit(conn) -> tuple[float | None, str]:
-    """What the month has left for work nobody watched, and its status.
-
-    (None, status) when the pool is UNCOMPUTED -- which is not zero and must
-    not be rounded to it. An unknown ceiling is a stop, not a budget of nought:
-    the two produce the same behaviour here and completely different sentences,
-    and the sentence is what gets read in the morning.
-    """
-    row = conn.execute("SELECT * FROM fleet_month_credit()").fetchone()
-    if row["status"] != "COMPUTED":
-        return None, str(row["status"])
-    return float(row["autonomous_remaining_gbp"]), "COMPUTED"
-
-
 def waiting_for_a_person(conn) -> list[dict[str, Any]]:
     """Everything sitting at READY_FOR_REVIEW when the loop gives up.
 
@@ -218,30 +203,42 @@ def _build(cfg, conn, *, dry_run, failed: set[int], emit) -> tuple[Step, str | N
                      f"task {nxt['id']} already failed this pass"),
                 REPEAT_FAILURE)
 
-    room, status = autonomous_credit(conn)
+    # THE CREDIT RE-READ WAS HERE, AND IT WAS THE FOURTH OF FOUR (removed by
+    # 050's argument, applied here).
+    #
+    # Re-reading the pool before every build was a real property the old sweep
+    # did not have: a loop that checks once and then runs for hours is a loop
+    # whose ceiling is a memory. That reasoning was right and is not what
+    # changed. What changed is that the number it re-read stopped describing
+    # anything -- the pool auto-reloads, usage credits are off against a zero
+    # balance, and `committed_gbp` sums a figure 048 relabelled as notional.
+    #
+    # It stopped task 121 at 12:00 on 17 Sep with "GBP -28.02 of autonomous
+    # credit left", which is not a budget anybody could have spent.
+    #
+    # The per-build re-read survives in the instrument that replaced it: 049's
+    # admission control is a trigger on `tasks`, so it is consulted at every
+    # claim by construction rather than by the caller remembering to ask. A
+    # loop cannot outrun it, which is the property this check was protecting.
     cost = float(nxt["max_cost_gbp"])
-    if room is None:
-        return (Step("build", False,
-                     f"the month's credit is {status}, so the next task's "
-                     f"GBP {cost:.2f} cannot be checked against it"),
-                CREDIT)
-    if room < cost:
-        return (Step("build", False,
-                     f"task {nxt['id']} may cost GBP {cost:.2f} and the month "
-                     f"has GBP {room:.2f} of autonomous credit left"),
-                CREDIT)
 
     if dry_run:
         return Step("build", True,
                     f"WOULD build task {nxt['id']} ({nxt['title'][:60]}), "
-                    f"GBP {cost:.2f} against GBP {room:.2f} remaining",
+                    f"ceiling GBP {cost:.2f}",
                     task_id=nxt["id"]), None
 
     result = cycle.tick(queue=cfg["queue"], log=emit)
     if result.outcome == "IDLE":
-        # Raced: something claimed it between the peek and the tick. Not an
-        # error and not a stop -- the next pass re-reads the queue.
-        return Step("build", False, "nothing was claimable by the time it ran"), None
+        # Raced, or refused. A race is something claiming it between the peek
+        # and the tick; a refusal is 049's window ceiling declining to start
+        # work that cannot finish. Neither is an error and neither is a stop
+        # -- the next pass re-reads the queue, and the window resets on Sunday
+        # -- but they are different sentences in the morning, so the tick's
+        # own reason wins when it gave one.
+        return Step("build", False,
+                    result.reason or
+                    "nothing was claimable by the time it ran"), None
 
     step = Step("build", True,
                 f"task {result.task_id}: {result.outcome} -- {result.reason}",
@@ -468,5 +465,6 @@ def main(argv: list[str] | None = None) -> int:
     # EXIT 0 FOR AN IDLE NIGHT, on run_autoapprove.py's precedent: approving
     # nothing is an ordinary night and often the designed answer. A non-zero
     # exit is reserved for the loop stopping on a condition somebody should
-    # read, which is the two safety stops.
-    return 1 if result.stopped_by in (CREDIT, REPEAT_FAILURE, MAX_PASSES) else 0
+    # read, which is the two safety stops. CREDIT was a third until 050;
+    # it stopped the loop on a balance that could not be spent.
+    return 1 if result.stopped_by in (REPEAT_FAILURE, MAX_PASSES) else 0

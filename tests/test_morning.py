@@ -746,13 +746,24 @@ class TestTheWholeChainIsWatched:
             None, {}, self._stages(deploy={"unreadable": True}))
         assert [a for a in asks if a.kind == "UNIT_UNREADABLE"]
 
-    def test_a_missing_committed_figure_is_a_dot_and_not_a_zero(self):
-        """The credit blocker formatted `float(x or 0)` and put £0.00 beside
-        a month nobody had read a figure for."""
+    def test_an_unread_pool_is_no_longer_an_ask_at_all(self):
+        """REPLACED BY 050. This asserted the formatting of the CREDIT_READING
+        ask -- a `·` rather than £0.00 beside a month nobody had read.
+
+        The ask itself is gone. It was a NEEDS_YOU on the grounds that an
+        UNCOMPUTED pool "refuses every task insert -- so this is not advisory,
+        it is the queue being shut", and 050 dropped that trigger. A standing
+        demand for a reading that changes nothing is the kind of alarm this
+        list's own docstring rules out: one of these disappears when the thing
+        that knows it starts saying something else, and this one stopped
+        knowing anything.
+        """
         asks = morning.fleet_blocked(
             {"status": "UNCOMPUTED", "uncomputed_reason": "no reading",
              "committed_gbp": None}, {}, {})
-        assert dict(asks[0].meta)["committed so far"] == "·"
+        assert not any(a.kind == "CREDIT_READING" for a in asks), (
+            "the credit reading is asking for action again; nothing gates on "
+            "it since 050")
 
 
 class TestTheRequirementsOfAMergeNobodyRead:

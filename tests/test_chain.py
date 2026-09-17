@@ -188,31 +188,66 @@ class TestTheCreditCeiling:
     01:30 and the runner spends against that figure until 04:00 -- nothing
     bounds the night against the pool once approval has happened."""
 
-    def test_a_task_that_cannot_be_afforded_stops_the_loop(
+    def test_a_task_beyond_the_pool_no_longer_stops_the_loop(
             self, cfg_file, conn, monkeypatch):
+        """INVERTED BY 050. This was the fourth money gate and the last found.
+
+        Re-reading the pool before every build was a real property the old
+        sweep lacked -- a loop that checks once and runs for hours has a
+        ceiling that is a memory. That reasoning was right; the number stopped
+        describing anything. It stopped task 121 at 12:00 on 17 Sep 2026 with
+        "GBP -28.02 of autonomous credit left".
+
+        The per-build re-read survives in 049: admission control is a trigger
+        on `tasks`, consulted at every claim by construction rather than by
+        the caller remembering to ask, so a loop cannot outrun it.
+        """
         conn["conn"] = FakeConn(queued=[task(cost=6.0)], credit=2.5)
         monkeypatch.setattr(chain, "_merge",
                             lambda *a, **k: (chain.Step("merge", False), None))
         monkeypatch.setattr(chain, "_approve",
                             lambda *a, **k: (chain.Step("approve", False), None))
-        result = chain.run(config_path=cfg_file, emit=lambda _m: None)
-        assert result.stopped_by == chain.CREDIT
-        assert "GBP 6.00" in result.steps[0].detail
-        assert "GBP 2.50" in result.steps[0].detail
 
-    def test_an_uncomputed_pool_is_a_stop_and_not_a_budget_of_nothing(
+        # The credit gate used to short-circuit before cycle.tick. Without
+        # it this reaches the real one, so it is stubbed -- and it clears the
+        # queue for the reason test_an_affordable_task_is_built states: the
+        # loop's termination depends on the world changing under it.
+        def fake_tick(**kw):
+            conn["conn"].queued.clear()
+            return type("T", (), {"outcome": "IDLE", "task_id": None,
+                                  "reason": "", "cost_gbp": 0.0})()
+
+        monkeypatch.setattr("runner.cycle.tick", fake_tick)
+        result = chain.run(config_path=cfg_file, emit=lambda _m: None)
+
+        assert not hasattr(chain, "CREDIT"), (
+            "the credit stop is back; it stopped the loop on a balance that "
+            "cannot be spent -- see 050")
+        assert "autonomous credit" not in (result.steps[0].detail or "")
+
+    def test_an_uncomputed_pool_no_longer_stops_the_loop(
             self, cfg_file, conn, monkeypatch):
-        """The two produce the same behaviour and completely different
-        sentences, and the sentence is what gets read in the morning."""
+        """An unread pool shuts nothing since 050, so it is not a stop."""
         conn["conn"] = FakeConn(queued=[task()], credit=None,
                                 credit_status="UNCOMPUTED")
         monkeypatch.setattr(chain, "_merge",
                             lambda *a, **k: (chain.Step("merge", False), None))
         monkeypatch.setattr(chain, "_approve",
                             lambda *a, **k: (chain.Step("approve", False), None))
+
+        # The credit gate used to short-circuit before cycle.tick. Without
+        # it this reaches the real one, so it is stubbed -- and it clears the
+        # queue for the reason test_an_affordable_task_is_built states: the
+        # loop's termination depends on the world changing under it.
+        def fake_tick(**kw):
+            conn["conn"].queued.clear()
+            return type("T", (), {"outcome": "IDLE", "task_id": None,
+                                  "reason": "", "cost_gbp": 0.0})()
+
+        monkeypatch.setattr("runner.cycle.tick", fake_tick)
         result = chain.run(config_path=cfg_file, emit=lambda _m: None)
-        assert result.stopped_by == chain.CREDIT
-        assert "UNCOMPUTED" in result.steps[0].detail
+
+        assert "UNCOMPUTED" not in (result.steps[0].detail or "")
 
     def test_an_affordable_task_is_built(self, cfg_file, conn, monkeypatch):
         conn["conn"] = FakeConn(queued=[task(cost=3.0)], credit=60.0)

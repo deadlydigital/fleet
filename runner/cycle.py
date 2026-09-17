@@ -94,7 +94,30 @@ def tick(*, queue: str | None = None, only_task: int | None = None,
 
     runner = _connect(config.task_runner_dsn())
     try:
-        task = _claim(runner, queue, only_task, log)
+        try:
+            task = _claim(runner, queue, only_task, log)
+        except psycopg.errors.RaiseException as exc:
+            # 049'S ADMISSION CONTROL IS A REFUSAL, NOT A FAULT.
+            #
+            # The window ceiling is a trigger on `tasks`, so a claim it
+            # declines arrives here as an exception from the UPDATE. Left
+            # uncaught it escapes tick() entirely and the caller sees a crash
+            # where the honest answer is "there is work and it may not start
+            # yet" -- and chain.py would then spend its pass ceiling
+            # re-raising once per pass.
+            #
+            # MATCHED ON THE WINDOW MESSAGE AND NOTHING WIDER. The contract
+            # floor, the transition rules and the queue depth all raise the
+            # same exception type from the same table, and each of those IS a
+            # fault in the caller. Swallowing them here would turn a bug into
+            # a quiet idle night, which is the failure this codebase keeps
+            # naming: a check that cannot fail.
+            if "usage window" not in str(exc):
+                raise
+            runner.rollback()
+            result.reason = str(exc).split("CONTEXT:")[0].strip()
+            log(f"  not claimed: {result.reason}")
+            return result
         if task is None:
             log("nothing queued")
             return result
