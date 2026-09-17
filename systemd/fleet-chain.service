@@ -25,6 +25,14 @@ ExecStart=/home/ubuntu/fleet/.venv/bin/python /home/ubuntu/fleet/run_chain.py
 # the two safety stops (the credit ceiling, the same task failing twice) and on
 # the pass ceiling, all three of which belong in `systemctl --failed` because
 # all three mean the loop stopped early and somebody should read why.
+#
+# AND 3 WHEN ANOTHER CHAIN ALREADY HOLDS THE LOCK, which is the case this
+# timer creates: OnCalendar fires every four hours and chain.yaml allows a
+# 7200s run, so a long night or a by-hand run can still be going. 3 is NOT on
+# this list on purpose. A scheduled run that did not happen is exactly the
+# thing that must not be silent -- see run_chain.py's EXIT CODES and
+# runner/exclusive.py. If these notices ever become noise, the answer is to
+# stop the timer while working by hand, not to widen this line.
 SuccessExitStatus=0
 
 # THE BACKSTOP, NOT THE MECHANISM, and this is the one line that differs in

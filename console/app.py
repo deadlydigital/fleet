@@ -632,9 +632,13 @@ def accept(request: Request, task_id: int,
         # the branch was clean was to build another trial and run the whole
         # gate again, 16 minutes of it.
         #
-        # The output tail is already carried on every check -- reverify keeps
-        # the last 800 bytes of it -- so this is a matter of printing what was
-        # collected rather than collecting anything new. The undecided reason
+        # The output tail is already carried on every check -- `verify.kept_tail`
+        # keeps the last `verify.OUTPUT_TAIL_BYTES` of it, marked when it had to
+        # cut -- so this is a matter of printing what was collected rather than
+        # collecting anything new. It said "reverify keeps the last 800 bytes"
+        # until 17 Sep 2026, and that second narrowing is what made task 125's
+        # refusal name 19 files out of ~33 with nothing saying so; the size now
+        # lives in one place. The undecided reason
         # comes with it, because "could not run" and "failed" send the reader
         # to different places and the code alone does not say which.
         _record_outcome(task_id, {

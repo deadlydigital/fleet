@@ -32,6 +32,65 @@ from typing import Sequence
 # suffix has one meaning.
 CHANGED_FILES_RE = re.compile(r"\{changed_files(?::([^}]*))?\}")
 
+#: How much of a failing check's own output is kept, and the ONE definition.
+#:
+#: There were two cuts in series until 17 Sep 2026 -- this one, and
+#: `console/reverify.py` narrowing it again to 800 -- and the second one is
+#: what made task 125's refusal unreadable. See `kept_tail`.
+OUTPUT_TAIL_BYTES = 4000
+
+
+def kept_tail(out: str, budget: int = OUTPUT_TAIL_BYTES) -> str:
+    """The END of `out`, line-aligned, and SAID SO when anything was dropped.
+
+    THE TAIL AND NOT THE HEAD, because the tail is where a check puts its
+    count. `contracts/checks/pytest_unit_per_file.sh` prints a `--- FAILED
+    <path>` block per failing file as it goes and only then
+    `FAIL: N of M files in <dir> failed:` with the list -- so the head is
+    paths and tracebacks, and the one line that says how many is near the end.
+    pytest's own `N failed, M passed` is last too. Keeping the head would
+    trade the answer for the first few symptoms.
+
+    MARKED, WHICH IS THE PART THAT WAS MISSING. Task 125's refusal showed 19
+    file names beginning at `tests/analytics/test_migrations.py` and nothing
+    said the text was a fragment. It reads exactly like "19 files failed,
+    starting with test_migrations" -- and both halves are wrong.
+    `test_migrations.py` is merely the 34th name in `find | sort` order, which
+    is where the byte window happened to open; the real count was about 33,
+    and the collapse began around the 19th file. An operator cannot be
+    expected to infer a truncation from indentation, which was the only clue:
+    the first surviving line had its own two leading spaces chopped off.
+
+    LINE-ALIGNED for the same reason. A cut mid-line produces a fragment that
+    looks like a whole line of a different kind -- `  tests/analytics/foo.py`
+    losing its indent becomes indistinguishable from a `--- FAILED` line's
+    path -- so the first partial line is dropped rather than shown.
+
+    WHAT THIS STILL DOES NOT PROMISE. A directory whose summary list alone
+    exceeds `budget` would push the count line out even so. That is now a
+    visible gap rather than a silent one, which is the whole difference: the
+    marker says how many lines are missing, so nobody reads a count off a
+    fragment again.
+    """
+    if len(out) <= budget:
+        return out
+    window = out[-budget:]
+    # Drop the leading partial line. `partition` rather than an index so an
+    # oversized single line with no newline at all yields "" and then the
+    # marker, instead of a fragment presented as a line.
+    _, sep, aligned = window.partition("\n")
+    aligned = aligned if sep else ""
+    # `splitlines`, not `count("\n") + 1`. Check output almost always ends in a
+    # newline, and counting separators then claims one line more than anybody
+    # can see -- so the marker's arithmetic would not add up against the lines
+    # printed under it, which is the one thing it exists to let a reader do.
+    total = len(out.splitlines())
+    dropped = total - len(aligned.splitlines())
+    return (f"[... TRUNCATED: {dropped} of {total} lines were dropped from the "
+            f"START of this check's output. What follows is the END of it. Any "
+            f"count, or any \"first failure\", read from the lines below is "
+            f"about this fragment and not about the run. ...]\n" + aligned)
+
 
 @dataclass
 class Check:
@@ -752,7 +811,7 @@ def run(worktree: Path, commands: list[str], deadline_seconds: float,
         # knowing the wrong thing, in that direction and not the other.
         obligation = None if killed else obligation_of(code)
         result.checks.append(
-            Check(command, code, duration_ms, out[-4000:], timed_out,
+            Check(command, code, duration_ms, kept_tail(out), timed_out,
                   expanded=expanded, undecided_reason=killed,
                   obligation_reason=obligation))
         # AND ON TO THE NEXT ONE, FAILED OR NOT. The `break` that stood here

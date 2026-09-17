@@ -382,7 +382,33 @@ def run(repo: Path, trial_root: Path, task: dict[str, Any],
                    "unresolved_reason": c.unresolved_reason,
                    "undecided_reason": c.undecided_reason,
                    "obligation_reason": c.obligation_reason,
-                   "output_tail": c.output_tail[-800:]} for c in result.checks]
+                   # NOT RE-CUT HERE, and `[-800:]` is what stood in its place
+                   # until 17 Sep 2026.
+                   #
+                   # Two truncations in series, and the second one destroyed
+                   # exactly what the first had been sized to keep.
+                   # `verify.kept_tail` keeps 4000 bytes so that a gate's
+                   # closing summary survives -- for `pytest_unit_per_file.sh`
+                   # over `tests/analytics` that is `FAIL: N of 52 files ...`
+                   # plus the list, about 2.1 KB. 800 bytes is ~19 path lines,
+                   # so it kept the END of the list and threw away the only
+                   # line carrying N.
+                   #
+                   # WHAT THAT COST. Task 125's refusal showed 19 names
+                   # starting at `test_migrations.py` and read as "19 files
+                   # failed, test_migrations first". Neither is true: that file
+                   # is the 34th in sweep order and is simply where the window
+                   # opened, the count was about 33, and the cause was a second
+                   # chain deleting the trial clone mid-sweep. The refusal was
+                   # believed over an identical tree -- merged sha and branch
+                   # sha shared one tree object -- and the re-run was 52/52.
+                   #
+                   # The size is `verify.OUTPUT_TAIL_BYTES`, in one place, so
+                   # this record cannot silently disagree with the Check it is
+                   # built from again. `log_failing_checks` prints whatever is
+                   # here, marker included, so the reader is told when it is a
+                   # fragment.
+                   "output_tail": c.output_tail} for c in result.checks]
 
         if not verdict.clean:
             return Reverification(

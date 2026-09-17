@@ -77,6 +77,15 @@ DRY_RUN_ONE_PASS = "a dry run is one pass -- nothing changed, so nothing new cou
 #: stops for this reason, something above it is broken.
 PASS_CEILING = 50
 
+#: Exit code for "another chain holds the lock, so this one did nothing".
+#:
+#: ITS OWN CODE, not the 1 the two safety stops use. Those mean the loop RAN
+#: and stopped on something it found; this means it never started, and the
+#: morning question is different in each case. `fleet-chain.service` has
+#: `SuccessExitStatus=0`, so this still reaches `systemctl --failed` and
+#: OnFailure -- which is the point. See the refusal branch in `main`.
+REFUSED_CONCURRENT = 3
+
 
 @dataclass
 class Step:
@@ -458,8 +467,43 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", type=Path, default=None)
     args = p.parse_args(argv)
 
-    result = run(dry_run=args.dry_run, config_path=args.config,
-                 emit=lambda m: log.info("%s", m))
+    # ONE CHAIN AT A TIME, AND IT REFUSES RATHER THAN QUEUEING.
+    #
+    # Two chains do not collide loudly -- they delete each other's trial
+    # clone, because `console/reverify.py` names it from the task id alone and
+    # `worktree.create_trial_clone` rmtree's whatever is at that path. The
+    # first one then reports "the branch verifies on its own and FAILS when
+    # merged" about a tree that is fine, and the second dies on an ENOENT from
+    # a `cwd` that was deleted under it. Task 125, 17 Sep 2026, in 27 seconds.
+    # `runner/exclusive.py` carries the measurements and the argument.
+    #
+    # AROUND THE WHOLE RUN, INCLUDING --dry-run. A dry run builds a real trial
+    # clone at the real path -- `reverify.run` is the same call either way, and
+    # only the merge is skipped -- so it can destroy a live run's trial exactly
+    # as a real one can. A lock that a dry run could walk past would be a lock
+    # with a hole in it the shape of the safest-looking flag.
+    #
+    # OUTSIDE `run()`, so the stages themselves are unchanged and still work
+    # by hand: this schedules, and reimplements nothing. It is also outside the
+    # config load, because refusing does not depend on the config.
+    # Imported here, like every other stage module in this file, so importing
+    # `chain` costs nothing and cannot fail on a missing DSN.
+    from runner import config as runner_config, exclusive
+
+    try:
+        with exclusive.only_one("chain", runner_config.task_runner_dsn()):
+            result = run(dry_run=args.dry_run, config_path=args.config,
+                         emit=lambda m: log.info("%s", m))
+    except exclusive.AlreadyRunning as exc:
+        # NOT SILENT, AND NOT EXIT 0. A unit that always refuses looks exactly
+        # like a unit with nothing to do -- which is how fleet-autodeploy went
+        # seven runs without deploying, each one reading as a quiet night. So
+        # this is a stop somebody should read, on the same argument as the two
+        # safety stops below, and it takes its own code so the journal
+        # distinguishes "another chain is running" from "a task failed twice".
+        log.error("%s", exc)
+        print(f"--- refused: {exc}")
+        return REFUSED_CONCURRENT
     for line in describe(result):
         print(line)
     # EXIT 0 FOR AN IDLE NIGHT, on run_autoapprove.py's precedent: approving
