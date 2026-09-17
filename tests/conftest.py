@@ -163,6 +163,10 @@ def templates() -> None:
     _psql(FLEET_TEMPLATE, FIXTURES / "fleet_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "proposals_seed.sql")
     _psql(FLEET_TEMPLATE, FIXTURES / "tasks_seed.sql")
+    # 049 refuses a claim when no window target is in effect. Seeded here
+    # rather than per-test because every claiming test needs it and none of
+    # them is about it.
+    _psql(FLEET_TEMPLATE, FIXTURES / "window_target_seed.sql")
 
     _admin(f'DROP DATABASE IF EXISTS "{DD_DB}" WITH (FORCE)')
     _admin(f'DROP DATABASE IF EXISTS "{DD_TEMPLATE}" WITH (FORCE)')

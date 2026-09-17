@@ -884,6 +884,89 @@ def test_a_refused_run_requeues_and_refunds_the_attempt(
 
 
 # ---------------------------------------------------------------------------
+# Observed, not enforced. A ceiling at p90 would have cut 9 failures and 5
+# verified runs out of 95, so the size signal reports and does not fire.
+# ---------------------------------------------------------------------------
+
+def test_the_transcript_directory_is_derived_from_the_worktree():
+    d = agent_mod.transcript_dir(Path("/home/ubuntu/.fleet-worktrees/fleet-task-120"))
+    assert d.name == "-home-ubuntu--fleet-worktrees-fleet-task-120"
+
+
+def _write_turn(fh, mid, out_tokens, blocks=1):
+    """One turn, written as `blocks` records that repeat the same usage --
+    which is how the CLI writes a multi-block message."""
+    import json as _json
+    for _ in range(blocks):
+        fh.write(_json.dumps({
+            "type": "assistant",
+            "message": {"id": mid, "model": "claude-opus-5",
+                        "usage": {"output_tokens": out_tokens,
+                                  "input_tokens": 1,
+                                  "cache_read_input_tokens": 10}}}) + "\n")
+    fh.flush()
+
+
+def test_a_run_past_p90_is_reported_once_and_counts_turns_not_records(
+        tmp_path, monkeypatch):
+    import threading as _th
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    proj = tmp_path / "projects" / str(worktree).replace("/", "-").replace(".", "-")
+    proj.mkdir(parents=True)
+    monkeypatch.setattr(agent_mod.Path, "home", staticmethod(lambda: tmp_path))
+    # `transcript_dir` builds <home>/.claude/projects/<mangled>
+    real = tmp_path / ".claude" / "projects"
+    real.mkdir(parents=True)
+    target = real / str(worktree).replace("/", "-").replace(".", "-")
+    target.mkdir()
+
+    per_turn = agent_mod.NOTABLE_OUTPUT_TOKENS // 2 + 1
+    with (target / "sess.jsonl").open("w") as fh:
+        # Each turn written three times over, as a three-block message is.
+        _write_turn(fh, "msg_a", per_turn, blocks=3)
+        _write_turn(fh, "msg_b", per_turn, blocks=3)
+
+    seen = []
+    stop = _th.Event()
+    agent_mod._watch_output_tokens(
+        worktree, 0.0, stop, lambda tok, turns: seen.append((tok, turns)))
+
+    assert len(seen) == 1, "reported more than once"
+    tokens, turns = seen[0]
+    assert turns == 2, "records were counted instead of messages"
+    assert tokens == per_turn * 2
+
+
+def test_a_run_below_the_threshold_reports_nothing(tmp_path, monkeypatch):
+    import threading as _th
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.setattr(agent_mod.Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / ".claude" / "projects" / str(worktree).replace("/", "-").replace(".", "-")
+    target.mkdir(parents=True)
+    with (target / "sess.jsonl").open("w") as fh:
+        _write_turn(fh, "msg_a", 100)
+
+    seen = []
+    stop = _th.Event()
+    stop.set()          # one pass, then stop
+    agent_mod._watch_output_tokens(
+        worktree, 0.0, stop, lambda tok, turns: seen.append(tok))
+    assert seen == []
+
+
+def test_a_broken_transcript_never_breaks_the_run(tmp_path, monkeypatch):
+    """The watcher observes a run; it must not be able to end one."""
+    import threading as _th
+    monkeypatch.setattr(agent_mod.Path, "home",
+                        staticmethod(lambda: (_ for _ in ()).throw(OSError("boom"))))
+    stop = _th.Event()
+    agent_mod._watch_output_tokens(  # must not raise
+        tmp_path, 0.0, stop, lambda *a: None)
+
+
+# ---------------------------------------------------------------------------
 # §9.6: the FAILED path used to discard everything the run knew.
 #
 # specs/auto-approval.md §9.6, named 10 Sep 2026 and unscheduled every time.

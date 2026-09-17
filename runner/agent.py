@@ -35,6 +35,7 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -433,6 +434,16 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
     # is reaped there is no pid left to ask.
     pgid = proc.pid
 
+    # OBSERVE WHILE IT RUNS. Daemon so it can never hold the process open,
+    # and stopped in the same `finally` that reaps the group.
+    watch_stop = threading.Event()
+    watcher = threading.Thread(
+        target=_watch_output_tokens, daemon=True,
+        args=(worktree, time.time(), watch_stop,
+              lambda tokens, turns: (on_notable_run(tokens, turns)
+                                     if on_notable_run else None)))
+    watcher.start()
+
     timed_out = False
     try:
         out, err = proc.communicate(timeout=timeout_seconds)
@@ -441,6 +452,7 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
         _kill_group(pgid, proc)
         out, err = proc.communicate()
     finally:
+        watch_stop.set()
         # Whichever way the agent ended. A CLI that stops itself on its
         # budget, or exits cleanly, can still leave a tool child behind, and
         # a surviving child is spend the reservation no longer bounds.
@@ -483,6 +495,81 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
         result.could_not_run = classify_could_not_run(result.raw, result.text)
     result.reported_paths = parse_report(result.text)
     return result
+
+
+#: Output tokens at which a run is worth a human's attention, measured rather
+#: than chosen: p90 of the 95 runs on record after 048's backfill (median
+#: 25,106, p75 38,688, p90 49,495, max 72,932).
+#:
+#: OBSERVED, NOT ENFORCED, and that is the finding rather than a compromise.
+#: Size does predict failure -- runs past ~40k output fail about 60% of the
+#: time against a 37% baseline -- but a cap there is a coin flip on real work:
+#: tested against all 95 runs, a 45k ceiling would have stopped 9 failures and
+#: destroyed 5 verified runs. A signal that good is worth surfacing and not
+#: worth firing on. The spend cap remains the only thing that stops a run.
+NOTABLE_OUTPUT_TOKENS = 49_495
+
+#: Called with (output_tokens, turns) the first time a run in flight
+#: passes the threshold. A hook rather than a parameter to `invoke` so
+#: the signature every caller and test fake already implements is not
+#: widened for something that only reports.
+on_notable_run = None
+
+
+def transcript_dir(worktree: Path) -> Path:
+    """Where the CLI writes this worktree's session JSONL.
+
+    The CLI keys its project directory on the working directory with every
+    "/" and "." replaced by "-", so the runner can find the transcript of a
+    run that is still going without being told the session id -- which the
+    result only carries once the run is over.
+    """
+    mangled = str(worktree).replace("/", "-").replace(".", "-")
+    return Path.home() / ".claude" / "projects" / mangled
+
+
+def _watch_output_tokens(worktree: Path, started: float, stop: threading.Event,
+                         on_notable) -> None:
+    """Report ONCE when a run in flight passes NOTABLE_OUTPUT_TOKENS.
+
+    Reads the transcript the CLI is writing. Deduplicated by message id for
+    the reason tools/backfill_token_classes.py documents: one turn is written
+    as one record per content block, each repeating the same usage, so
+    counting records overstates a run by about a factor of two.
+
+    EVERY FAILURE HERE IS SWALLOWED. This is an observation about a run, not
+    part of running it; a watcher that could break a task would cost more than
+    it tells anyone.
+    """
+    seen: set[str] = set()
+    total = 0
+    while not stop.is_set():
+        stop.wait(15)
+        try:
+            base = transcript_dir(worktree)
+            files = [f for f in base.glob("*.jsonl")
+                     if f.stat().st_mtime >= started - 5]
+            for f in files:
+                with f.open() as fh:
+                    for line in fh:
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if rec.get("type") != "assistant":
+                            continue
+                        msg = rec.get("message") or {}
+                        usage = msg.get("usage") or {}
+                        mid = msg.get("id")
+                        if not usage or not mid or mid in seen:
+                            continue
+                        seen.add(mid)
+                        total += int(usage.get("output_tokens") or 0)
+            if total >= NOTABLE_OUTPUT_TOKENS:
+                on_notable(total, len(seen))
+                return
+        except Exception:
+            return
 
 
 #: What the provider says when the plan's usage window is spent. The account

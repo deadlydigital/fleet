@@ -338,6 +338,20 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
             log(f"  self-check reachable, capped at {sc_env['FLEET_SELFCHECK_MAX']}")
         previous = {k: os.environ.get(k) for k in sc_env}
         os.environ.update(sc_env)
+        # SURFACED WHILE IT RUNS, AND NOT ACTED ON. A run past p90 of the 95
+        # on record is worth a reader's attention and is not worth stopping:
+        # a ceiling there would have cut 9 failures and 5 verified runs. See
+        # agent.NOTABLE_OUTPUT_TOKENS. The note goes on the result too, so a
+        # tick nobody watched still says it happened.
+        def _notable(tokens: int, turns: int) -> None:
+            note = (f"still running past {tokens:,} output tokens over {turns} "
+                    f"turns, above the {agent_mod.NOTABLE_OUTPUT_TOKENS:,} "
+                    f"p90 of recorded runs -- large runs fail about twice as "
+                    f"often, and this one is not being stopped for it")
+            log(f"  ! {note}")
+            result.notes.append(note)
+
+        agent_mod.on_notable_run = _notable
         try:
             outcome = agent_mod.invoke(
                 wt_path, prompt, int(remaining),
@@ -346,6 +360,7 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 readable=tuple(readable),
                 max_cost_usd=cap_usd)
         finally:
+            agent_mod.on_notable_run = None
             for k, v in previous.items():
                 if v is None:
                     os.environ.pop(k, None)
