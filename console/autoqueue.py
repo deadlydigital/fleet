@@ -74,6 +74,38 @@ BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
 
 REQUIRED = ("work_type", "repo", "title", "writable_paths")
 
+#: Every key a `fleet-spec` block may carry, and the reader of each.
+#:
+#: A BLOCK HAD NO SCHEMA AT ALL UNTIL 17 Sep 2026. `yaml.safe_load` accepts any
+#: mapping, six keys were read, and anything else was dropped without a word --
+#: so `auto_merge: false`, which the contract file documents as the way to ask
+#: for a human reviewer, sat in task 125's spec meaning nothing. A declaration
+#: nobody reads is worse than no declaration: it is a promise the writer
+#: believes and the system never made.
+#:
+#: Refusing the unknown rather than ignoring it, because a block is hand
+#: written and every key in it is an instruction somebody meant.
+BLOCK_KEYS = {
+    "work_type":        "the contract family, and the task's own work_type",
+    "repo":             "which checkout the task builds in",
+    "title":            "the task title",
+    "writable_paths":   "what the task declares it will write",
+    "contract":         "the contract file, re-validated in _named_contract",
+    "evidence_queries": "the task's own evidence pack queries",
+    "auto_merge":       "false withholds unattended merge; true changes nothing",
+}
+
+#: Contract keys deliberately NOT frozen onto the task, each because something
+#: else already consumed it. Everything a contract declares that is not here is
+#: carried -- see the `frozen` comment for why that default is the safe one.
+EXCLUDED_FROM_FROZEN = {
+    "repo":             "becomes tasks.repo",
+    "base_branch":      "becomes tasks.base_branch",
+    "max_cost_gbp":     "becomes tasks.max_cost_gbp",
+    "timeout_seconds":  "becomes tasks.timeout_seconds",
+    "max_requirements": "a queue-time gate; nothing downstream asks again",
+}
+
 #: A draft spec writes here and nowhere else -- contracts/draft-spec.yaml.
 DRAFTS = "drafts/"
 
@@ -199,8 +231,25 @@ def spec_blocks(markdown: str) -> list[dict[str, Any]]:
         missing = [f for f in REQUIRED if not block.get(f)]
         if missing:
             raise QueueRefused(f"{where} is missing {missing}")
+        unknown = sorted(set(block) - set(BLOCK_KEYS))
+        if unknown:
+            raise QueueRefused(
+                f"{where} declares {unknown}, which nothing reads. A key a "
+                f"block may carry is one with a reader: "
+                f"{sorted(BLOCK_KEYS)}. This is refused rather than ignored "
+                f"because task 125's spec set `auto_merge: false` -- the very "
+                f"thing its contract file documents as the way to ask for a "
+                f"human reviewer -- and was queued, verified and made eligible "
+                f"for an unattended merge with nobody told the flag had gone "
+                f"nowhere. Remove the key, or give it a reader and add it to "
+                f"BLOCK_KEYS.")
         if not isinstance(block.get("writable_paths"), list):
             raise QueueRefused(f"{where}'s writable_paths is not a list")
+        if "auto_merge" in block and not isinstance(block["auto_merge"], bool):
+            raise QueueRefused(
+                f"{where}'s auto_merge is {block['auto_merge']!r}, not a "
+                f"boolean. `auto_merge: \"false\"` is a non-empty string and "
+                f"would read as consent.")
         out.append(block)
 
     # PAIRWISE DISJOINT, AND IT IS LOAD BEARING RATHER THAN TIDINESS.
@@ -474,41 +523,62 @@ def _queue_blocks(task: dict[str, Any], blocks: list, rel: str,
                     f"the run is how that is discovered. Split the work into "
                     f"smaller specs, or raise max_requirements in "
                     f"{contract_file} knowing what it is being raised past.")
-        frozen = {
+        # EVERYTHING THE CONTRACT DECLARES, MINUS A NAMED SET. NOT AN OPT-IN
+        # LIST, AND THAT INVERSION IS THE WHOLE POINT.
+        #
+        # This copied a hand-typed list of key names until 17 Sep 2026, and a
+        # contract key that was not on it was dropped in silence. The failure
+        # direction is the bad one: the task looks contracted and is simply
+        # missing a capability, so nothing anywhere reports it.
+        #
+        # It went wrong three times in ten days, each found by accident:
+        #
+        #   read_only_links   added to the list after the write probe refused
+        #                     an accept for a write nobody makes
+        #   evidence_queries  added 15 Sep -- "an AUTOQUEUED task could never
+        #                     carry them however the contract was written"
+        #   self_check        NEVER on the list. contracts/draft-spec.yaml has
+        #     self_check_max  declared all three since 8 Sep 2026 and all 32
+        #     paths_pack      autoqueued draft_spec tasks since ran without
+        #                     them: 0 of 37 runs ever recorded a self-check,
+        #                     and the paths pack listed 4000 entries of a
+        #                     46,193-file tree instead of the ~170 under the
+        #                     two roots the contract narrows it to.
+        #
+        # So the default is now CARRY. A key has to be argued OUT, in
+        # EXCLUDED_FROM_FROZEN, and tests/test_frozen_contract.py fails if a
+        # contract declares anything that is neither carried nor excluded --
+        # which is what makes a silent drop impossible rather than unlikely.
+        frozen = {k: v for k, v in contract.items()
+                  if k not in EXCLUDED_FROM_FROZEN}
+        # AND THE FEW THE BLOCK OR THIS FUNCTION OWNS, AFTER the copy so they
+        # win. `work_type` in particular comes from the spec BLOCK, which is
+        # the thing being queued; the contract file's copy of it is the file's
+        # own identity and must not overwrite it.
+        frozen.update({
             "work_type": work_type,
             "writable_paths": list(contract.get("writable_paths") or []),
             "protected_paths": list(contract.get("protected_paths") or []),
             "verification": list(contract.get("verification") or []),
             "max_diff_lines": contract.get("max_diff_lines"),
-        }
-        # max_test_diff_lines travels with creatable_paths or the task loses
-        # its test allowance and the boundary falls back to one budget --
-        # §9.4's flattened objective_ref, arriving by the same route.
-        # test_diff_target travels with it for the same reason and a different
-        # symptom: the boundary would be fine and the PROMPT would lose its
-        # figure, falling back to a fraction of a bound that is deliberately
-        # nowhere near what the test should be.
-        for opt in ("creatable_paths", "max_test_diff_lines", "test_diff_target",
-                    # With worktree_links, never apart from it: a frozen
-                    # contract holding the link and not the opt-out is the
-                    # write probe refusing an accept for a write nobody makes.
-                    "read_only_links",
-                    "paired_paths",
-                    "worktree_links", "readable_repos", "agent_tools",
-                    # EVIDENCE_QUERIES WAS NOT ON THIS LIST UNTIL 15 Sep 2026,
-                    # and its absence was a third, unreported reason the pack
-                    # never ran. `fleet task add` freezes the whole contract
-                    # file, so tasks 4 and 5 carry queries; this path builds
-                    # `frozen` from the named keys above, so an AUTOQUEUED task
-                    # could never carry them however the contract was written.
-                    # Since the chain autoqueues everything, putting queries on
-                    # research.yaml -- §9.16's proposal -- would have changed
-                    # nothing at all.
-                    "evidence_queries",
-                    "evidence_pack",
-                    "auto_merge", "contract_version"):
-            if contract.get(opt) is not None:
-                frozen[opt] = contract[opt]
+        })
+        # THE SPEC'S OWN auto_merge, WHICH IS THE ONE THE CONTRACT DOCUMENTS.
+        #
+        # contracts/deadly-digital-platform-api.yaml says, in the file:
+        # "A spec that wants a person to see it sets `auto_merge: false` in its
+        # fleet-spec block." Nothing read it. The key was on the old opt-in
+        # list and is carried by the copy above, but from the CONTRACT FILE --
+        # so a spec asking for a reviewer was frozen with the contract's
+        # `auto_merge: true` and became eligible for an unattended merge.
+        # Task 125, 17 Sep 2026, was 1h20m from exactly that.
+        #
+        # ONE DIRECTION ONLY. A block may withhold consent the contract gives;
+        # it may not grant consent the contract withholds. Anything else lets a
+        # spec widen its own contract, which is what this whole module refuses
+        # -- and `auto_merge: true` in a block is therefore accepted, read, and
+        # allowed to change nothing.
+        if block.get("auto_merge") is False:
+            frozen["auto_merge"] = False
 
         # THE QUERIES THE DRAFT ITSELF ASKED FOR.
         #

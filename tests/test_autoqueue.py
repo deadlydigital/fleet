@@ -261,19 +261,21 @@ class TestWhatItQueues:
         shipped = yaml.safe_load(
             (_P(__file__).resolve().parent.parent / "contracts"
              / "dd-analytics-frontend.yaml").read_text())
-        for opt in ("creatable_paths", "paired_paths", "worktree_links",
-                    "readable_repos", "agent_tools", "contract_version",
-                    # BOTH SIZE FIGURES, and they go wrong differently if
-                    # dropped. Without max_test_diff_lines the boundary stops
-                    # splitting and the test competes with the change again;
-                    # without test_diff_target the prompt falls back to a
-                    # fraction of a bound set never to bind, and anchors the
-                    # agent at 900 lines. Neither failure is visible in the
-                    # row -- both show up a run later.
-                    "max_test_diff_lines", "test_diff_target"):
-            if shipped.get(opt) is not None:
-                assert c.get(opt) == shipped[opt], (
-                    f"{opt} is in the contract and not in the frozen row")
+        # EVERY KEY THE CONTRACT DECLARES, derived from the file rather than
+        # typed. This was a hand-picked tuple until 17 Sep 2026, and a tuple
+        # is exactly what cannot report the failure it exists for: a key the
+        # contract declares and the freeze drops is invisible unless somebody
+        # thought to add it here too. self_check, self_check_max and
+        # paths_pack were dropped for nine days and no test noticed, because
+        # no test named them.
+        #
+        # EXCLUDED_FROM_FROZEN is subtracted because those five are consumed
+        # into task COLUMNS or at queue time -- the one list that has to be
+        # maintained, and the one that fails loudly when it is wrong
+        # (tests/test_frozen_contract.py).
+        for opt in sorted(set(shipped) - set(autoqueue.EXCLUDED_FROM_FROZEN)):
+            assert c.get(opt) == shipped[opt], (
+                f"{opt} is in the contract and not in the frozen row")
         assert c["creatable_paths"]
         assert c["test_diff_target"] < c["max_test_diff_lines"]
 
@@ -428,3 +430,91 @@ class TestWhatItQueues:
             task, patch, merged,
             markdown=_draft(_block(title="FROM THE CLONE THAT MERGED IT")))
         assert q.title == "FROM THE CLONE THAT MERGED IT"
+
+
+class TestTheSpecMayWithholdUnattendedMerge:
+    """`auto_merge: false` in a block, which the contract file documents and
+    nothing read until 17 Sep 2026.
+
+    contracts/deadly-digital-platform-api.yaml, in the file: "A spec that
+    wants a person to see it sets `auto_merge: false` in its fleet-spec
+    block." Task 125's spec did exactly that, was frozen with the contract's
+    `auto_merge: true`, and was 1h20m from an unattended push to origin/main
+    while believed held.
+    """
+
+    @pytest.fixture
+    def draft_with(self, dsns, console, tmp_path, monkeypatch):
+        """A merged draft whose block is whatever the test asks for."""
+        def build(**over):
+            root = tmp_path / f"repos{len(list(tmp_path.iterdir()))}"
+            repo = root / "fleet"
+            repo.mkdir(parents=True)
+            sh(repo, "git", "init", "-q", "-b", "master")
+            sh(repo, "git", "config", "user.email", "t@t")
+            sh(repo, "git", "config", "user.name", "t")
+            (repo / "drafts").mkdir()
+            (repo / "drafts" / "d.md").write_text(_draft(_block(**over)))
+            sh(repo, "git", "add", "-A")
+            sh(repo, "git", "commit", "-q", "-m", "the merged draft")
+            merged = subprocess.run(
+                ("git", "-C", str(repo), "rev-parse", "HEAD"),
+                capture_output=True, text=True).stdout.strip()
+            monkeypatch.setattr(autoqueue.config, "repo_root", lambda: root)
+            from console import approve
+            contract, _c, _t, _b = approve._draft_spec_contract()
+            row = console.execute(
+                "INSERT INTO tasks (title, spec_md, repo, base_branch,"
+                " acceptance_contract, max_cost_gbp, status, objective_ref)"
+                " VALUES ('Draft spec: x','spec','fleet','master',%s,2.00,"
+                " 'QUEUED','dd-feature-parity') RETURNING id",
+                (json.dumps(contract),)).fetchone()
+            console.commit()
+            task = dict(console.execute(
+                "SELECT * FROM tasks WHERE id=%s", (row["id"],)).fetchone())
+            return task, {"files_changed": ["drafts/d.md"]}, merged
+        return build
+
+    def _frozen(self, console, q):
+        return console.execute("SELECT acceptance_contract AS c FROM tasks"
+                               " WHERE id=%s", (q.task_id,)).fetchone()["c"]
+
+    def test_the_contract_permits_it_by_default(self, draft_with, console):
+        """The baseline the next test is a departure from."""
+        q = autoqueue.from_accepted_draft(*draft_with())
+        assert self._frozen(console, q)["auto_merge"] is True
+
+    def test_a_block_saying_false_withholds_it(self, draft_with, console):
+        q = autoqueue.from_accepted_draft(*draft_with(auto_merge=False))
+        assert self._frozen(console, q)["auto_merge"] is False
+
+    def test_the_withheld_task_is_refused_by_the_merge_gate(self, draft_with,
+                                                            console):
+        """The property that matters, asserted where it is finally read --
+        console.automerge.eligible gate 2 -- rather than on the row."""
+        from console import automerge
+        q = autoqueue.from_accepted_draft(*draft_with(auto_merge=False))
+        task = dict(console.execute("SELECT * FROM tasks WHERE id=%s",
+                                    (q.task_id,)).fetchone())
+        verdict = automerge.eligible(task, None)
+        assert not verdict.ok
+        assert "auto_merge: false" in verdict.reason
+
+    def test_a_block_may_not_GRANT_what_the_contract_withholds(self,
+                                                               draft_with,
+                                                               console,
+                                                               monkeypatch):
+        """One direction only. A spec may withhold consent its contract gives;
+        it may not widen its own contract, which is the one thing this whole
+        module exists to refuse. `auto_merge: true` is read and changes
+        nothing."""
+        # The block names no contract, so `_contract_for` is the resolver.
+        real = autoqueue._contract_for
+
+        def withholding(work_type, repo, declared):
+            c, f = real(work_type, repo, declared)
+            return dict(c, auto_merge=False), f
+
+        monkeypatch.setattr(autoqueue, "_contract_for", withholding)
+        q = autoqueue.from_accepted_draft(*draft_with(auto_merge=True))
+        assert self._frozen(console, q)["auto_merge"] is False

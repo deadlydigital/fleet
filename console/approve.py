@@ -66,23 +66,40 @@ def _draft_spec_contract() -> tuple[Dict[str, Any], float, int, str]:
     from . import config
     path = config.PROJECT_ROOT / "contracts" / "draft-spec.yaml"
     data = yaml.safe_load(path.read_text()) or {}
-    contract = {
-        "work_type": data["work_type"],
-        "writable_paths": data["writable_paths"],
-        "protected_paths": data["protected_paths"],
-        "verification": data["verification"],
-        "worktree_links": data.get("worktree_links", {}),
-        "max_diff_lines": data["max_diff_lines"],
-    }
-    # draft-spec.yaml declares neither today. Carried anyway so that adding a
-    # test mandate to it later cannot silently drop the allowance here.
-    # read_only_links travels with worktree_links or the frozen contract keeps
-    # the link and loses the opt-out, which is the write probe refusing an
-    # accept again -- the same route 9.4's flattened objective_ref took.
-    for opt in ("creatable_paths", "max_test_diff_lines", "test_diff_target",
-                "read_only_links"):
-        if data.get(opt) is not None:
-            contract[opt] = data[opt]
+    # EVERYTHING draft-spec.yaml DECLARES, MINUS THE SAME NAMED SET, and from
+    # the same definition console/autoqueue.py uses. THE SECOND FREEZE SITE,
+    # and the one that actually made every draft_spec task on this host.
+    #
+    # It was its own hand-typed dict plus its own four-key opt-in list until
+    # 17 Sep 2026, and it dropped five things draft-spec.yaml declares:
+    #
+    #   self_check       the in-run gate, added to the contract 8 Sep 2026.
+    #   self_check_max   Never reached a task: 0 of 37 draft_spec runs ever
+    #   agent_tools      recorded a self-check. And without `agent_tools` the
+    #                    agent did not even have
+    #                    `Bash(contracts/checks/spec_selfcheck.sh)` -- Bash is
+    #                    absent from runner.yaml's default list on purpose --
+    #                    so the gate was unreachable, not merely unconfigured.
+    #   paths_pack       The listing fell back to the whole read-only tree:
+    #                    4000 entries capped out of 46,193, instead of the
+    #                    ~170 under the two roots the contract narrows it to.
+    #   contract_version the frozen contract carried no version stamp.
+    #
+    # TWO SITES, ONE RULE. Two freezes maintained by hand are two lists to
+    # forget, and they forgot different keys -- autoqueue carried
+    # `agent_tools` and dropped `self_check`; this one dropped both. The
+    # exclusions are imported rather than repeated for exactly that reason.
+    #
+    # Imported inside the function, like `config` above: `console.autoqueue`
+    # pulls in the whole queueing path and this module is imported by the
+    # console's request handlers.
+    from . import autoqueue
+    contract = {k: v for k, v in data.items()
+                if k not in autoqueue.EXCLUDED_FROM_FROZEN}
+    # And the shapes this function guarantees to its caller, after the copy.
+    # `worktree_links` defaults to {} rather than being absent, because
+    # runner/worktree.link_dependencies is handed it directly.
+    contract["worktree_links"] = data.get("worktree_links", {})
     return (contract, float(data["max_cost_gbp"]),
             int(data["timeout_seconds"]), str(data["base_branch"]))
 

@@ -1,4 +1,20 @@
-#!/usr/bin/env python3
+#!/home/ubuntu/fleet/.venv/bin/python
+# THE VENV INTERPRETER, ABSOLUTELY, AND NOT `env python3`.
+#
+# It was `#!/usr/bin/env python3` until 17 Sep 2026. The system python has no
+# psycopg, so typing `./tools/fleet-pull` died in `console/pull.building()`
+# with ModuleNotFoundError before it could ask the one question this file
+# exists to ask -- whether a run is in flight. Not a pull that went wrong: a
+# pull that never happened and never asked, from the command a PERSON types,
+# which is the only caller whose interpreter is chosen by this line.
+#
+# The other entry points never showed it. `run_chain.py` and the rest are
+# invoked as `/home/ubuntu/fleet/.venv/bin/python run_chain.py` by their units,
+# so their shebangs are decoration. This one is load bearing.
+#
+# Absolute rather than relative for the reason the file already hardcodes
+# `sys.path.insert(0, "/home/ubuntu/fleet")` below: a person types this from
+# whatever directory they happen to be in.
 """Catch a checkout up, and refuse to do it while the runner is building.
 
     tools/fleet-pull                 both checkouts

@@ -49,6 +49,7 @@ import re
 
 import yaml
 
+from console import autoqueue
 from runner import config
 from runner import evidence
 
@@ -84,7 +85,20 @@ def connect():
 _BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
 
 
+class SpecBlockRefused(RuntimeError):
+    """The block says something no reader consumes."""
+
+
 def _spec_block(spec_md: str) -> dict | None:
+    """The block, or None. Lenient about ABSENCE, strict about CONTENT.
+
+    No block is not an error -- most hand-queued specs carry none. A block
+    that IS here gets the same key check `console.autoqueue.spec_blocks` does,
+    from the same definition, because the two parsers disagreeing about what a
+    block may say is how `auto_merge: false` came to mean nothing on task 125.
+    This file read exactly one key (`evidence_queries`) and silently ignored
+    every other, which made it the more permissive of the two.
+    """
     m = _BLOCK_RE.search(spec_md or "")
     if not m:
         return None
@@ -92,7 +106,15 @@ def _spec_block(spec_md: str) -> dict | None:
         got = yaml.safe_load(m.group(1))
     except Exception:
         return None
-    return got if isinstance(got, dict) else None
+    if not isinstance(got, dict):
+        return None
+    unknown = sorted(set(got) - set(autoqueue.BLOCK_KEYS))
+    if unknown:
+        raise SpecBlockRefused(
+            f"the fleet-spec block declares {unknown}, which nothing reads. "
+            f"A key a block may carry is one with a reader: "
+            f"{sorted(autoqueue.BLOCK_KEYS)}.")
+    return got
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -127,7 +149,22 @@ def cmd_add(args: argparse.Namespace) -> int:
     #
     # Validated by the same function the draft check and autoqueue use, so all
     # three refuse the same block.
-    block = _spec_block(spec_md)
+    try:
+        block = _spec_block(spec_md)
+    except SpecBlockRefused as exc:
+        print(f"{spec_path}: {exc}", file=sys.stderr)
+        return 2
+
+    # AND THE SPEC'S OWN auto_merge, ON THE SAME ARGUMENT AS THE READINGS
+    # ABOVE: the two queueing paths must not disagree about the same spec.
+    # `console.autoqueue` withholds unattended merge when a block says so, and
+    # a spec queued BY HAND must not quietly become eligible for one because a
+    # person typed the command instead of the chain. One direction only -- a
+    # block may withhold the consent its contract gives, never grant consent
+    # the contract withholds.
+    if block and block.get("auto_merge") is False:
+        contract = dict(contract, auto_merge=False)
+
     if block and block.get("evidence_queries") is not None:
         try:
             checked = evidence.validate_task_queries(block["evidence_queries"])
