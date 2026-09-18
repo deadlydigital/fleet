@@ -202,6 +202,31 @@ def _reason(approved: List[Dict[str, Any]], below: List[Dict[str, Any]],
         # only one that passed the gates" is a much weaker claim than "the best
         # of nine" and the record should not let them read alike.
         held = len([b for b in below if not b["gate"]["eligible"]])
+
+        # AND IT IS ONLY "THE ONLY ONE" WHEN ONE WAS TAKEN. This branch is
+        # reached whenever the cut empties the eligible list, which at pace 1
+        # and pace 2 with a full pool never happened with more than one row in
+        # hand -- so the sentence hardcoded `top` and called it the only
+        # candidate. Measured on 18 Sep 2026 against the live pool: at a cut of
+        # 7 it approved 71, 72, 77, 73, 74, 75 and 78 and wrote "Candidate 71
+        # is the only candidate that passed the gates", a false sentence in the
+        # one column 010 §4 exists to keep true, on seven rows at once.
+        #
+        # RAISING THE PACE IS WHAT MAKES IT REACHABLE, so it is fixed here
+        # rather than in the migration: the ceiling is not the bug, and a
+        # ceiling that has to stay low to keep a sentence honest is a worse
+        # thing to be left with than either.
+        if len(approved) > 1:
+            ids = ", ".join(str(a["id"]) for a in approved)
+            return (head + f"Candidates {ids} are EVERY candidate that passed "
+                    f"the gates, and the cut ({len(approved)}) was wide enough "
+                    f"to take all of them; the other {held} were each held by a "
+                    f"rule, listed in mechanics. NONE OF THESE WAS PREFERRED "
+                    f"OVER ANOTHER and no key was used to separate them, "
+                    f"because nothing was left below the line to prefer them "
+                    f"over. The order they appear in is the rank order and "
+                    f"nothing more.")
+
         return (head + f"Candidate {top['id']} ({top['title'][:70]}) is the only "
                 f"candidate that passed the gates; the other {held} were each "
                 f"held by a rule, listed in mechanics. It was not preferred over "

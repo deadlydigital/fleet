@@ -288,13 +288,53 @@ def _approve(cfg, conn, *, dry_run, emit) -> tuple[Step, str | None]:
     autoapprove. The loop does not re-implement or second-guess one of them; it
     only decides WHEN to ask.
     """
-    from console import autoapprove
+    from console import autoapprove, retire
+
+    # RETIREMENT FIRST, BECAUSE THE OTHER ENTRY POINT DOES IT AND THIS ONE IS
+    # THE ONLY ONE THAT RUNS.
+    #
+    # run_autoapprove.py retires before it sweeps, on the argument in its own
+    # header: "a candidate the tree has already answered must not be ranked".
+    # This loop called sweep() alone -- so the whole of that argument was
+    # carried by a unit whose timer has been `disabled` since the chain took
+    # over. On 18 Sep 2026 the same six rows (c21, c22, c30, c35, c61, c70)
+    # had been offered by every `--dry-run` for days and retired by nothing,
+    # because the only path that retires was the path nobody runs.
+    #
+    # That is the second half of the same defect as the `refused` line below:
+    # the dry run was describing run_autoapprove.py while the fleet was
+    # running chain.py, and the two had quietly stopped being the same sweep.
+    #
+    # It never refuses, for run_autoapprove.py's reason: a night with nothing
+    # to retire is the ordinary case, and failing to classify one row must not
+    # cost the pass its approval.
+    r = retire.retire(dry_run=dry_run)
+    if r["would_retire"]:
+        emit(f"  {'would retire' if dry_run else 'retired'} "
+             f"{len(r['would_retire'])} candidate(s) the tree has already "
+             f"answered: " + ", ".join(f"c{i}" for i in r["would_retire"]))
 
     plan = autoapprove.sweep(dry_run=dry_run)
     ids = plan.get("approve_ids") or []
     if not ids:
+        # `reason` AND `refused`, FOR THE REASON _merge GIVES ABOVE ABOUT
+        # `merged` AND `would_merge`: the two keys carry the same fact on two
+        # paths, and reading one prints an empty explanation for the other.
+        #
+        # plan() sets `reason` to None the moment it declines and puts the
+        # sentence in `refused` -- so every refusal this loop has ever printed
+        # read "nothing was eligible", which is not a paraphrase of the
+        # refusal but a DIFFERENT AND FALSE CLAIM. At 08:00 on 18 Sep 2026
+        # seven rows were eligible and the sweep refused because c72 and c77
+        # were indistinguishable on every key; decision 121 records that
+        # sentence in full, and the journal said nothing was eligible.
+        #
+        # The database was right the whole time. This line is what a person
+        # reads at 08:00, and it was the one thing in the system telling them
+        # the pool was empty when it was tied.
         return Step("approve", False,
-                    plan.get("reason") or "nothing was eligible"), None
+                    plan.get("refused") or plan.get("reason")
+                    or "nothing was eligible"), None
     return Step("approve", True,
                 f"approved {len(ids)} candidate(s): "
                 f"{', '.join(str(i) for i in ids)}"), None

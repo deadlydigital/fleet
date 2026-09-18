@@ -642,6 +642,40 @@ class TestTheReasonOrNothing:
         assert "only candidate that passed the gates" in p["reason"]
         assert "there was none" in p["reason"]
 
+    def test_taking_every_eligible_row_does_not_call_one_of_them_the_only_one(
+            self, dsns, console, admin):
+        """The branch above is reached whenever the cut EMPTIES the eligible
+        list -- not only when one row passed. At pace 1 and pace 2 against a
+        full pool that never happened with more than one row in hand, so the
+        sentence hardcoded the top row and called it the only candidate.
+
+        Measured against the live pool on 18 Sep 2026: at a cut of 7 it
+        approved 71, 72, 77, 73, 74, 75 and 78 and wrote "Candidate 71 is the
+        only candidate that passed the gates". Seven rows approved, one named,
+        and the claim false about all seven -- in `decision_log.reason`, the
+        column 010 §4 exists to keep true. Raising the pace is what makes it
+        reachable, which is why it is fixed in the sentence and not the
+        ceiling.
+        """
+        _pool(admin)
+        _pace(admin, 3)
+        b = _batch(console)
+        a = _cand(console, b, title="First eligible")
+        c = _cand(console, b, title="Second eligible")
+        d = _cand(console, b, title="Third eligible")
+        _cand(console, b, title="Held one", probes=[{"path_exists": "nope.py"}])
+
+        p = autoapprove.plan()
+        assert p["approve_ids"] == [a, c, d], (
+            "the fixture must take every eligible row for this to be the "
+            "branch under test")
+        # THE BITE. The old sentence names exactly one of three and calls it
+        # the only one.
+        assert "only candidate that passed the gates" not in p["reason"]
+        for i in (a, c, d):
+            assert str(i) in p["reason"]
+        assert "NONE OF THESE WAS PREFERRED OVER ANOTHER" in p["reason"]
+
 
 class TestWhatIsRecorded:
     def test_an_unattended_approval_writes_its_working(

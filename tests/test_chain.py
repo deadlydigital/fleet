@@ -452,3 +452,91 @@ def test_a_task_at_its_attempt_ceiling_is_not_peeked(dsns, console, runner):
     console.commit()
     assert chain.next_claimable(console, None) is None
     assert runner.execute("SELECT claim_task(NULL) AS id").fetchone()["id"] is None
+
+
+# ---- what the approve stage SAYS -------------------------------------------
+
+class TestTheApproveStageReportsTheRefusalItWasGiven:
+    """The dry run and the loop were never two rankings. They were one ranking
+    and two sentences, and only one of the sentences was true.
+
+    On 18 Sep 2026 `run_autoapprove.py --dry-run` and the 08:00 chain run read
+    the same pool minutes apart. Both refused, identically, because c72 and c77
+    tied on every key -- decision 121 records that sentence in full. The dry run
+    printed it. The loop printed "nothing was eligible", with seven rows
+    eligible. plan() sets `reason` to None when it declines and puts the
+    sentence in `refused`, and this stage read only `reason`.
+    """
+
+    def _approve(self, monkeypatch, plan, *, dry_run=False):
+        """Drive the REAL _approve over a stubbed sweep. The bug lived in the
+        four lines the rest of this file monkeypatches away."""
+        from console import autoapprove, retire
+        monkeypatch.setattr(autoapprove, "sweep", lambda **_k: plan)
+        monkeypatch.setattr(retire, "retire",
+                            lambda **_k: {"would_retire": [], "retired": 0})
+        said = []
+        step, stop = chain._approve(None, None, dry_run=dry_run,
+                                    emit=said.append)
+        return step, stop, said
+
+    def test_a_refusal_is_reported_with_the_reason_the_sweep_gave(
+            self, monkeypatch):
+        refusal = ("candidates 72 and 77 are indistinguishable on every key "
+                   "that means anything")
+        step, _stop, _said = self._approve(
+            monkeypatch, {"approve_ids": [], "reason": None,
+                          "refused": refusal})
+        assert step.acted is False
+        assert step.detail == refusal
+        # The bite: the old line is not merely unhelpful, it is a different
+        # and false claim, and it must not survive anywhere in the detail.
+        assert "nothing was eligible" not in step.detail
+
+    def test_nothing_was_eligible_survives_only_when_nothing_was(
+            self, monkeypatch):
+        """The fallback is still correct for the case it was written for: a
+        sweep that offers neither key says the honest generic."""
+        step, _stop, _said = self._approve(
+            monkeypatch, {"approve_ids": []})
+        assert step.detail == "nothing was eligible"
+
+    def test_an_approval_still_names_what_it_approved(self, monkeypatch):
+        step, _stop, _said = self._approve(
+            monkeypatch, {"approve_ids": [71, 72, 77], "reason": "because"})
+        assert step.acted is True
+        assert "71, 72, 77" in step.detail
+
+
+class TestTheLoopRetiresWhatTheTreeAnswered:
+    """run_autoapprove.py retires before it sweeps; this loop did not, and this
+    loop is the only one whose timer is enabled. So the six rows every dry run
+    offered were retired by nothing, for days."""
+
+    def _run(self, monkeypatch, *, dry_run=False, would=(21, 22, 30)):
+        from console import autoapprove, retire
+        calls = []
+
+        def fake_retire(**kw):
+            calls.append(kw)
+            return {"would_retire": list(would), "retired": len(would)}
+
+        monkeypatch.setattr(retire, "retire", fake_retire)
+        monkeypatch.setattr(autoapprove, "sweep",
+                            lambda **_k: {"approve_ids": [],
+                                          "refused": "tied"})
+        said = []
+        chain._approve(None, None, dry_run=dry_run, emit=said.append)
+        return calls, said
+
+    def test_the_approve_stage_retires_before_it_ranks(self, monkeypatch):
+        calls, said = self._run(monkeypatch)
+        assert calls, "the loop swept without retiring, which is the defect"
+        assert any("retired 3 candidate(s)" in m for m in said)
+        assert any("c21" in m for m in said)
+
+    def test_a_dry_run_retires_nothing_and_says_would(self, monkeypatch):
+        calls, said = self._run(monkeypatch, dry_run=True)
+        assert calls == [{"dry_run": True}], (
+            "a dry run that writes SHIPPED is the one thing --dry-run means")
+        assert any("would retire" in m for m in said)
