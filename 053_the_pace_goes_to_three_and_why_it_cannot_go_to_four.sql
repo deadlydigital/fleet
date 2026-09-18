@@ -76,11 +76,34 @@
 -- ties -- has never once had anything to read. Populating it, or adding a
 -- sixth key, raises throughput at every pace. Moving the pace does not.
 --
--- WHAT IT GIVES UP, on 044's precedent of saying so plainly: a bad night is
--- now three draft-spec tasks rather than two. draft_spec remains on
--- console/automerge.py's NEVER_UNATTENDED, so the output is still markdown on
--- a local branch no auto-merge will touch, and `console/undo.py` is still one
--- command and still only complete before the runner claims the task.
+-- WHAT IT GIVES UP, on 044's precedent of saying so plainly -- AND THE FIRST
+-- VERSION OF THIS PARAGRAPH WAS WRONG, WHICH IS WHY IT IS CORRECTED HERE
+-- RATHER THAN QUIETLY REPLACED.
+--
+-- It said: "draft_spec remains on console/automerge.py's NEVER_UNATTENDED, so
+-- the output is still markdown on a local branch no auto-merge will touch."
+-- That sentence is copied from 044, from fleet-autoapprove.service and from
+-- console/autoapprove.py's own header, and it stopped being true on 10 Sep
+-- 2026. NEVER_UNATTENDED today is ("research", "candidate_producer",
+-- "dd_infra"). `draft_spec` is in DOCUMENT_WORK_TYPES instead, and automerge's
+-- comment on that line is explicit: taking it off "DID NOT MAKE IT MERGE" only
+-- until gate 3 was taught what evidence a document can offer. It merges now,
+-- unattended, when draft_spec_shape.py passes against the merged tree.
+--
+-- SO THE REAL BLAST RADIUS OF A NIGHT AT THIS PACE IS NOT THREE MARKDOWN
+-- FILES ON A LOCAL BRANCH. It is three draft specs that merge themselves, and
+-- `autoqueue.from_accepted_draft` hanging a CODE task off each one as it
+-- lands -- six tasks, 600,000 output tokens at the 100,000 ceiling, against
+-- the 945,972 this window has left. The window still has room for that and
+-- would not have room for a second night of it before Sunday.
+--
+-- Nothing above this line changes: 3 remains the only reachable cut that
+-- lands on a class boundary. But the number was chosen believing a bad night
+-- was cheap, and it is a good deal less cheap than that, so the argument is
+-- restated with the true cost rather than left resting on a sentence that
+-- four files still repeat. `console/undo.py` is still one command and still
+-- only complete before the runner claims the task, which is now the thing
+-- doing the work in this paragraph.
 --
 -- Target: PostgreSQL 15+, same floor as 013.
 -- ============================================================================
