@@ -40,7 +40,7 @@ from psycopg.types.json import Jsonb
 
 from runner import agent as agent_mod
 from runner import boundary, config, evidence, packs, reclaim as reclaim_mod
-from runner import verify, worktree
+from runner import repair, verify, worktree
 
 FORBIDDEN_RUN_STATUS = {"DEPLOYED"}
 
@@ -440,6 +440,21 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                           branch_point_sha=branch_point_sha,
                           self_checks=self_checks)
             return
+
+        # ---- the import sort, before the diff is taken ----
+        #
+        # HERE AND NOT AFTER VERIFICATION FAILS. Three correct branches have
+        # been thrown away over an import block ruff would group differently
+        # -- task 58, task 87's near-miss, task 136 -- and a re-roll buys a
+        # different diff, not the same one with sorted imports. See
+        # runner/repair.py for why this became safe only after 62b7fc9 fixed
+        # the root the ratchet judges against, and for what it deliberately
+        # does not touch.
+        #
+        # BEFORE THE COMMIT, so the sorted line is part of the agent's commit
+        # and is therefore counted against the diff budget, judged by the
+        # boundary, verified and merged like every other line in it.
+        repair.sort_imports(wt_path, contract, base_sha, log)
 
         # ---- what it actually did ----
         boundary.commit_agent_work(
