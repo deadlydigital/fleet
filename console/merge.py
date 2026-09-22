@@ -123,9 +123,75 @@ def _count(repo: Path, spec: str) -> int | None:
         return None
 
 
+#: Where a throwaway clone goes when the checkout cannot answer a question.
+#: Overridable so a test can point it somewhere it owns.
+TRIAL_PREFIX = "fleet-merge-base"
+
+
+def _merge_base_via_trial(repo: Path, url: str, base: str, branch: str,
+                          remote_base_sha: str, trial_root: Path) -> str:
+    """merge-base(remote base, branch), answered where the objects can exist.
+
+    THE CHECKOUT CANNOT ANSWER THIS AND MUST NOT BE MADE TO. `ls-remote` reads
+    a sha and fetches nothing, so a base the console merged minutes ago -- from
+    a trial clone, pushed to the remote -- is a sha this checkout has never
+    seen. Fetching it INTO the checkout is the obvious repair and is the one
+    thing forbidden: since 2026-09-09 the console has no `ReadWritePaths` at
+    all, and granting it `/home/ubuntu/fleet/.git` would make `.git/hooks`
+    writable in the repository the console's own code is served from.
+
+    So the question moves to the one place the console may write. A clone of
+    the checkout already holds the branch and nearly all of the history --
+    0.27s and 6 MB for the fleet checkout, measured in
+    `worktree.create_trial_clone` -- and the fetch from the real remote then
+    carries only the commits the checkout is missing, which is exactly the
+    handful this whole defect is about.
+
+    Returns "" when the question could not be answered: no network, no such
+    branch, a remote that is down. The caller must NOT read that as a refusal
+    -- `reverify._stand_on_remote_base` makes the same argument, and it is the
+    same argument: "the network blinked" and "this branch is bad" are not the
+    same sentence.
+    """
+    from runner import worktree
+
+    trial = None
+    try:
+        trial_root.mkdir(parents=True, exist_ok=True)
+        # THE SHA, NOT THE NAME. A clone checked out `--detach` carries the
+        # branch's commits and no local ref by that name, so `merge-base
+        # <base> fleet/task-1` there resolves nothing and returns empty --
+        # which this function reports as "could not answer", turning the fix
+        # into a quieter version of the bug. `create_trial_clone` already
+        # resolves it; that is what the second return value is for.
+        trial, branch_sha = worktree.create_trial_clone(
+            repo, trial_root, f"{TRIAL_PREFIX}-{branch.replace('/', '-')}",
+            branch)
+        # By URL and read straight back off FETCH_HEAD, leaving no ref behind:
+        # `publish` adds a remote called `publish` to a trial later, and a
+        # name added twice is an error on the path that matters.
+        if _git(trial, "fetch", "--quiet", url, base).returncode != 0:
+            return ""
+        if _git(trial, "cat-file", "-e",
+                f"{remote_base_sha}^{{commit}}").returncode != 0:
+            # The remote moved again between the ls-remote and this fetch.
+            # Nothing is wrong with the branch; we simply still cannot answer.
+            return ""
+        return _git(trial, "merge-base", remote_base_sha,
+                    branch_sha).stdout.strip()
+    except Exception:                                  # noqa: BLE001
+        # A clone that failed is a question unanswered, never a branch
+        # refused. See the docstring.
+        return ""
+    finally:
+        if trial is not None:
+            worktree.discard_trial_clone(trial)
+
+
 def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
               recorded_patch: str, branch_point: str = "",
-              remote: str = "origin") -> MergeOutcome:
+              remote: str = "origin",
+              trial_root: Path | None = None) -> MergeOutcome:
     """Everything that must hold before a merge is attempted.
 
     Returns an outcome whose `ok` says whether to proceed; `already_merged`
@@ -133,6 +199,9 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     """
     r = MergeOutcome(ok=False)
     base = task["base_branch"]
+    if trial_root is None:
+        from console import config
+        trial_root = config.trial_root()
 
     if task["status"] != "READY_FOR_REVIEW":
         return MergeOutcome(False, f"task {task['id']} is {task['status']}, "
@@ -253,11 +322,43 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     # and refused every branch this system builds. The `ancestor` check has
     # the same exposure one step earlier: a branch already merged on the
     # remote is not an ancestor of a local ref that never heard about it.
-    effective_base = (r.remote_base_sha
-                      if r.remote_base_sha
-                      and _git(repo, "cat-file", "-e",
-                               f"{r.remote_base_sha}^{{commit}}").returncode == 0
-                      else base)
+    #
+    # AND THE FALLBACK RE-OPENS THE HOLE IT WAS WRITTEN TO CLOSE, which is
+    # what 22 Sep 2026 cost. `ls-remote` reads a sha; it fetches no objects.
+    # So a base the console merged MINUTES ago -- pushed to the remote from a
+    # trial clone, because since 2026-09-09 the console has no write access to
+    # any checkout and cannot fast-forward one -- is a sha this checkout
+    # cannot resolve. `cat-file -e` fails, the base silently becomes the stale
+    # local ref, and the merge-base guard below says "the branch was rebased
+    # or master was rewritten" about a branch nobody touched.
+    #
+    # It is self-inflicted and it compounds within a single sweep:
+    #
+    #     09:17:44  task 144 merged as b40697d, pushed to the remote
+    #     09:17:45  task 145 refused: merge base ee97bc6 (the LOCAL ref),
+    #               branch point 2b56866
+    #     09:17:46  task 146 refused, identically
+    #
+    # Every branch after the FIRST merge of a sweep is exposed, so the more
+    # the loop merges the more it refuses. 145 and 146 were then stuck across
+    # two further passes and came unstuck only when a person pulled.
+    #
+    # `base_is_remote` records which repository actually answered, because the
+    # guard below must not read a false answer as a true one.
+    # `base_unanswerable` is narrower than "we are not on the remote's sha",
+    # and the difference matters: with NO remote at all this checkout is the
+    # only authority there is and its answer is the right one. What cannot be
+    # answered is the case where a remote base is KNOWN and unreachable.
+    base_is_remote = bool(
+        r.remote_base_sha
+        and _git(repo, "cat-file", "-e",
+                 f"{r.remote_base_sha}^{{commit}}").returncode == 0)
+    base_unanswerable = bool(r.remote_base_sha) and not base_is_remote
+    effective_base = r.remote_base_sha if base_is_remote else base
+    if base_unanswerable:
+        r.note(f"this checkout cannot resolve {r.remote_base_sha[:12]}, so it "
+               f"is standing on its own {base} at {(r.base_sha_before or '?')[:12]} "
+               f"and cannot answer where the branch was cut")
 
     # THE PRIMARY GUARD: the branch is the commit that was verified.
     #
@@ -353,16 +454,62 @@ def preflight(repo: Path, task: dict, branch: str, recorded_base: str,
     # this is skipped rather than guessed at. The tip check above already
     # establishes what is being merged, and the re-verification establishes
     # that it works there.
-    merge_base = _git(repo, "merge-base", effective_base, branch).stdout.strip()
+    #
+    # ASKED WHERE IT CAN BE ANSWERED, WHICH IS NOT ALWAYS HERE. A checkout
+    # that cannot resolve the base the branch will merge into has no opinion
+    # about where that branch was cut, and the number it returns instead is
+    # not a weaker answer -- it is an answer to a different question, wearing
+    # this one's verdict. Reading it as "rebased or rewritten" is how tasks
+    # 145 and 146 sat through three passes on 22 Sep with nothing wrong.
+    #
+    # So the fetch happens, in the one place the console may write, and only
+    # on the path that needs it. See `_merge_base_via_trial`.
     if branch_point:
-        if merge_base != branch_point:
+        if base_unanswerable:
+            merge_base = _merge_base_via_trial(
+                repo, url, base, branch, r.remote_base_sha, trial_root)
+            if merge_base:
+                r.note(f"the merge base was resolved in a throwaway clone, "
+                       f"because this checkout cannot see "
+                       f"{r.remote_base_sha[:12]}")
+        else:
+            merge_base = _git(repo, "merge-base", effective_base,
+                              branch).stdout.strip()
+
+        # UNANSWERED IS NOT REFUSED, and this is the only place the difference
+        # can be honoured. runner/verify.py draws the same line for checks --
+        # exit 2 is could-not-run and is recorded as undecided rather than as
+        # a failure -- and what is left standing here is the same as what is
+        # left standing there:
+        #
+        #   A REBASED BRANCH is still refused, by the PRIMARY guard above: a
+        #   rebase rewrites the tip, and the tip must equal the run's recorded
+        #   patch commit. That guard needs no base at all.
+        #
+        #   A REWRITTEN BASE is still caught by the re-verification, which
+        #   builds its own trial at the base the push will land on.
+        if not merge_base and base_unanswerable:
+            r.note(f"the merge base could not be established: this checkout "
+                   f"cannot resolve {r.remote_base_sha[:12]} and it could not "
+                   f"be fetched. The tip and the re-verification carry the "
+                   f"argument")
+        elif not merge_base:
+            # The checkout COULD see the base and still found no common
+            # ancestor. That is unrelated histories, not a question this
+            # module failed to ask, and it is a real refusal.
+            return MergeOutcome(
+                False,
+                f"{branch} and {base} at {effective_base[:12]} share no "
+                f"common ancestor, so there is no merge to make")
+        elif merge_base != branch_point:
             return MergeOutcome(
                 False,
                 f"the merge base is {merge_base[:12]} but this branch was cut "
                 f"from {branch_point[:12]}. Either the branch was rebased or "
                 f"{base} was rewritten; in both cases what would merge is not "
                 f"what the run reasoned about.")
-        r.note(f"merge base {merge_base[:12]} is where the branch was cut")
+        else:
+            r.note(f"merge base {merge_base[:12]} is where the branch was cut")
     else:
         r.note("this run recorded no branch point, so the merge base was not "
                "checked; the tip and the re-verification carry the argument")

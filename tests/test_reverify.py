@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from console import merge, reverify
+from console.merge import _git
 
 REPO = "deadly-digital-platform"
 from tests.support import PLATFORM_FLOOR
@@ -229,6 +230,188 @@ def test_a_run_with_no_branch_point_skips_that_check(repo, wt_root):
                           branch_point="")
     assert out.ok, out.reason
     assert any("no branch point" in d for d in out.detail)
+
+
+# ---- the base this checkout cannot see -----------------------------------
+#
+# 22 Sep 2026. The console merges into a trial clone and pushes to the remote,
+# because since 2026-09-09 it has no write access to any checkout and cannot
+# fast-forward one. So the moment a sweep merges its first task, the remote
+# base is a commit the checkout cannot resolve -- and every branch after it in
+# the same sweep was refused for "rebased or rewritten" without anything having
+# been rebased or rewritten. Tasks 145 and 146 sat through two further passes
+# and came unstuck only when a person pulled.
+
+def _sweep_shaped_repo(repo: Path, tmp_path: Path) -> tuple[str, str, str]:
+    """The exact shape a sweep leaves behind. Returns (branch_point, tip, remote_sha).
+
+    Reproducing the mechanism and not merely a disagreement, because a fixture
+    that only makes two shas differ will accept a fix that computes the wrong
+    one. What actually happened on 22 Sep:
+
+        C0   the checkout's `main`, where it has sat since the night before
+        C1   a task this sweep merged, pushed to the remote from a trial
+             clone. The runner FETCHED it when it cut the next branch, so
+             the checkout holds the objects while its own ref stays at C0.
+        C2   the next task this sweep merged, one second before the branch
+             below was examined. Never fetched; the checkout cannot see it.
+
+    The branch is cut from C1. `merge-base(C0, branch)` is C0 -- the stale
+    local answer that was reported as "rebased or rewritten".
+    `merge-base(C2, branch)` is C1, which is where it really was cut.
+    """
+    bare = tmp_path / "origin.git"
+    sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(bare))
+    sh(repo, "git", "remote", "add", "origin", str(bare))
+    sh(repo, "git", "push", "-q", "origin", "main")          # C0
+
+    other = tmp_path / "other"
+    sh(tmp_path, "git", "clone", "-q", str(bare), str(other))
+    sh(other, "git", "config", "user.email", "t@t")
+    sh(other, "git", "config", "user.name", "t")
+
+    def merged_by_the_sweep(name: str, body: str) -> str:
+        (other / name).write_text(body)
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-q", "-m", f"a task this sweep merged: {name}")
+        sh(other, "git", "push", "-q", "origin", "main")
+        return sh(other, "git", "rev-parse", "HEAD").strip()
+
+    c1 = merged_by_the_sweep("first.txt", "merged earlier in this sweep\n")
+    # The fetch runner.worktree.create does when it cuts the next branch. It
+    # moves remote-tracking refs and never HEAD, which is the whole point.
+    sh(repo, "git", "fetch", "-q", "origin", "main")
+    assert sh(repo, "git", "rev-parse", "HEAD").strip() != c1, \
+        "the fetch must not move the checkout's own ref"
+
+    sh(repo, "git", "checkout", "-q", "-b", "fleet/task-1", c1)
+    (repo / "api" / "provides.txt").write_text("v2\n")
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-q", "-m", "work")
+    tip = sh(repo, "git", "rev-parse", "HEAD").strip()
+    sh(repo, "git", "checkout", "-q", "main")
+
+    c2 = merged_by_the_sweep("second.txt", "merged one second ago\n")
+    return c1, tip, c2
+
+
+def test_a_base_this_checkout_cannot_resolve_is_fetched_and_answered(
+        repo, wt_root, tmp_path):
+    """THE 145/146 REGRESSION.
+
+    Nothing was rebased and nothing was rewritten. The checkout simply cannot
+    see the base the branch will merge into, so the question goes where the
+    objects can exist and comes back ANSWERED -- not skipped, and not answered
+    with the stale local ref's number.
+    """
+    point, tip, remote_sha = _sweep_shaped_repo(repo, tmp_path)
+    assert _git(repo, "cat-file", "-e", f"{remote_sha}^{{commit}}").returncode != 0, \
+        "the fixture must leave the remote base unresolvable here"
+    # The local answer, which is the one that used to be reported as a verdict.
+    local_mb = sh(repo, "git", "merge-base", "main", "fleet/task-1").strip()
+    assert local_mb != point, "the fixture does not reproduce the disagreement"
+
+    out = merge.preflight(repo, task_for(repo), "fleet/task-1",
+                          recorded_base=point, recorded_patch=tip,
+                          branch_point=point,
+                          trial_root=tmp_path / "trials")
+
+    assert out.ok, out.reason
+    assert any("throwaway clone" in d for d in out.detail), out.detail
+    assert any("is where the branch was cut" in d for d in out.detail), out.detail
+
+
+def test_the_throwaway_clone_is_thrown_away(repo, wt_root, tmp_path):
+    """It is the console's only writable ground; it must not accumulate."""
+    point, tip, _ = _sweep_shaped_repo(repo, tmp_path)
+    trials = tmp_path / "trials"
+
+    merge.preflight(repo, task_for(repo), "fleet/task-1",
+                    recorded_base=point, recorded_patch=tip,
+                    branch_point=point, trial_root=trials)
+
+    assert list(trials.iterdir()) == [], list(trials.iterdir())
+
+
+def test_a_branch_really_cut_elsewhere_is_still_refused_after_the_fetch(
+        repo, wt_root, tmp_path):
+    """The fetch exists to let the guard RUN, not to let branches through."""
+    point, tip, _ = _sweep_shaped_repo(repo, tmp_path)
+
+    out = merge.preflight(repo, task_for(repo), "fleet/task-1",
+                          recorded_base=point, recorded_patch=tip,
+                          branch_point="0" * 40,   # not where it was cut
+                          trial_root=tmp_path / "trials")
+
+    assert not out.ok
+    assert "but this branch was cut from 000000000000" in out.reason, out.reason
+
+
+def test_a_remote_that_cannot_be_reached_is_unanswered_not_refused(
+        repo, wt_root, tmp_path, monkeypatch):
+    """"The network blinked" and "this branch is bad" are not the same
+    sentence -- reverify._stand_on_remote_base's argument, and the same one."""
+    point, tip, remote_sha = _sweep_shaped_repo(repo, tmp_path)
+    # The sha is known (ls-remote already ran) and the objects are then
+    # unreachable, which is what a remote going down mid-sweep looks like.
+    monkeypatch.setattr(merge, "_merge_base_via_trial",
+                        lambda *a, **k: "")
+
+    out = merge.preflight(repo, task_for(repo), "fleet/task-1",
+                          recorded_base=point, recorded_patch=tip,
+                          branch_point=point,
+                          trial_root=tmp_path / "trials")
+
+    assert out.ok, out.reason
+    assert any("could not be established" in d for d in out.detail), out.detail
+    assert remote_sha[:12] in " ".join(out.detail)
+
+
+def test_the_check_still_runs_when_the_checkout_can_see_the_remote_base(
+        repo, wt_root, tmp_path):
+    """The skip is for one condition and must not become the common path."""
+    point, tip = branch_with(repo, "fleet/task-1", {"api/provides.txt": "v2\n"})
+    bare = tmp_path / "origin.git"
+    sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(bare))
+    sh(repo, "git", "remote", "add", "origin", str(bare))
+    sh(repo, "git", "push", "-q", "origin", "main")
+
+    out = merge.preflight(repo, task_for(repo), "fleet/task-1",
+                          recorded_base=point, recorded_patch=tip,
+                          branch_point=point,
+                          trial_root=tmp_path / "trials")
+
+    assert out.ok, out.reason
+    assert any("is where the branch was cut" in d for d in out.detail), out.detail
+    assert not any("throwaway clone" in d for d in out.detail), (
+        "the checkout could answer; nothing should have been cloned")
+
+
+def test_a_rebased_branch_is_refused_even_when_the_base_is_unanswerable(
+        repo, wt_root, tmp_path):
+    """The refusal that must survive the skip.
+
+    A rebase rewrites the tip, so the PRIMARY guard catches it with no base at
+    all. If that ever stops being true, this skip becomes a hole.
+    """
+    point, tip, _ = _sweep_shaped_repo(repo, tmp_path)
+    # main has to move somewhere the branch has not been, or the rebase is a
+    # no-op: the branch was cut ahead of the local main, which is already an
+    # ancestor of it.
+    advance_main(repo, {"api/other.txt": "x\n"})
+    sh(repo, "git", "checkout", "-q", "fleet/task-1")
+    sh(repo, "git", "rebase", "-q", "main")
+    new_tip = sh(repo, "git", "rev-parse", "HEAD").strip()
+    sh(repo, "git", "checkout", "-q", "main")
+    assert new_tip != tip
+
+    out = merge.preflight(repo, task_for(repo), "fleet/task-1",
+                          recorded_base=point, recorded_patch=tip,
+                          branch_point=point,
+                          trial_root=tmp_path / "trials")
+
+    assert not out.ok
+    assert "not what was checked" in out.reason, out.reason
 
 
 # ---- a checker that is not there ------------------------------------------
