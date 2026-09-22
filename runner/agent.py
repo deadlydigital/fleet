@@ -627,11 +627,20 @@ def transcript_dir(worktree: Path) -> Path:
     """Where the CLI writes this worktree's session JSONL.
 
     The CLI keys its project directory on the working directory with every
-    "/" and "." replaced by "-", so the runner can find the transcript of a
-    run that is still going without being told the session id -- which the
+    "/", "." AND "_" replaced by "-", so the runner can find the transcript of
+    a run that is still going without being told the session id -- which the
     result only carries once the run is over.
+
+    THE UNDERSCORE WAS MISSING UNTIL 22 Sep 2026 and cost nothing until that
+    day, because this only reported and no fleet worktree path has ever had
+    one. It is the ceiling now, so a path this gets wrong is a run with no cap
+    at all. Found by running the real CLI in a directory `mkdtemp` had named
+    `real-stopped-h9d6_4yk`: the watcher read an empty directory for 77
+    seconds and said so. 139 of 139 project directories on this host contain
+    no underscore, which is the check that the rule is the CLI's and not a
+    guess about one path.
     """
-    mangled = str(worktree).replace("/", "-").replace(".", "-")
+    mangled = str(worktree).replace("/", "-").replace(".", "-").replace("_", "-")
     return Path.home() / ".claude" / "projects" / mangled
 
 

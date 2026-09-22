@@ -984,6 +984,20 @@ def test_the_transcript_directory_is_derived_from_the_worktree():
     assert d.name == "-home-ubuntu--fleet-worktrees-fleet-task-120"
 
 
+def test_every_separator_the_cli_collapses_is_collapsed_here_too():
+    """A path this gets wrong is a run with NO CEILING.
+
+    The underscore was missing until 22 Sep 2026 and cost nothing, because
+    this only reported and no fleet worktree path carries one. It is the
+    backstop now: the watcher reads an empty directory, counts nothing, and
+    the run is bounded only by its wall clock. Found by running the real CLI
+    in a `mkdtemp` directory named `real-stopped-h9d6_4yk`.
+    """
+    d = agent_mod.transcript_dir(Path("/tmp/a_b/c.d/e-f"))
+    assert d.name == "-tmp-a-b-c-d-e-f"
+    assert "_" not in d.name and "." not in d.name
+
+
 def _write_turn(fh, mid, out_tokens, blocks=1):
     """One turn, written as `blocks` records that repeat the same usage --
     which is how the CLI writes a multi-block message."""
@@ -998,19 +1012,28 @@ def _write_turn(fh, mid, out_tokens, blocks=1):
     fh.flush()
 
 
+def _transcript_dir_for(worktree):
+    """ASK THE FUNCTION WHERE IT WILL LOOK; never restate the rule.
+
+    These tests spelled the mangling out by hand until 22 Sep 2026, and when
+    `transcript_dir` gained the underscore the CLI had always collapsed, they
+    wrote the transcript to one directory while the watcher read another. With
+    no ceiling and a `stop` the test never sets, the watcher then span at one
+    poll per 15s and the run hung rather than failed.
+    """
+    d = agent_mod.transcript_dir(worktree)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def test_a_run_past_p90_is_reported_once_and_counts_turns_not_records(
         tmp_path, monkeypatch):
     import threading as _th
     worktree = tmp_path / "wt"
     worktree.mkdir()
-    proj = tmp_path / "projects" / str(worktree).replace("/", "-").replace(".", "-")
-    proj.mkdir(parents=True)
     monkeypatch.setattr(agent_mod.Path, "home", staticmethod(lambda: tmp_path))
-    # `transcript_dir` builds <home>/.claude/projects/<mangled>
-    real = tmp_path / ".claude" / "projects"
-    real.mkdir(parents=True)
-    target = real / str(worktree).replace("/", "-").replace(".", "-")
-    target.mkdir()
+    monkeypatch.setattr(agent_mod, "WATCH_INTERVAL_SECONDS", 0.05)
+    target = _transcript_dir_for(worktree)
 
     per_turn = agent_mod.NOTABLE_OUTPUT_TOKENS // 2 + 1
     with (target / "sess.jsonl").open("w") as fh:
@@ -1034,8 +1057,8 @@ def test_a_run_below_the_threshold_reports_nothing(tmp_path, monkeypatch):
     worktree = tmp_path / "wt"
     worktree.mkdir()
     monkeypatch.setattr(agent_mod.Path, "home", staticmethod(lambda: tmp_path))
-    target = tmp_path / ".claude" / "projects" / str(worktree).replace("/", "-").replace(".", "-")
-    target.mkdir(parents=True)
+    monkeypatch.setattr(agent_mod, "WATCH_INTERVAL_SECONDS", 0.05)
+    target = _transcript_dir_for(worktree)
     with (target / "sess.jsonl").open("w") as fh:
         _write_turn(fh, "msg_a", 100)
 
