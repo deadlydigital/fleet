@@ -285,12 +285,13 @@ def test_the_shipped_frontend_contract_produces_a_prompt_that_agrees_with_itself
         assert any("proxy_passthrough.py" in v for v in contract["verification"])
 
 
-# ---- the spend cap --------------------------------------------------------
+# ---- the output ceiling ---------------------------------------------------
 #
-# The cap is the CLI's, not the runner's: the CLI reports cost only in its
-# terminal payload, so the runner cannot see money mid-run and does not
-# pretend to. What is tested here is the runner's half of the contract --
-# that it asks for the cap, reads the answer, and leaves nothing running.
+# THE CAP USED TO BE THE CLI'S AND USED TO BE MONEY. It is neither now: there
+# is no flag that bounds output tokens, and the money figure that was passed
+# described an account nobody holds -- so the runner counts the transcript
+# itself and kills the group. What is tested here is that it does, that it
+# says so, and that it no longer hands the CLI a price.
 
 BUDGET_EXHAUSTED_PAYLOAD = (
     '{"type":"result","subtype":"error_max_budget_usd","is_error":true,'
@@ -309,68 +310,130 @@ def _fake_claude(tmp_path, name, body) -> Path:
     return script
 
 
-def test_the_cap_is_passed_to_the_cli(tmp_path, monkeypatch):
-    """The runner must actually ask for it; an unset cap caps nothing."""
+def _transcript_for(worktree: Path) -> Path:
+    """Where the CLI would write this worktree's session, under a fake HOME."""
+    d = agent.transcript_dir(worktree)
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "sess.jsonl"
+
+
+def _turn(mid: str, out_tokens: int) -> str:
+    import json as _json
+    return _json.dumps({"type": "assistant", "message": {
+        "id": mid, "usage": {"output_tokens": out_tokens}}}) + "\n"
+
+
+def test_no_money_figure_is_passed_to_the_cli(tmp_path, monkeypatch):
+    """THE REGRESSION THIS EXISTS TO STOP.
+
+    --max-budget-usd was derived from `max_cost_gbp` and it stopped task 140
+    at 35,441 output tokens over GBP 2.50 of money nobody was charged. The
+    flag going away is the fix; this is what keeps it away, because the next
+    person to want a per-task backstop will find a flag named for one.
+    """
     seen = tmp_path / "argv"
     script = _fake_claude(
         tmp_path, "echo-claude",
         f'printf "%s\\n" "$@" > {seen}\necho \'{{"result":"ok"}}\'')
     monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
 
-    agent.invoke(tmp_path, "prompt", timeout_seconds=30, max_cost_usd=3.7975)
+    agent.invoke(tmp_path, "prompt", timeout_seconds=30,
+                 max_output_tokens=100_000)
 
-    argv = seen.read_text().splitlines()
-    assert "--max-budget-usd" in argv, argv
-    assert argv[argv.index("--max-budget-usd") + 1] == "3.797500"
+    argv = seen.read_text()
+    assert "--max-budget-usd" not in argv, argv
+    assert "usd" not in argv.lower(), f"a currency reached the agent: {argv}"
 
 
-def test_no_cap_is_passed_when_none_is_given(tmp_path, monkeypatch):
-    seen = tmp_path / "argv"
+def test_crossing_the_ceiling_stops_the_run_and_says_so(tmp_path, monkeypatch):
+    """The whole mechanism, against a CLI that would otherwise never stop."""
+    monkeypatch.setattr(agent.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(agent, "WATCH_INTERVAL_SECONDS", 0.2)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    transcript = _transcript_for(worktree)
+    # A CLI that writes two turns and then runs forever. The wall clock is far
+    # away, so if the ceiling does not fire, nothing stops this.
     script = _fake_claude(
-        tmp_path, "echo-claude",
-        f'printf "%s\\n" "$@" > {seen}\necho \'{{"result":"ok"}}\'')
+        tmp_path, "runaway-claude",
+        f"cat > {transcript} <<'EOF'\n{_turn('msg_a', 600)}{_turn('msg_b', 600)}EOF\n"
+        f"sleep 600")
     monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
 
-    agent.invoke(tmp_path, "prompt", timeout_seconds=30)
+    result = agent.invoke(worktree, "prompt", timeout_seconds=120,
+                          max_output_tokens=1000)
 
-    assert "--max-budget-usd" not in seen.read_text().splitlines()
+    assert result.output_capped, "the ceiling did not fire"
+    assert result.output_tokens == 1200, result.output_tokens
+    assert not result.ok, "a run stopped for running away is not ok"
+    assert not result.timed_out, "the wall clock is a different failure"
+    assert result.duration_ms < 60_000, "it ran to the wall clock instead"
 
 
-def test_budget_exhaustion_is_read_from_the_payload(tmp_path, monkeypatch):
+def test_a_run_inside_the_ceiling_is_not_capped_and_is_still_counted(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(agent.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(agent, "WATCH_INTERVAL_SECONDS", 0.2)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    transcript = _transcript_for(worktree)
+    script = _fake_claude(
+        tmp_path, "fine-claude",
+        f"cat > {transcript} <<'EOF'\n{_turn('msg_a', 500)}EOF\n"
+        f"sleep 1\necho '{{\"result\":\"done\",\"total_cost_usd\":0.01}}'")
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    result = agent.invoke(worktree, "prompt", timeout_seconds=60,
+                          max_output_tokens=100_000)
+
+    assert not result.output_capped
+    assert result.ok
+    assert result.output_tokens == 500, "the count is kept either way"
+
+
+def test_a_ceiling_that_could_not_be_enforced_is_reported_as_such(
+        tmp_path, monkeypatch):
+    """A dead watcher is an uncapped run, and must not look like a quiet one."""
+    monkeypatch.setattr(agent.Path, "home", staticmethod(
+        lambda: (_ for _ in ()).throw(OSError("no home"))))
+    monkeypatch.setattr(agent, "WATCH_INTERVAL_SECONDS", 0.2)
+    script = _fake_claude(tmp_path, "fine-claude",
+                          "sleep 1\necho '{\"result\":\"done\"}'")
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    result = agent.invoke(tmp_path, "prompt", timeout_seconds=60,
+                          max_output_tokens=1000)
+
+    assert result.watcher_failed, "the watcher died in silence"
+    assert "OSError" in result.watcher_failed
+    assert not result.output_capped, "nothing was observed, so nothing fired"
+
+
+def test_a_cli_budget_payload_no_longer_means_anything(tmp_path, monkeypatch):
+    """Belt and braces on the removal.
+
+    Nothing passes --max-budget-usd any more, so the CLI cannot report it
+    firing. If a payload saying so ever turns up, it is the CLI's own business
+    and not a verdict about the task -- it must not silently become one.
+    """
     script = _fake_claude(tmp_path, "broke-claude",
                           f"echo '{BUDGET_EXHAUSTED_PAYLOAD}'\nexit 1")
     monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
 
     result = agent.invoke(tmp_path, "prompt", timeout_seconds=30,
-                          max_cost_usd=0.02)
+                          max_output_tokens=100_000)
 
-    assert result.budget_exhausted
-    assert not result.ok, "a run stopped for spending its budget is not ok"
-    assert not result.timed_out, "the wall clock is a different failure"
-    assert result.cost_usd == 0.0779, "the true figure must survive"
-
-
-def test_a_clean_run_is_not_budget_exhausted(tmp_path, monkeypatch):
-    script = _fake_claude(
-        tmp_path, "fine-claude",
-        'echo \'{"result":"done","total_cost_usd":0.01,"subtype":"success",'
-        '"terminal_reason":"completed"}\'')
-    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
-
-    result = agent.invoke(tmp_path, "prompt", timeout_seconds=30,
-                          max_cost_usd=5.0)
-
-    assert not result.budget_exhausted
-    assert result.ok
+    assert not result.output_capped
+    assert result.cost_usd == 0.0779, "the notional figure is still recorded"
 
 
 def test_children_are_reaped_when_the_agent_exits_on_its_own(tmp_path,
                                                              monkeypatch):
     """Exiting is not stopping if a tool child is still spending.
 
-    The wall-clock path already guaranteed this. Budget exhaustion is the CLI
-    ending its own run, which never goes near that path, so the group is
-    reaped after every run rather than only after a kill.
+    The wall-clock path already guaranteed this. A CLI that ends its own run
+    never goes near that path, so the group is reaped after every run rather
+    than only after a kill.
     """
     marker = tmp_path / "child.pid"
     script = _fake_claude(
@@ -380,16 +443,40 @@ def test_children_are_reaped_when_the_agent_exits_on_its_own(tmp_path,
     monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
 
     result = agent.invoke(tmp_path, "prompt", timeout_seconds=30,
-                          max_cost_usd=0.02)
+                          max_output_tokens=100_000)
 
-    assert result.budget_exhausted
+    assert not result.ok, "the fake agent exited 1"
     assert marker.exists(), "the fake agent never started its child"
     child_pid = int(marker.read_text().strip())
     assert not alive(child_pid), (
-        f"child {child_pid} outlived the agent with the budget spent")
+        f"child {child_pid} outlived the agent and kept producing")
 
 
 def test_the_runner_does_not_signal_its_own_group():
     """The guard that stops a bad pgid taking the whole tick down."""
     assert agent._own_group(os.getpgid(0))
     agent._reap_group(os.getpgid(0))   # must be a no-op, not suicide
+
+
+def test_a_watcher_that_read_nothing_is_reported_too(tmp_path, monkeypatch):
+    """The quieter half of an unenforced ceiling: no crash, no reading, no cap.
+
+    This is what the CLI moving where it writes its transcript would look like
+    from inside the runner, and it must not look like a well-behaved run.
+    """
+    monkeypatch.setattr(agent.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(agent, "WATCH_INTERVAL_SECONDS", 0.2)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    # No transcript is ever written, so the watcher reads an empty directory
+    # for the whole run without erroring.
+    script = _fake_claude(tmp_path, "silent-claude",
+                          "sleep 1\necho '{\"result\":\"done\"}'")
+    monkeypatch.setenv("FLEET_CLAUDE_BIN", str(script))
+
+    result = agent.invoke(worktree, "prompt", timeout_seconds=60,
+                          max_output_tokens=1000)
+
+    assert not result.output_tokens
+    assert result.watcher_failed, "an uncapped run reported nothing wrong"
+    assert "nothing was counted" in result.watcher_failed

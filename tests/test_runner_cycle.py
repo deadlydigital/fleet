@@ -124,10 +124,11 @@ def queue_task(console, **over) -> int:
 def fake_agent(edits: dict[str, str] | None = None, *,
                reported: list[str] | None = None,
                timed_out: bool = False, exit_code: int = 0,
-               cost_usd: float = 0.10, deletes: list[str] | None = None):
+               cost_usd: float = 0.10, deletes: list[str] | None = None,
+               raw: dict | None = None, output_tokens: int | None = None):
     """An agent that writes exactly what it is told to, and says what it likes."""
     def invoke(worktree: Path, prompt, timeout_seconds, model=None,
-               allowed_tools=(), readable=(), max_cost_usd=None):
+               allowed_tools=(), readable=(), max_output_tokens=None):
         for path, body in (edits or {}).items():
             f = worktree / path
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +141,9 @@ def fake_agent(edits: dict[str, str] | None = None, *,
         return agent_mod.AgentResult(
             exit_code=exit_code, timed_out=timed_out, duration_ms=1200,
             text=text, cost_usd=cost_usd, num_turns=3, session_id="fake",
-            reported_paths=agent_mod.parse_report(text), raw={"model": "fake"})
+            reported_paths=agent_mod.parse_report(text),
+            output_tokens=output_tokens,
+            raw={"model": "fake", **(raw or {})})
     return invoke
 
 
@@ -566,7 +569,7 @@ def test_the_agent_never_sees_the_linked_dependencies(dsns, settings, console,
     seen: dict[str, bool] = {}
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         seen["linked_during_agent"] = (worktree / "platform/node_modules").exists()
         (worktree / "api/analytics/services/analytics_engine.py").write_text(
             "def app():\n    '''new'''\n    return 1\n")
@@ -650,89 +653,175 @@ def test_checks_are_given_the_frozen_contract(dsns, settings, console,
     assert result.outcome == "READY_FOR_REVIEW", result.reason
 
 
-# ---- the spend cap --------------------------------------------------------
+# ---- the output ceiling ---------------------------------------------------
 #
-# The runner cannot see money mid-run -- the CLI reports cost only in its
-# terminal payload -- so enforcement is delegated to the CLI's own
-# --max-budget-usd. These cover the runner's half: deriving the cap from the
-# reservation, and telling apart a cap that fired from one that did not.
+# The cap the runner hands the agent used to be `max_cost_gbp` converted to
+# dollars. It described no account -- these runs are subscription usage, not
+# billed calls -- and on 21 Sep it deleted task 140 at 35,441 output tokens,
+# a run of ordinary size. The backstop is `max_output_tokens` now, which is
+# the unit 049's window ledger already counts in. These cover the runner's
+# half: handing the ceiling over, and reading back what it did.
 
-def test_the_reservation_becomes_the_cli_spend_cap(dsns, settings, console,
-                                                   monkeypatch):
-    """A reservation the agent is never told about caps nothing."""
+NEW_FILE = {"api/analytics/services/analytics_engine.py":
+            "def app():\n    '''new'''\n    return 1\n"}
+
+
+def test_the_tasks_own_ceiling_is_what_the_agent_runs_under(
+        dsns, settings, console, monkeypatch):
+    """A ceiling the agent is never told about caps nothing."""
     tid = queue_task(console, max_cost_gbp=3.00)
-    seen: dict[str, float | None] = {}
-    inner = fake_agent({"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"})
+    seen: dict[str, int | None] = {}
+    inner = fake_agent(NEW_FILE)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
-        seen["cap"] = max_cost_usd
+               readable=(), max_output_tokens=None):
+        seen["ceiling"] = max_output_tokens
         return inner(worktree, prompt, timeout_seconds, model=model,
                      allowed_tools=allowed_tools, readable=readable)
 
     result = run_tick(monkeypatch, invoke)
 
     assert result.task_id == tid
-    assert seen["cap"] is not None, "the agent ran with no spend cap at all"
-    # £3.00 at the settings' stated rate, in the currency the CLI caps in.
-    assert seen["cap"] == pytest.approx(3.00 / float(settings["usd_to_gbp"]))
+    assert seen["ceiling"] is not None, "the agent ran with no ceiling at all"
+    # The task's own column, not a figure derived from its money cap.
+    row = console.execute("SELECT max_output_tokens FROM tasks WHERE id=%s",
+                          (tid,)).fetchone()
+    assert seen["ceiling"] == row["max_output_tokens"]
 
 
-def test_reaching_the_cap_fails_the_task_and_says_why(dsns, settings, console,
-                                                      monkeypatch):
+def test_no_money_figure_reaches_the_agent(dsns, settings, console,
+                                           monkeypatch):
+    """The point of the change, asserted at the runner's boundary.
+
+    `max_cost_gbp` is still on the task and still settles the notional ledger.
+    What it must not do any more is cross into the run.
+    """
+    queue_task(console, max_cost_gbp=3.00)
+    seen: dict[str, object] = {}
+    inner = fake_agent(NEW_FILE)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_output_tokens=None, **kw):
+        seen["kw"] = kw
+        seen["prompt"] = prompt
+        return inner(worktree, prompt, timeout_seconds, model=model,
+                     allowed_tools=allowed_tools, readable=readable)
+
+    run_tick(monkeypatch, invoke)
+
+    assert seen["kw"] == {}, f"an unexpected argument reached invoke: {seen['kw']}"
+    for token in ("£", "max_cost", "usd", "GBP"):
+        assert token not in str(seen["prompt"]), (
+            f"the prompt names {token!r}: a money figure reached the agent")
+
+
+def test_reaching_the_ceiling_fails_the_task_and_says_why(
+        dsns, settings, console, monkeypatch):
     queue_task(console, max_cost_gbp=3.00)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
-        (worktree / "api/analytics/services/analytics_engine.py").write_text("half a change\n")
+               readable=(), max_output_tokens=None):
+        (worktree / "api/analytics/services/analytics_engine.py").write_text(
+            "half a change\n")
         return agent_mod.AgentResult(
-            exit_code=1, timed_out=False, duration_ms=900,
-            budget_exhausted=True, text="", cost_usd=4.20,
-            raw={"model": "fake", "subtype": "error_max_budget_usd"})
+            exit_code=-15, timed_out=False, duration_ms=900,
+            output_capped=True, output_tokens=max_output_tokens,
+            text="", cost_usd=None, raw={})
 
     result = run_tick(monkeypatch, invoke)
 
     assert result.outcome == "FAILED"
-    assert "spend cap" in result.reason, result.reason
+    assert "output ceiling" in result.reason, result.reason
+    assert "£" not in result.reason, "the reason still talks money"
     # Distinguishable from the wall clock, which is a different failure.
     assert "wall clock" not in result.reason
 
 
-def test_an_overshoot_with_the_cap_fired_is_reported_as_expected(
+def test_a_capped_run_still_counts_against_the_window(
         dsns, settings, console, monkeypatch):
-    """The cap gates between turns, so one turn of overshoot is normal."""
+    """049's ledger sums model_calls.completion_tokens.
+
+    A run the runner killed prints no result payload, so without the fallback
+    the runs that produced the MOST output would be the ones the window
+    counted as zero.
+    """
     queue_task(console, max_cost_gbp=3.00)
-    over_usd = 3.20 / float(settings["usd_to_gbp"])
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         (worktree / "api/analytics/services/analytics_engine.py").write_text("x\n")
         return agent_mod.AgentResult(
-            exit_code=1, timed_out=False, duration_ms=900,
-            budget_exhausted=True, text="", cost_usd=over_usd,
+            exit_code=-15, timed_out=False, duration_ms=900,
+            output_capped=True, output_tokens=101_337, text="",
+            cost_usd=None, raw={})
+
+    run_tick(monkeypatch, invoke)
+
+    from tests import conftest as ct
+    with psycopg.connect(ct.FLEET_TEST_DSN) as conn:
+        completion, source = conn.execute(
+            "SELECT completion_tokens, token_source FROM model_calls"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+    assert completion == 101_337, completion
+    assert source == "transcript", (
+        "a figure read from the session JSONL is 048's 'transcript'")
+
+
+def test_the_cli_figures_still_win_when_the_run_ended_normally(
+        dsns, settings, console, monkeypatch):
+    """The fallback is for killed runs only; it must not overwrite a real
+    reading with the watcher's floor."""
+    queue_task(console, max_cost_gbp=3.00)
+    run_tick(monkeypatch, fake_agent(NEW_FILE, raw=REAL_SHAPED_RAW,
+                                     output_tokens=7))
+
+    from tests import conftest as ct
+    with psycopg.connect(ct.FLEET_TEST_DSN) as conn:
+        completion, source = conn.execute(
+            "SELECT completion_tokens, token_source FROM model_calls"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+    assert source == "modelUsage"
+    assert completion == 964 + 19, "the watcher's floor overwrote the total"
+
+
+def test_an_unenforceable_ceiling_is_named_in_the_notes(
+        dsns, settings, console, monkeypatch):
+    """A watcher that died left the run with only the wall clock, and the
+    record must say so: an uncapped run and a quiet one look identical."""
+    queue_task(console, max_cost_gbp=3.00)
+
+    def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
+               readable=(), max_output_tokens=None):
+        for path, body in NEW_FILE.items():
+            (worktree / path).write_text(body)
+        return agent_mod.AgentResult(
+            exit_code=0, timed_out=False, duration_ms=900,
+            watcher_failed="OSError: boom", text="done", cost_usd=0.5,
             raw={"model": "fake"})
 
     result = run_tick(monkeypatch, invoke)
 
     notes = " ".join(result.notes)
-    assert "the cap fired and stopped it" in notes, notes
-    assert "BREAKER DID NOT FIRE" not in notes
-    assert result.cost_gbp == pytest.approx(3.00), "settled above the cap"
+    assert "THE OUTPUT CEILING WAS NOT ENFORCED" in notes, notes
+    assert "OSError: boom" in notes
 
 
-def test_an_overshoot_with_no_exhaustion_is_named_as_a_dead_breaker(
+def test_a_notional_overshoot_is_recorded_and_not_alarmed_about(
         dsns, settings, console, monkeypatch):
-    """This is the £8.75-on-£3.00 shape, and it must not read as routine."""
+    """This is the GBP 8.75-on-GBP 3.00 shape, and it is no longer a breach.
+
+    Nothing was supposed to stop it at GBP 3.00, because GBP 3.00 never
+    bounded anything. The reservation is the ledger's upper bound; the true
+    figure is still reported.
+    """
     queue_task(console, max_cost_gbp=3.00)
     runaway_usd = 8.75 / float(settings["usd_to_gbp"])
 
-    result = run_tick(monkeypatch, fake_agent(
-        {"api/analytics/services/analytics_engine.py": "def app():\n    '''new'''\n    return 1\n"},
-        cost_usd=runaway_usd))
+    result = run_tick(monkeypatch, fake_agent(NEW_FILE, cost_usd=runaway_usd))
 
     notes = " ".join(result.notes)
-    assert "BREAKER DID NOT FIRE" in notes, notes
-    assert "--max-budget-usd" in notes, "the note must say what to check"
+    assert "BREAKER DID NOT FIRE" not in notes, (
+        "nothing was breached: no money figure bounds a run")
     assert "£8.75" in notes, "the true figure must still be reported"
     assert result.cost_gbp == pytest.approx(3.00)
 
@@ -790,7 +879,7 @@ def test_an_ordinary_run_records_the_classes_not_the_uncached_remainder(
     queue_task(console, max_cost_gbp=3.00)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         (worktree / "api/analytics/services/analytics_engine.py").write_text(
             "def app():\n    '''new'''\n    return 1\n")
         return agent_mod.AgentResult(
@@ -851,12 +940,12 @@ def test_an_ordinary_failure_is_not_mistaken_for_one(payload, text):
     assert agent_mod.classify_could_not_run(payload, text) is None
 
 
-def test_the_spend_cap_outranks_it():
-    """fleet's own ceiling is a verdict about the task's size. The provider
-    declining to run is not. If both look true, the cap wins."""
+def test_the_output_ceiling_outranks_it():
+    """fleet's own ceiling is a verdict about the run. The provider declining
+    to run is not. If both look true, the ceiling wins."""
     result = agent_mod.AgentResult(
-        exit_code=1, timed_out=False, duration_ms=1,
-        budget_exhausted=True, could_not_run=None)
+        exit_code=-15, timed_out=False, duration_ms=1,
+        output_capped=True, could_not_run=None)
     assert not result.ok
 
 
@@ -865,7 +954,7 @@ def test_a_refused_run_requeues_and_refunds_the_attempt(
     tid = queue_task(console, max_attempts=1)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         return agent_mod.AgentResult(
             exit_code=1, timed_out=False, duration_ms=400, cost_usd=0.02,
             text="You've hit your weekly limit.",
@@ -1043,7 +1132,7 @@ def test_an_empty_diff_without_a_declared_refusal_is_still_a_failure(
     tid = queue_task(console, max_attempts=1)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         return agent_mod.AgentResult(
             exit_code=0, timed_out=False, duration_ms=900, cost_usd=0.02,
             text="I could not work out how to do this.", raw={"model": "fake"})
@@ -1065,7 +1154,7 @@ def test_a_refusal_on_instruction_requeues_and_refunds(
     tid = queue_task(console, max_attempts=1)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         return agent_mod.AgentResult(
             exit_code=0, timed_out=False, duration_ms=64_000, cost_usd=0.02,
             text=REFUSAL_REPLY, refused="the signature assertion still forbids it",
@@ -1093,7 +1182,7 @@ def test_the_refund_stops_at_the_ceiling(dsns, settings, console, monkeypatch):
     tid = queue_task(console, max_attempts=1)
 
     def invoke(worktree, prompt, timeout_seconds, model=None, allowed_tools=(),
-               readable=(), max_cost_usd=None):
+               readable=(), max_output_tokens=None):
         return agent_mod.AgentResult(
             exit_code=0, timed_out=False, duration_ms=900, cost_usd=0.02,
             text=REFUSAL_REPLY, refused="the precondition is still unmet",

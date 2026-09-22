@@ -344,12 +344,16 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         token, reserved = _reserve(task, run_id, log)
         prompt = agent_mod.build_prompt(task, contract,
                                         paths_file=paths_written)
-        # The reservation, in the currency the CLI caps in. Converted with the
-        # same stated constant settlement uses, so the cap the agent is given
-        # and the figure the ledger records cannot disagree by definition.
-        cap_usd = reserved / float(settings["usd_to_gbp"])
-        log(f"  spend cap ${cap_usd:.4f} (£{reserved:.4f} at "
-            f"{settings['usd_to_gbp']})")
+        # THE BACKSTOP, IN THE UNIT THE CONSTRAINT IS ACTUALLY MEASURED IN.
+        # It was `reserved / usd_to_gbp` handed to --max-budget-usd until
+        # 22 Sep 2026: a notional price on subscription usage, which stopped
+        # task 140 at 35,441 output tokens for crossing GBP 2.50 of money
+        # nobody was charged. `max_output_tokens` is the same number 049's
+        # admission control already counts an open task at, so the figure that
+        # can stop a run and the figure that reserved room for it are one
+        # number rather than two in different currencies.
+        ceiling = int(task["max_output_tokens"])
+        log(f"  output ceiling {ceiling:,} tokens")
         # THE SELF-CHECK, MADE REACHABLE AND CAPPED.
         #
         # The state file is outside the worktree: inside it, every invocation
@@ -381,7 +385,7 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                 allowed_tools=tuple(contract.get("agent_tools",
                                                  settings["agent_tools"])),
                 readable=tuple(readable),
-                max_cost_usd=cap_usd)
+                max_output_tokens=ceiling)
         finally:
             agent_mod.on_notable_run = None
             for k, v in previous.items():
@@ -397,8 +401,21 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
         result.cost_gbp = _settle(token, reserved, outcome, run_id, settings,
                                   result, log)
         log(f"  agent exit {outcome.exit_code} in {outcome.duration_ms}ms"
+            + (f"  {outcome.output_tokens:,} output tokens"
+               if outcome.output_tokens is not None else "")
             + ("  TIMED OUT" if outcome.timed_out else "")
-            + ("  BUDGET EXHAUSTED" if outcome.budget_exhausted else ""))
+            + ("  OUTPUT CEILING REACHED" if outcome.output_capped else ""))
+        # AN UNENFORCED CEILING MUST NOT READ AS AN OBSERVED ONE. The watcher
+        # swallows its own failures, so without this a run that had no cap at
+        # all is indistinguishable in the record from one that stayed inside
+        # it -- which is how the old money cap would have failed silently too,
+        # if anything had ever checked.
+        if outcome.watcher_failed:
+            note = (f"THE OUTPUT CEILING WAS NOT ENFORCED on this run: the "
+                    f"token watcher stopped with {outcome.watcher_failed}. "
+                    f"The wall clock was the only bound in force")
+            result.notes.append(note)
+            log(f"  ! {note}")
 
         if outcome.timed_out:
             result.outcome = "FAILED"
@@ -428,14 +445,19 @@ def _execute(runner, task, settings, deadline, push, result, log) -> None:
                           self_checks=self_checks)
             return
 
-        if outcome.budget_exhausted:
+        if outcome.output_capped:
             # Its own outcome, not a generic non-zero exit. A task stopped for
-            # spending its budget and a task stopped by a crash need different
+            # running away and a task stopped by a crash need different
             # answers from whoever reads the queue, and the branch is
             # abandoned either way: a half-finished diff is not reviewable.
+            #
+            # AND THIS ONE IS A REAL FINDING WHEN IT FIRES, which the cap it
+            # replaced was not. The ceiling sits above every run on record, so
+            # a task that reaches it is a task whose shape is wrong -- read it
+            # as a defect in the spec, not as a task that needed more room.
             result.outcome = "FAILED"
-            result.reason = (f"agent reached the £{reserved:.2f} spend cap "
-                             f"and was stopped")
+            result.reason = (f"agent reached the {ceiling:,}-token output "
+                             f"ceiling and was stopped")
             _record_patch(task, run_id, base_sha, None, outcome, log,
                           branch_point_sha=branch_point_sha,
                           self_checks=self_checks)
@@ -806,28 +828,24 @@ def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
     closed at its upper bound -- the function refuses anything higher -- and
     the true figure goes in the payload rather than being lost.
 
-    What stops a runaway is the CLI's own --max-budget-usd, set from this same
-    reservation (see runner/agent.py). That cap gates between turns, so the
-    turn crossing it completes and a small overshoot is expected and normal.
-    An overshoot with NO exhaustion reported is a different thing: it means
-    the cap did not fire at all, and it is called out by name below rather
-    than absorbed into the same note as an ordinary one-turn overrun.
+    THIS FIGURE NO LONGER STOPS ANYTHING, AND THAT IS THE CHANGE OF 22 Sep
+    2026. The reservation used to be converted to dollars and handed to the
+    CLI as --max-budget-usd, so overshooting it was a thing that could have
+    been prevented and was worth a breaker note. It is not any more: what
+    bounds a run is the output ceiling in runner/agent.py and the wall clock.
+    What is left here is accounting -- accurate list price for usage nobody is
+    billed for, which is what 048 says `marginal_cost_gbp` is -- and the
+    reservation is the upper bound settle_model_budget will accept, nothing
+    more. An actual above it is recorded rather than alarmed about.
     """
     usd = outcome.cost_usd or 0.0
     gbp = round(usd * float(settings["usd_to_gbp"]), 6)
     settled = min(gbp, reserved)
     if gbp > reserved:
-        if outcome.budget_exhausted:
-            note = (f"agent cost £{gbp:.4f} against the reserved "
-                    f"£{reserved:.4f}; the cap fired and stopped it, and the "
-                    f"overshoot is the turn that crossed the cap. Settled at "
-                    f"the cap and recorded the true figure")
-        else:
-            note = (f"BREAKER DID NOT FIRE: agent cost £{gbp:.4f} against the "
-                    f"reserved £{reserved:.4f} and reported no budget "
-                    f"exhaustion. The spend cap was not enforced -- check that "
-                    f"the CLI still supports --max-budget-usd. Settled at the "
-                    f"cap and recorded the true figure")
+        note = (f"notional cost £{gbp:.4f} against the reserved £{reserved:.4f}. "
+                f"Settled at the reservation, which is all settle_model_budget "
+                f"accepts, and the true figure is in the payload. NOT a breach "
+                f"of anything: since 22 Sep no money figure bounds a run")
         result.notes.append(note)
         log(f"  ! {note}")
 
@@ -872,6 +890,23 @@ def _settle(token, reserved, outcome, run_id, settings, result, log) -> float:
             call["prompt_tokens"] = usage.get("input_tokens")
             call["completion_tokens"] = usage.get("output_tokens")
             call["token_source"] = "usage"
+
+    # THE ONE READING A KILLED RUN LEAVES. A run stopped at the output ceiling
+    # never exits normally, so it prints no result payload and both branches
+    # above find nothing -- and the row would go in with completion_tokens
+    # NULL. That is not a cosmetic gap: 049's window ledger sums exactly this
+    # column, so the runs that produced the MOST output would be the ones it
+    # counted as zero, and the window would read emptiest right after it had
+    # been filled.
+    #
+    # The watcher's own count is the fallback, and 048 already has a name for
+    # a figure read out of the session JSONL rather than off the CLI's
+    # summary. It is a floor rather than a total: whatever the killed turn
+    # wrote after the last flush is not in it. A floor in the right column
+    # beats a NULL that reads as nothing happened.
+    if not call.get("completion_tokens") and outcome.output_tokens:
+        call["completion_tokens"] = outcome.output_tokens
+        call["token_source"] = "transcript"
 
     with _connect(config.model_gateway_dsn()) as gw:
         gw.execute("SELECT settle_model_budget(%s::uuid, %s::numeric, %s::jsonb)",

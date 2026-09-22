@@ -5,22 +5,36 @@ mind them. A stuck agent burning budget in a loop is the failure mode this
 guards, and an agent that is stuck is by definition not going to notice that
 it is.
 
-  the wall clock   the runner's own deadline, against communicate().
-  the spend cap    --max-budget-usd, which is the CLI's cap, not ours.
+  the wall clock       the runner's own deadline, against communicate().
+  the output ceiling   tasks.max_output_tokens, counted by the runner from
+                       the transcript the CLI is writing.
 
-The spend cap is delegated deliberately. The CLI reports cost ONLY in its
-terminal result payload -- no cost figure streams, and the session transcript
-carries none either -- so the runner cannot observe money mid-run at any
-price. It could observe tokens under --output-format stream-json and price
-them itself, but that would mean a second rate table (per model, cache-write
-premium, cache reads, and the sub-agent models a single turn also bills) whose
-answer would drift away from the figure settle_model_budget records. One
-source of truth for money is worth more than a check the runner owns.
+THE SECOND CAP WAS --max-budget-usd UNTIL 22 Sep 2026, AND IT WAS A PHANTOM.
+It was derived from `max_cost_gbp` at a stated exchange rate, and the figure
+at the end of that chain describes no account: these runs authenticate against
+a Claude Max subscription with usage credits off and a zero balance, so the
+money was notional list price all the way down (048). A notional number that
+DELETES WORK is worse than one that merely gets recorded -- decision 102 is
+task 118's GBP 6.00, and task 140 on 21 Sep was stopped at GBP 2.50 having
+produced 35,441 output tokens, a run of thoroughly ordinary size. Nothing was
+saved by stopping it, because nothing was being spent.
 
-What the CLI's cap is NOT is exact. It gates between turns, so the turn that
-crosses the cap completes: overshoot is bounded by one model request, not by
-zero. Settling at the reservation and recording the true figure stays
-necessary.
+What is actually metered is output tokens against a window that resets on
+Sunday, which is 049's finding and the unit the ledger there already counts
+in. So the backstop is now denominated in the same unit as the constraint,
+and the runner enforces it itself rather than delegating it.
+
+IT IS A BACKSTOP AND NOT A BUDGET, which is the point 049 makes at length and
+the property the old cap did not have. The default ceiling is 100,000 output
+tokens, 1.37x the largest run on record; a ceiling at the p90 this module also
+tracks would have destroyed 5 verified runs to stop 9 failing ones. If this
+fires, something is wrong with the run, not merely large.
+
+What the ceiling is NOT is exact. The count comes from the session transcript,
+which is written as the run goes, and it is read on a poll: overshoot is
+bounded by one poll interval plus whatever a turn writes after the last flush,
+not by zero. That is the same shape of inexactness the old cap had -- it gated
+between turns -- and it is fine for a runaway bound.
 
 The kill is against the process group, not the child: the CLI spawns its own
 children, and terminating only the process the runner can see leaves them
@@ -39,6 +53,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 DEFAULT_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob")
 
@@ -55,7 +70,21 @@ class AgentResult:
     exit_code: int
     timed_out: bool
     duration_ms: int
-    budget_exhausted: bool = False
+    #: Stopped by the runner for crossing the task's output ceiling. Its own
+    #: field and not a generic non-zero exit, because a run stopped for being
+    #: a runaway and a run stopped by a crash need different answers from
+    #: whoever reads the queue.
+    output_capped: bool = False
+    #: Output tokens the watcher counted while the run was in flight, or None
+    #: if it never got a reading. AN OBSERVATION, and the only one available
+    #: for a capped run: the CLI writes its usage figures to stdout when it
+    #: exits normally, and a run the runner killed does not exit normally.
+    output_tokens: int | None = None
+    #: Why the ceiling could not be enforced on this run, or None. The watcher
+    #: swallows its own failures -- it must, it is a thread beside a task --
+    #: so the silence has to be reportable or an unenforced cap looks exactly
+    #: like a cap that did not need to fire.
+    watcher_failed: str | None = None
     #: Why the run produced no evidence about the task, or None if it did.
     #: A STRING rather than a bool so the reason reaches the row: "could not
     #: run" is only useful to a reader who is told what stopped it.
@@ -75,7 +104,7 @@ class AgentResult:
     @property
     def ok(self) -> bool:
         return (self.exit_code == 0 and not self.timed_out
-                and not self.budget_exhausted
+                and not self.output_capped
                 and self.could_not_run is None)
 
 
@@ -421,13 +450,14 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
            model: str | None = None,
            allowed_tools: tuple[str, ...] = DEFAULT_TOOLS,
            readable: tuple[Path, ...] = (),
-           max_cost_usd: float | None = None) -> AgentResult:
-    """Run the agent in the worktree under a hard wall clock and a spend cap.
+           max_output_tokens: int | None = None) -> AgentResult:
+    """Run the agent in the worktree under a hard wall clock and an output
+    ceiling.
 
-    `max_cost_usd` becomes --max-budget-usd. It is the reservation, converted
-    at the same rate settlement uses, so the cap the agent is given and the
-    figure the ledger records are the same number in two currencies rather
-    than two independent estimates.
+    `max_output_tokens` is the task's own ceiling, enforced here by counting
+    the transcript and killing the group. NOTHING IS PASSED TO THE CLI FOR
+    IT: there is no flag that caps output tokens, and there is deliberately no
+    longer one passed that caps money. See the module docstring.
 
     `readable` adds directories the agent may look at -- a research task reads
     the platform checkout. --add-dir grants READ, but it does not make the
@@ -445,11 +475,6 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
     ]
     if model:
         cmd += ["--model", model]
-    if max_cost_usd is not None:
-        # Print mode only, which is what -p gives us. The CLI stops issuing
-        # new work once its own accounting reaches this, and reports
-        # subtype=error_max_budget_usd with exit 1.
-        cmd += ["--max-budget-usd", f"{max_cost_usd:.6f}"]
 
     started = time.monotonic()
     proc = subprocess.Popen(
@@ -462,14 +487,41 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
     # is reaped there is no pid left to ask.
     pgid = proc.pid
 
-    # OBSERVE WHILE IT RUNS. Daemon so it can never hold the process open,
-    # and stopped in the same `finally` that reaps the group.
+    # COUNT WHILE IT RUNS, AND STOP IT AT THE CEILING. Daemon so it can never
+    # hold the process open, and stopped in the same `finally` that reaps the
+    # group.
+    #
+    # `observed` is written by the watcher thread and read here after it is
+    # stopped. A plain dict rather than a lock: the writes are whole-key
+    # rebinds of small values, the reader does not run until `watch_stop` is
+    # set, and a torn reading of a token count is not worth a mutex.
+    observed: dict[str, Any] = {"total": None, "turns": None, "failed": None,
+                                "capped": False}
+
+    def _report(total=None, turns=None, failed=None) -> None:
+        if total is not None:
+            observed["total"], observed["turns"] = total, turns
+        if failed is not None:
+            observed["failed"] = failed
+
+    def _over_ceiling(total: int, turns: int) -> None:
+        # THE KILL IS THE WHOLE POINT and it happens here, from the watcher's
+        # own thread, while the main thread is blocked in communicate(). The
+        # group, not the child, for the reason the module docstring gives:
+        # the CLI's children outlive it and keep producing.
+        observed["capped"] = True
+        observed["total"], observed["turns"] = total, turns
+        _kill_group(pgid, proc)
+
     watch_stop = threading.Event()
     watcher = threading.Thread(
         target=_watch_output_tokens, daemon=True,
         args=(worktree, time.time(), watch_stop,
               lambda tokens, turns: (on_notable_run(tokens, turns)
-                                     if on_notable_run else None)))
+                                     if on_notable_run else None)),
+        kwargs={"ceiling": max_output_tokens,
+                "on_ceiling": _over_ceiling,
+                "report": _report})
     watcher.start()
 
     timed_out = False
@@ -504,22 +556,42 @@ def invoke(worktree: Path, prompt: str, timeout_seconds: int,
         result.cost_usd = payload.get("total_cost_usd")
         result.num_turns = payload.get("num_turns")
         result.session_id = payload.get("session_id")
-        # Two fields say the same thing; either alone is enough. Read both so
-        # a rename on one side does not silently turn the cap back off.
-        result.budget_exhausted = (
-            payload.get("subtype") == "error_max_budget_usd"
-            or payload.get("terminal_reason") == "budget_exhausted")
+    # WHAT STOPPED IT IS THE RUNNER'S OWN ANSWER NOW, not something read back
+    # out of the CLI's payload. The old cap was the CLI's, so the CLI was the
+    # only thing that could report it having fired; this one is enforced here,
+    # and a killed CLI writes no payload to report anything in.
+    result.output_capped = bool(observed["capped"])
+    result.output_tokens = observed["total"]
+    result.watcher_failed = observed["failed"]
+    # A WATCHER THAT READ NOTHING IS AS UNENFORCED AS ONE THAT CRASHED, and it
+    # is the quieter of the two failures: no exception, no reading, no cap,
+    # and a run that looks like it stayed inside a limit nothing measured.
+    # This is what the CLI changing where it writes its transcript would look
+    # like from here, so it is worth a sentence rather than a silence.
+    #
+    # ZERO COUNTS AS NOTHING, because zero is not a reading a real run
+    # produces: a CLI that answered at all wrote output tokens. And the run
+    # has to have lasted long enough for silence to mean something -- two
+    # polls, not one, so an ordinary flush lag is not reported as a defect.
+    if (max_output_tokens is not None and not result.output_tokens
+            and not result.watcher_failed
+            and duration_ms > WATCH_INTERVAL_SECONDS * 2 * 1000):
+        result.watcher_failed = (
+            f"no usage was ever read from {transcript_dir(worktree)} in "
+            f"{duration_ms // 1000}s, so nothing was counted")
     if not result.text:
         result.text = (out or "")[-8000:]
     # CLASSIFIED AFTER `text` IS FINAL, so the fallback is covered: a run the
     # provider refused outright may never produce parseable JSON at all, and
     # that is exactly the run whose reason is only in the raw output.
     #
-    # Read AFTER budget_exhausted and never over it: the spend cap is fleet's
-    # own ceiling and is a real verdict about the task's size, while a
-    # usage-window refusal is the provider declining to run. Only the second
-    # is a could-not-run.
-    if not result.budget_exhausted:
+    # Read AFTER output_capped and never over it, which matters more than it
+    # did: the ceiling is fleet's own and is a real verdict about the run,
+    # while a usage-window refusal is the provider declining to run. Only the
+    # second is a could-not-run. A run the runner KILLED leaves truncated
+    # output, and truncated output is exactly where a stray phrase match would
+    # turn a runaway into a free requeue.
+    if not result.output_capped:
         result.could_not_run = classify_could_not_run(result.raw, result.text)
     result.reported_paths = parse_report(result.text)
     result.refused = parse_refusal(result.text)
@@ -544,6 +616,12 @@ NOTABLE_OUTPUT_TOKENS = 49_495
 #: widened for something that only reports.
 on_notable_run = None
 
+#: How often the watcher reads the transcript. This is the overshoot bound on
+#: the ceiling: a run can produce up to one poll's worth of output past its
+#: limit before anything notices. 15s against a ceiling of 100,000 is a
+#: fraction of a percent, and a tighter poll would buy nothing but syscalls.
+WATCH_INTERVAL_SECONDS = 15
+
 
 def transcript_dir(worktree: Path) -> Path:
     """Where the CLI writes this worktree's session JSONL.
@@ -558,22 +636,34 @@ def transcript_dir(worktree: Path) -> Path:
 
 
 def _watch_output_tokens(worktree: Path, started: float, stop: threading.Event,
-                         on_notable) -> None:
-    """Report ONCE when a run in flight passes NOTABLE_OUTPUT_TOKENS.
+                         on_notable, *, ceiling: int | None = None,
+                         on_ceiling=None, report=None) -> None:
+    """Count a run's output while it runs: report at p90, STOP at the ceiling.
 
     Reads the transcript the CLI is writing. Deduplicated by message id for
     the reason tools/backfill_token_classes.py documents: one turn is written
     as one record per content block, each repeating the same usage, so
     counting records overstates a run by about a factor of two.
 
-    EVERY FAILURE HERE IS SWALLOWED. This is an observation about a run, not
-    part of running it; a watcher that could break a task would cost more than
-    it tells anyone.
+    TWO THRESHOLDS, AND THEY ARE NOT THE SAME KIND OF THING.
+    `NOTABLE_OUTPUT_TOKENS` is p90 of recorded runs and only reports -- 049
+    measured that firing there would destroy more verified work than it saved.
+    `ceiling` is the task's `max_output_tokens`, sits far above every run on
+    record, and stops the run. Passing the first no longer ends the watch: the
+    second still has to be enforced.
+
+    EVERY FAILURE HERE IS SWALLOWED, AND SAYING SO IS NOW PART OF THE JOB.
+    While this only observed, a watcher that died in silence cost nothing. Now
+    it holds the only ceiling there is, and a dead watcher is an uncapped run
+    that looks exactly like a run that stayed within its cap. So the reason is
+    handed back through `report` rather than logged here -- this thread has no
+    business writing to the run's log -- and the caller decides what to say.
     """
     seen: set[str] = set()
     total = 0
+    notable_reported = False
     while not stop.is_set():
-        stop.wait(15)
+        stop.wait(WATCH_INTERVAL_SECONDS)
         try:
             base = transcript_dir(worktree)
             files = [f for f in base.glob("*.jsonl")
@@ -594,11 +684,25 @@ def _watch_output_tokens(worktree: Path, started: float, stop: threading.Event,
                             continue
                         seen.add(mid)
                         total += int(usage.get("output_tokens") or 0)
-            if total >= NOTABLE_OUTPUT_TOKENS:
+            if report:
+                report(total=total, turns=len(seen))
+            if not notable_reported and total >= NOTABLE_OUTPUT_TOKENS:
+                notable_reported = True
                 on_notable(total, len(seen))
+                if ceiling is None:
+                    # Nothing left to watch for. With a ceiling the watch
+                    # continues past p90, because p90 is where this starts
+                    # being worth reading and not where it stops.
+                    return
+            if ceiling is not None and total >= ceiling:
+                on_ceiling(total, len(seen))
                 return
-        except Exception:
+        except Exception as exc:
+            if report:
+                report(failed=f"{type(exc).__name__}: {exc}"[:200])
             return
+    # A clean stop is the run ending, which is the ordinary case and not a
+    # failure: `report` already carries the last reading.
 
 
 #: What the provider says when the plan's usage window is spent. The account

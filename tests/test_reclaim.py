@@ -551,7 +551,7 @@ def test_a_tick_reclaims_before_it_claims(dsns, settings, console, runner,
     make_stale(admin, tid)
 
     def invoke(worktree_path, prompt, timeout_seconds, model=None,
-               allowed_tools=(), readable=(), max_cost_usd=None):
+               allowed_tools=(), readable=(), max_output_tokens=None):
         _ensure(worktree_path / "api" / "analytics" / "services" / "analytics_engine.py").write_text("x = 2\n")
         return agent_mod.AgentResult(exit_code=0, timed_out=False,
                                      duration_ms=5, text="done", cost_usd=0.01)
