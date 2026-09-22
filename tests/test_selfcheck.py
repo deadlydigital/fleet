@@ -111,14 +111,32 @@ class TestProseAndDeclaredPathsAreJudgedTheSameWay:
         # contract's paths are globs, so a new file under one is covered. What
         # these tests are about — prose and declared paths judged the same way
         # — is unchanged.
-        new = "platform/app/(dashboard)/analytics/customers/ltv-panel.tsx"
+        #
+        # AND NOT A ROUTE-GROUP PATH, WHICH IS WHY THIS TEST PROVED NOTHING
+        # UNTIL 22 Sep 2026. It used to cite
+        # `platform/app/(dashboard)/analytics/customers/ltv-panel.tsx`, and
+        # PROSE_PATH_RE does not admit parentheses -- so the string was never
+        # captured as a cited path, the loop it is about never ran, and the
+        # test passed whatever the parent-directory rule did. `revert_guards`
+        # reported this guard as unfindable for months, which hid the fact
+        # that it was also unproven. Assert the citation is SEEN, so a regex
+        # that stops seeing it fails here rather than going quiet.
+        new = "platform/app/api/analytics/customers/ltv-panel.ts"
         assert not (PLATFORM / new).exists()
+        assert (PLATFORM / new).parent.is_dir(), (
+            "the parent must exist, or this exercises the wrong branch")
         code, out = run_check(tmp_path, spec([new], [new],
                                              work_type="dd_frontend"))
         assert code == 0, out
+        # THE CITATION WAS SEEN. Read off the check's own summary rather than
+        # by importing its regex: the count is the check's statement about
+        # what it looked at, and a pattern that stops matching this path turns
+        # the assertion below red instead of turning this test into a
+        # tautology again.
+        assert "1 prose path(s) checked" in out, out
 
     def test_the_same_string_declared_and_cited_cannot_disagree(self, tmp_path):
-        new = "platform/app/(dashboard)/analytics/customers/ltv-panel.tsx"
+        new = "platform/app/api/analytics/customers/ltv-panel.ts"
         declared_only = run_check(tmp_path, spec([new], [],
                                                   work_type="dd_frontend"))[0]
         also_cited = run_check(tmp_path, spec([new], [new],
@@ -137,6 +155,59 @@ class TestProseAndDeclaredPathsAreJudgedTheSameWay:
             ["api/analytics/routes/orders.py"],
             ["api/analytics/routes/orders.py"]))
         assert code == 0, out
+
+
+class TestRouteGroupPathsAreSeenAtAll:
+    """22 Sep 2026. `platform/app/(dashboard)/analytics/**` is a writable tree
+    in the frontend contract, and PROSE_PATH_RE admitted no parentheses -- so
+    every prose citation of an analytics page passed this rule by being
+    invisible to it. Measured across all 39 drafts on disk before the pattern
+    was widened: no verdict changes, 22 more citations seen."""
+
+    #: Route groups exist under this path, so the parenthesised segment is the
+    #: only thing standing between the citation and the rule.
+    REAL = "platform/app/(dashboard)/analytics/orders/page.tsx"
+
+    def test_a_route_group_page_is_counted_as_a_prose_path(self, tmp_path):
+        assert (PLATFORM / self.REAL).exists(), "the fixture cites a real page"
+        declared = "platform/app/api/analytics/customers/ltv-panel.ts"
+        code, out = run_check(tmp_path, spec([declared], [self.REAL],
+                                             work_type="dd_frontend"))
+        assert code == 0, out
+        # THE COUNT IS THE POINT. Before the widening this read `0 prose
+        # path(s) checked` and still exited 0 -- a pass that meant nothing.
+        assert "1 prose path(s) checked" in out, out
+
+    def test_a_route_group_path_that_resolves_nowhere_is_now_refused(
+            self, tmp_path):
+        """The coverage is real, not just counted.
+
+        This is the citation the old pattern could not see: a page under a
+        route group whose directory does not exist. It named a file nobody
+        could create and the check said nothing.
+        """
+        bad = "platform/app/(dashboard)/analytics/nowhere/at/all/page.tsx"
+        assert not (PLATFORM / bad).parent.is_dir()
+        declared = "platform/app/api/analytics/customers/ltv-panel.ts"
+        code, out = run_check(tmp_path, spec([declared], [bad],
+                                             work_type="dd_frontend"))
+        assert code == 1, out
+        assert "whose directory does not either" in out, out
+
+    def test_a_parenthesised_aside_is_still_not_a_path(self, tmp_path):
+        """The widening is to the DIRECTORY class only.
+
+        Loose matching produced ten false positives out of ten on the
+        gold-standard document, which is why this pattern is narrow. Prose
+        that merely contains a slash and a dot inside brackets must stay
+        outside it.
+        """
+        declared = "platform/app/api/analytics/customers/ltv-panel.ts"
+        text = spec([declared], [], work_type="dd_frontend")
+        text += "\n\nAn aside `(a/b.c)` and a note `see (x/y.py) here`.\n"
+        code, out = run_check(tmp_path, text)
+        assert code == 0, out
+        assert "0 prose path(s) checked" in out, out
 
 
 class TestAnAbbreviationIsNamedAsOne:

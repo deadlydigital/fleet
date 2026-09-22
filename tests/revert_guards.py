@@ -112,17 +112,28 @@ CASES = [
 
     ("the branch was not rebased under the recorded branch point",
      "console/merge.py",
-     '        if merge_base != branch_point:',
-     '        if False:',
+     'elif merge_base != branch_point:',
+     'elif False:',
      "tests/test_reverify.py::test_a_rebased_branch_is_still_refused"),
+
+    # Added 22 Sep 2026. Without the fetch the guard above answers with the
+    # STALE LOCAL REF and reports "rebased or rewritten" about a branch nobody
+    # touched -- which is what stuck tasks 145 and 146 for three passes. Every
+    # other test of that guard still passes with this reverted, because they
+    # run in repositories whose checkout can already see the base.
+    ("a base the checkout cannot see is fetched, not guessed at",
+     "console/merge.py",
+     '        if base_unanswerable:',
+     '        if False:',
+     "tests/test_reverify.py::test_a_base_this_checkout_cannot_resolve_is_fetched_and_answered"),
 
     # The one the whole re-verification rests on: verifying the BRANCH instead
     # of the merged tree re-establishes what the original run established and
     # proves nothing new.
     ("re-verification runs against the merged tree, not the branch",
      "console/reverify.py",
-     'trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, base)',
-     'trial, base_sha = worktree.create_trial_clone(repo, trial_root, name, branch)',
+     'worktree.create_trial_clone(repo, trial_root, name, at)',
+     'worktree.create_trial_clone(repo, trial_root, name, branch)',
      "tests/test_reverify.py::test_it_verifies_the_merged_tree_not_the_branch"),
 
     ("a failing re-verification stops the merge",
@@ -503,17 +514,26 @@ CASES = [
     # ---- the draft-spec gate, reachable and capped ------------------------
     ("prose paths get the same parent rule as declared ones",
      "contracts/checks/draft_spec_shape.py",
-     "            if (checkout / c).parent.is_dir() or (FLEET / c).parent.is_dir():\n"
-     "                continue                      # a file this spec will create",
-     "            if False:\n"
-     "                continue                      # a file this spec will create",
+     "if (checkout / c).parent.is_dir() or (FLEET / c).parent.is_dir():",
+     "if False:",
      "tests/test_selfcheck.py::TestProseAndDeclaredPathsAreJudgedTheSameWay::"
      "test_a_file_the_spec_will_create_passes_in_prose"),
 
+    # Widened 22 Sep 2026 so Next.js route groups are visible at all. Narrow
+    # it back and the citations under `platform/app/(dashboard)/**` -- where
+    # the frontend work lives -- stop being checked, silently, which is the
+    # state this rule was in for its whole life until then.
+    ("route-group paths are visible to the prose-path rule",
+     "contracts/checks/draft_spec_shape.py",
+     r"[A-Za-z0-9_][\w./()-]*",
+     r"[A-Za-z0-9_][\w./-]*",
+     "tests/test_selfcheck.py::TestRouteGroupPathsAreSeenAtAll::"
+     "test_a_route_group_path_that_resolves_nowhere_is_now_refused"),
+
     ("an abbreviation is named as one, with its correction",
      "contracts/checks/draft_spec_shape.py",
-     "            if match:\n                abbreviated.append",
-     "            if False:\n                abbreviated.append",
+     "if match:",
+     "if False:",
      "tests/test_selfcheck.py::TestAnAbbreviationIsNamedAsOne::"
      "test_it_says_which_path_was_meant"),
 
@@ -582,10 +602,8 @@ CASES = [
 
     ("the page asks preflight before offering the button",
      "console/app.py",
-     "            if not check.ok:\n"
-     "                blocker = {\"reason\": check.reason, \"detail\": list(check.detail)}",
-     "            if False:\n"
-     "                blocker = {\"reason\": check.reason, \"detail\": list(check.detail)}",
+     "if not check.ok:",
+     "if False:",
      "tests/test_console.py::TestTheRefusalIsShownBeforeTheButton::"
      "test_a_ready_task_whose_merge_would_refuse_says_so"),
 

@@ -91,7 +91,25 @@ BLOCK_RE = re.compile(r"```fleet-spec\s*\n(.*?)\n```", re.S)
 #: The same narrowing research_document_shape.py measured: a directory
 #: component AND an extension. Loose matching produced ten false positives out
 #: of ten on the gold-standard document.
-PROSE_PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./-]*/[\w.-]+\.[A-Za-z0-9]{1,5})`")
+#:
+#: PARENTHESES ARE PART OF A PATH HERE, since 22 Sep 2026. Next.js route groups
+#: are directories named `(dashboard)`, and
+#: `platform/app/(dashboard)/analytics/**` is a writable tree in
+#: contracts/dd-analytics-frontend.yaml -- so every prose citation of an
+#: analytics PAGE was invisible to this rule, silently, for as long as the rule
+#: has existed. Not a near miss: it is where the frontend work lives.
+#:
+#: MEASURED BEFORE IT WAS APPLIED, against all 39 drafts on disk: the widened
+#: pattern changes NO verdict. It makes 22 more citations visible across 17
+#: documents, every one of them resolving to a file that exists, so rule 6's
+#: first branch takes them all. The only difference is the count this check
+#: reports having looked at. It buys coverage and refuses nothing new, which is
+#: the evidence that it is a widening rather than a loosening.
+#:
+#: The parens go in the DIRECTORY class only. The leading character class and
+#: the filename are untouched, so `(a/b.c)` -- a parenthesised aside that
+#: happens to contain a slash and a dot -- still does not match.
+PROSE_PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./()-]*/[\w.-]+\.[A-Za-z0-9]{1,5})`")
 
 #: `contract` is REQUIRED, since 11 Sep 2026 and specs/auto-approval.md §14.
 #:
