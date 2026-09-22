@@ -104,6 +104,26 @@ CASES = [
     # `conn.read_only` changes nothing because the grant still refuses. The
     # reversion that matters is pointing the reader at the writer, which is
     # the misconfiguration this test exists to catch.
+    # 22 Sep 2026. The close is the FIRST write in rework's transaction, and
+    # that ordering is the whole safety property: without it a task reaches
+    # QUEUED with its run still holding the one-active-per-task slot, and the
+    # next claim dies AFTER claim_task() has spent the attempt. It cost task
+    # 137 its last attempt and its branch_name.
+    ("the run holding the slot is closed before the task moves",
+     "console/rework.py",
+     "            if r.closed_runs:",
+     "            if False:",
+     "tests/test_rework.py::test_the_requeued_task_can_actually_be_claimed"),
+
+    # The report is read off the REMOTE base branch. The console cannot
+    # fast-forward any checkout, so the local ref is routinely behind the
+    # branch the task is about to be re-cut from.
+    ("what merged underneath is read from the remote ref",
+     "console/rework.py",
+     'tip = _git(repo, "rev-parse", f"origin/{base_branch}") or \\',
+     'tip = "" or \\',
+     "tests/test_rework.py::test_it_reads_the_remote_not_the_stale_checkout"),
+
     ("the branch tip is the commit that was verified",
      "console/merge.py",
      '    if tip != recorded_patch:',
